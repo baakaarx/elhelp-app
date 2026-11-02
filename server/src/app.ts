@@ -10,7 +10,7 @@ import { Store } from './db.js';
 import { readConfig, type Config } from './config.js';
 import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
-import { seedDemo, startDemoSimulator } from './demo.js';
+import { seedDemo, startDemoSimulator, tickDemo } from './demo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 
@@ -121,7 +121,10 @@ export function createApp(overrides: Partial<Config> = {}) {
       visitsToday: Number(visitStats?.total || 0), openVisit: openVisit || null,
     };
   }
+  // The hosted demo has no background process, so the map is advanced by demand instead.
+  const requestDrivenDemo = config.demo && process.env.DEMO_SIMULATE === 'true';
   function overview() {
+    if (requestDrivenDemo) tickDemo(store);
     const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY is_demo DESC, created_at, name").map(repSnapshot);
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
@@ -586,7 +589,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     console.error(error);
     res.status(500).json({ error: 'حدث خطأ في الخادم. حاول مرة أخرى.' });
   });
-  const stopSimulator = config.demo ? startDemoSimulator(store, broadcast) : () => {};
+  const stopSimulator = config.demo && !requestDrivenDemo ? startDemoSimulator(store, broadcast) : () => {};
   store.cleanup(config.retentionDays);
   const cleanupTimer = setInterval(() => { store.cleanup(config.retentionDays); dayStatsCache.clear(); }, 3600000);
   cleanupTimer.unref();
