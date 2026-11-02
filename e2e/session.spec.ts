@@ -4,7 +4,8 @@ test.describe('تسجيل الدخول والجلسة', () => {
   test('the login screen renders in Arabic RTL and rejects a bad password', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-    await expect(page.getByRole('heading', { name: 'مهندس مبيعات الهلب' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'لوحة متابعة الميدان' })).toBeVisible();
+    await expect(page.getByText('مبيدات وأسمدة زراعية')).toBeVisible();
     await page.getByLabel('البريد الإلكتروني').fill('admin@mandoub.test');
     await page.getByLabel('كلمة المرور').fill('wrong-password');
     await page.getByRole('button', { name: 'دخول لوحة المتابعة' }).click();
