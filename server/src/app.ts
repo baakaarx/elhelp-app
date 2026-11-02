@@ -13,6 +13,7 @@ import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { seedDemo, startDemoSimulator, tickDemo } from './demo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
+import { createAgentRouter } from './agent/router.js';
 
 const CONSENT_VERSION = '1.0';
 const credentials = z.object({ email: z.email().max(254).transform(x => x.toLowerCase().trim()), password: z.string().min(1).max(200) });
@@ -582,6 +583,10 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.send(pdf);
     } catch (e) { console.error(e); res.status(500).json({ error: 'تعذر إنشاء ملف PDF.' }); return; }
   });
+  // ---- Local Agent (بدون API خارجي) ----
+  const { router: agentRouter } = createAgentRouter(store, config);
+  app.use('/api/agent', auth, agentRouter);
+
   app.use('/api', (_req, res) => res.status(404).json({ error: 'المسار غير موجود.' }));
   app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (error.type === 'entity.parse.failed') { res.status(400).json({ error: 'JSON غير صالح.' }); return; }

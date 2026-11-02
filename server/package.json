@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "agent": "tsx src/agent/cli.ts"
   },
   "dependencies": {
     "@expo-google-fonts/noto-naskh-arabic": "^0.4.5",
