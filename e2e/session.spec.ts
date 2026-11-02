@@ -21,6 +21,24 @@ test.describe('تسجيل الدخول والجلسة', () => {
     await expect(page.getByText('الفريق الآن')).toBeVisible();
   });
 
+  test('a representative is redirected from the dashboard to the engineer app', async ({ page }) => {
+    await page.goto('/');
+    await page.getByLabel('البريد الإلكتروني').fill('rep@mandoub.test');
+    await page.getByLabel('كلمة المرور').fill('Demo1234!');
+    await page.getByRole('button', { name: 'دخول لوحة المتابعة' }).click();
+    await expect(page).toHaveURL(/\/app/);
+    // The manager shell must never render for a representative account.
+    await expect(page.getByRole('button', { name: 'خروج' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /المتابعة الحية/ })).toHaveCount(0);
+  });
+
+  test('the login screen links to the engineer app', async ({ page }) => {
+    await page.goto('/');
+    const link = page.getByRole('link', { name: /تطبيق المهندس/ });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute('href', '/app');
+  });
+
   test('the session survives a page reload without re-entering credentials', async ({ page }) => {
     await page.goto('/');
     await page.getByLabel('البريد الإلكتروني').fill('admin@mandoub.test');

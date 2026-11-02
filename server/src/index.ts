@@ -16,6 +16,21 @@ const mobile = fileURLToPath(new URL('../../mobile/dist', import.meta.url));
 if (existsSync(mobile)) {
   instance.app.use('/app', express.static(mobile, { setHeaders(res, path) { if (path.endsWith('.html')) res.setHeader('Cache-Control', 'no-store'); } }));
   instance.app.get('/app/{*path}', (_req, res) => { res.setHeader('Cache-Control', 'no-store'); res.sendFile(`${mobile}/index.html`); });
+} else {
+  // /app must never fall through to the manager SPA: representatives would land on a login
+  // screen that rejects them. Tell the operator how to build the engineer bundle instead.
+  const placeholder = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" /><title>تطبيق المهندس · الهلب</title>
+    <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f4ec;color:#14231c;font-family:"Noto Naskh Arabic",Tahoma,sans-serif}
+    main{max-width:460px;padding:28px;background:#fffdf8;border:1px solid #e2e8e1;border-radius:20px;text-align:center;line-height:1.9}
+    h1{color:#16382c;font-size:22px;margin:0 0 8px}p{margin:6px 0;color:#4b5a51}code{background:#e8f1ea;padding:2px 6px;border-radius:6px;direction:ltr;display:inline-block}
+    a{color:#1f513f;font-weight:700}</style></head>
+    <body><main><h1>تطبيق المهندس</h1><p>نسخة الويب من تطبيق الموبايل لسه ما اتبنيتش على السيرفر ده.</p>
+    <p>شغّل <code>npm run export:mobile</code> ثم أعد تشغيل الخادم.</p>
+    <p><a href="/">الدخول إلى لوحة المدير</a></p></main></body></html>`;
+  const sendPlaceholder = (_req: express.Request, res: express.Response) => { res.setHeader('Cache-Control', 'no-store'); res.status(200).type('html').send(placeholder); };
+  instance.app.get('/app', sendPlaceholder);
+  instance.app.get('/app/{*path}', sendPlaceholder);
 }
 if (existsSync(dashboard)) {
   instance.app.use(express.static(dashboard, { setHeaders(res, path) { if (path.endsWith('.html')) res.setHeader('Cache-Control', 'no-store'); } }));

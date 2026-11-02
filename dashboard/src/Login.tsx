@@ -37,6 +37,10 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
           {error && <p className="error" role="alert">{error}</p>}
           <button className="btn primary" disabled={busy}>{busy ? 'جارٍ الدخول…' : 'دخول لوحة المتابعة'}</button>
         </form>
+        <div className="login-switch">
+          <span>مهندس مبيعات؟</span>
+          <a href="/app" className="btn ghost sm">افتح تطبيق المهندس ←</a>
+        </div>
         <div className="login-hint">
           <p>حساب عرض تجريبي: <b dir="ltr">admin@mandoub.test</b> / <b dir="ltr">Demo1234!</b></p>
           <p className="muted small">يتم جمع الموقع أثناء الوردية فقط، بموافقة صريحة من المهندس، وتُحذف البيانات بعد مدة الاحتفاظ.</p>
