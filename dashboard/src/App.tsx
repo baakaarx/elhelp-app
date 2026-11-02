@@ -209,6 +209,13 @@ export default function App() {
  */
 function EngineerRedirect() {
   useEffect(() => {
+    // Hand the session over so the engineer lands signed in instead of typing the same
+    // credentials twice. The key matches mobile/src/storage.ts on web; the dashboard token
+    // is cleared immediately so /app cannot bounce back into this redirect.
+    const token = getToken();
+    if (token) {
+      try { window.localStorage.setItem('mandoub_token', token); } catch { /* private mode */ }
+    }
     setToken(null);
     window.location.replace(ENGINEER_APP_PATH);
   }, []);
