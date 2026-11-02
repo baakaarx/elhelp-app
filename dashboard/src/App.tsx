@@ -30,6 +30,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => { me().then(setUser).catch(() => setUser(null)); }, []);
@@ -43,6 +44,7 @@ export default function App() {
       ]);
       setOverview(nextOverview);
       setAlerts(nextAlerts.alerts);
+      setSyncedAt(Date.now());
       setError('');
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.'); }
   }, []);
@@ -55,7 +57,7 @@ export default function App() {
     socket.on('connect', () => setConnected(true));
     socket.on('disconnect', () => setConnected(false));
     socket.on('connect_error', () => setConnected(false));
-    socket.on('overview', (data: Overview) => setOverview(data));
+    socket.on('overview', (data: Overview) => { setOverview(data); setSyncedAt(Date.now()); });
     socket.on('report', () => refresh());
     socket.on('daily-report', () => refresh());
     socket.on('visit', () => refresh());
@@ -134,7 +136,7 @@ export default function App() {
             </div>
             <div className="live-grid">
               <div className="panel map-panel">
-                <MapView reps={reps} selectedId={selectedId} route={route} live={connected} />
+                <MapView reps={reps} selectedId={selectedId} route={route} live={connected} syncedAt={syncedAt} />
                 <div className="map-controls">
                   <label className="field inline">
                     <span>يوم المسار</span>

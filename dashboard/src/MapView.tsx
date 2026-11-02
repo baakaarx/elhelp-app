@@ -42,7 +42,15 @@ function sample<T>(items: T[], max: number): T[] {
 
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('');
 
-export default function MapView({ reps, selectedId, route, live = false }: { reps: Rep[]; selectedId: string | null; route: RouteResponse | null; live?: boolean }) {
+function SyncAge({ at, live }: { at: number | null; live: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  const seconds = at ? Math.max(0, Math.round((now - at) / 1000)) : null;
+  const freshness = seconds === null ? '' : seconds <= 1 ? ' · آخر تحديث الآن' : ` · آخر تحديث قبل ${seconds} ث`;
+  return <>{live ? 'بثّ لحظي' : 'تحديث كل ثانيتين'}{freshness}</>;
+}
+
+export default function MapView({ reps, selectedId, route, live = false, syncedAt = null }: { reps: Rep[]; selectedId: string | null; route: RouteResponse | null; live?: boolean; syncedAt?: number | null }) {
   const host = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const layer = useRef<L.LayerGroup | null>(null);
@@ -197,7 +205,7 @@ export default function MapView({ reps, selectedId, route, live = false }: { rep
         </button>
       </div>
       {noFixYet && <div className="map-empty">لا توجد إحداثيات بعد. سيظهر المهندس على الخريطة فور استلام أول نقطة موقع من التطبيق.</div>}
-      <div className="map-badge"><span className="map-badge-dot" /> {live ? 'بثّ لحظي' : 'تحديث كل ثانيتين'} · {route?.truncated ? 'المسار مقطوع عند ٢٠٠٠٠ نقطة' : 'المسار الكامل'}</div>
+      <div className="map-badge"><span className="map-badge-dot" /> <SyncAge at={syncedAt} live={live} /> · {route?.truncated ? 'المسار مقطوع عند ٢٠٠٠٠ نقطة' : 'المسار الكامل'}</div>
       {path.length > 1 && (
         <div className="replay" role="group" aria-label="إعادة تشغيل المسار">
           <button className="replay-play" onClick={() => { if (progress >= 1) setProgress(0); setPlaying(value => !value); }} aria-label={playing ? 'إيقاف مؤقت' : 'تشغيل المسار'}>
