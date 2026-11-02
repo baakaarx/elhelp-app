@@ -6,9 +6,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pull-requests: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -34,25 +31,7 @@ jobs:
       - name: Typecheck all workspaces
         run: npm run typecheck
       - name: API tests
-        id: api_tests
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          npm test 2>&1 | tee api-test.log
-      - name: Publish API test log on failure
-        if: steps.api_tests.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          if [ -n "$PR" ]; then
-            { echo '```'; tail -n 120 api-test.log; echo '```'; } > comment.md
-            gh pr comment "$PR" --body-file comment.md || true
-          fi
-      - name: Fail when API tests failed
-        if: steps.api_tests.outcome == 'failure'
-        run: exit 1
+        run: npm test
       - name: Build server + dashboard
         run: npm run build
       - name: Upload dashboard bundle
@@ -63,13 +42,10 @@ jobs:
           retention-days: 5
 
   e2e:
-    name: browser tests (advisory)
+    name: browser tests
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: verify
-    # Informational: Chromium is not downloadable from every sandbox, so a browser-only
-    # failure must not hide the API/typecheck/build signal above.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -80,22 +56,7 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright
-        id: playwright
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          npm run test:e2e 2>&1 | tee e2e.log
-      - name: Publish browser test log on failure
-        if: steps.playwright.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          if [ -n "$PR" ]; then
-            { echo '```'; tail -n 400 e2e.log; echo '```'; } > e2e-comment.md
-            gh pr comment "$PR" --body-file e2e-comment.md || true
-          fi
+        run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

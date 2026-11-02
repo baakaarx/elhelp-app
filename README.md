@@ -130,9 +130,12 @@ npm run typecheck # لا أخطاء
 npm run build     # server/dist + dashboard/dist
 ```
 
-`.github/workflows/ci.yml` يشغّل: `npm ci` → `typecheck` → `npm test` → `build` → Playwright
-على Node 24. اختبارات Playwright تحتاج تنزيل Chromium (`npx playwright install chromium`)
-وهي مُعلَّمة `continue-on-error` لأن متصفحات CI لا تتوفر في كل بيئات المعاينة.
+`.github/workflows/ci.yml` يشغّل على Node 24: `npm ci` → `typecheck` → `npm test` → `build`،
+ثم مهمة ثانية تشغّل Playwright بعد `npx playwright install --with-deps chromium`
+(١٥ اختبار متصفح: دخول/جلسة/خريطة/تقارير/تنزيل PDF).
+
+> `node:sqlite` يحتاج Node ≥ 22.13 بدون flag. على Node 22.12 يفشل التشغيل بـ
+> `ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite`.
 
 ## بنية البيانات (SQLite)
 
