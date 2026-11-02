@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -30,7 +34,25 @@ jobs:
       - name: Typecheck all workspaces
         run: npm run typecheck
       - name: API tests
-        run: npm test
+        id: api_tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee api-test.log
+      - name: Publish API test log on failure
+        if: steps.api_tests.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -n "$PR" ]; then
+            { echo '```'; tail -n 120 api-test.log; echo '```'; } > comment.md
+            gh pr comment "$PR" --body-file comment.md || true
+          fi
+      - name: Fail when API tests failed
+        if: steps.api_tests.outcome == 'failure'
+        run: exit 1
       - name: Build server + dashboard
         run: npm run build
       - name: Upload dashboard bundle
