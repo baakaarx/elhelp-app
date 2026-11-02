@@ -73,6 +73,7 @@ npm run typecheck   # tsc لكل الوركسبيسز
 npm run test:e2e    # Playwright (يبدأ خادمًا معزولًا على 3100/5174)
 npm run export:mobile  # تصدير نسخة الويب من التطبيق
 npm run preview     # بناء + تصدير الموبايل + تقديم كل شيء على :5173
+npm run build:vercel  # نفس البناء لكن مُجمَّعًا في public/ للنشر على Vercel
 ```
 
 ## متغيرات البيئة
@@ -152,6 +153,20 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 - `ALLOWED_ORIGINS` قائمة صريحة — لا تستخدم `*`.
 - انسخ نسخة احتياطية من ملف SQLite (أو استخدم قرصًا دائمًا) — البيانات كلها هناك.
 - تطبيق الموبايل: `eas build --profile production` بعد ضبط `EXPO_PUBLIC_API_URL`.
+
+### نشر نسخة العرض على Vercel (`elhelp-mandoub.vercel.app`)
+
+نسخة العرض العامة مبنية على مُهايئ serverless بسيط، ولا تلمس منطق التطبيق:
+
+- `api/index.js` — يُشغّل نفس `createApp()` من `server/dist/app.js` داخل دالة Vercel.
+- `scripts/build-vercel.mjs` (`npm run build:vercel`) — يبني اللوحة وتصدير Expo للويب ويجمعهما في `public/`: لوحة المدير على `/` وتطبيق المهندس على `/app`.
+- `vercel.json` — يوجّه `/api/*` إلى الدالة، ويضبط مخرجات البناء ومدة الدالة.
+
+قيود هذه النسخة (مقصودة، لأنها للعرض فقط):
+
+- **وضع الديمو مفروض** (`DEMO_MODE=true`) والبيانات في `/tmp` — تُصفَّر مع كل إقلاع بارد ولا تُستخدم لأي بيانات حقيقية.
+- لا يوجد بث لحظي (Socket.IO) على serverless؛ اللوحة تتحول تلقائيًا إلى «وضع التحديث الدوري» كل ٨ ثوانٍ.
+- التشغيل الفعلي للمهندسين يحتاج خادمًا دائمًا (Docker + قرص دائم) كما في القسم أعلاه.
 
 ## الاختبارات و CI
 
