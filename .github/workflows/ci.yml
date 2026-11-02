@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -56,7 +60,23 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright
-        run: npm run test:e2e
+        id: playwright
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee e2e.log
+      - name: Publish browser failure log
+        if: steps.playwright.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -e
+          { echo "run: $GITHUB_RUN_ID"; echo '```'; tail -n 400 e2e.log; echo '```'; } > log.md
+          gh api "repos/$GH_REPO/issues" -f title="ci-e2e-log $GITHUB_RUN_ID" -f body="$(cat log.md)" --jq .number
+      - name: Fail when browser tests failed
+        if: steps.playwright.outcome == 'failure'
+        run: exit 1
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
