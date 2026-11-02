@@ -34,6 +34,7 @@ export function seedDemo(store: Store, timezone = 'Africa/Cairo') {
   }
   seedDemoReports(store, now);
   seedDemoDailyReports(store, now, timezone);
+  seedDemoVisits(store, now);
 }
 const demoReports: Array<{ type: string; title: string; body: string; customer: string; amount: number | null }> = [
   { type: 'visit', title: 'زيارة صيدلية النهدي', body: 'تم عرض المنتجات الجديدة، العميل مهتم بخط المكافحة.', customer: 'صيدلية النهدي', amount: null },
@@ -82,6 +83,40 @@ export function seedDemoDailyReports(store: Store, now = Date.now(), timezone = 
       if (index === 2) store.run("UPDATE daily_reports SET status='reviewed', reviewed_at=? WHERE id=?", now - 600000, data.id);
   });
 }
+// Closed visits for a couple of demo representatives so the manager view has a realistic
+// day to look at (feed, KPIs, alerts). Times are anchored to "now", so they never look
+// like they happened in the future, and never use real customer data.
+export function seedDemoVisits(store: Store, now = Date.now()) {
+  if (store.get('SELECT id FROM visits LIMIT 1')) return;
+  const reps = store.all("SELECT id, name, email FROM users WHERE is_demo=1 ORDER BY email LIMIT 2");
+  if (!reps.length) return;
+  const plan = [
+    { customer: 'مزرعة النور التجريبية', governorate: 'القاهرة', district: 'مدينة نصر', village: 'المنطقة التجريبية', purpose: 'visit', minutes: 35, outcome: 'عرض برنامج التسميد واتفقنا على زيارة متابعة.', amount: null as number | null, back: 75 },
+    { customer: 'مؤسسة الوفاء التجريبية', governorate: 'القاهرة', district: 'مدينة نصر', village: 'شارع التجربة', purpose: 'collection', minutes: 20, outcome: 'تم تحصيل دفعة نقدية وإصدار إيصال.', amount: 4200, back: 150 },
+    { customer: 'مزرعة السلام التجريبية', governorate: 'الجيزة', district: 'الدقي', village: 'قرية الاختبار', purpose: 'order', minutes: 28, outcome: 'طلبية ٣٠ كرتونة تسليم الأسبوع القادم.', amount: null as number | null, back: 260 },
+  ];
+  store.transaction(() => {
+    reps.forEach((rep, repIndex) => {
+      const route = people.find(person => person.email === rep.email)?.route ?? people[0].route;
+      plan.slice(0, repIndex === 0 ? 3 : 2).forEach((item, index) => {
+        const end = now - (item.back - item.minutes) * 60000;
+        const start = end - item.minutes * 60000;
+        const position = routePosition(route, 0.6 + index * 0.7);
+        const [lat, lng] = routePosition(route, 0.9 + index * 0.7);
+        const id = randomUUID();
+        store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,outcome,status,checked_in_at,checked_out_at,duration_seconds,in_lat,in_lng,in_accuracy,out_lat,out_lng,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,'closed',?,?,?,?,?,?,?,?,?)`, id, rep.id, item.customer, item.governorate, item.district, item.village,
+          `0100000000${repIndex + 1}`, item.purpose, '', item.outcome, start, end, item.minutes * 60, position[0], position[1], 8, lat, lng, start);
+        if (item.amount) {
+          store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,'reviewed',?)`, `visit:${id}`, rep.id, null, 'collection', `تحصيل - ${item.customer}`,
+            item.outcome, item.customer, item.amount, position[0], position[1], 8, end);
+        }
+      });
+    });
+  });
+}
+
 function routePosition(route: number[][], position: number): number[] {
   const i = Math.floor(position) % route.length;
   const t = position % 1;
