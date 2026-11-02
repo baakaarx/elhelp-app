@@ -25,6 +25,9 @@ function prepareEnv() {
     process.env.NODE_ENV = 'development';
     process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@mandoub.test';
     process.env.ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Demo1234!';
+    // Every instance has its own /tmp database, so a database-backed session would be lost
+    // as soon as the next request lands on another instance. Sign the session instead.
+    process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'elhelp-hosted-demo-session-secret';
   }
 }
 

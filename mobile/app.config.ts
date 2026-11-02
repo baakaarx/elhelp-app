@@ -1,7 +1,7 @@
 import type { ExpoConfig } from 'expo/config';
 
 const config: ExpoConfig = {
-  name: 'مهندس مبيعات الهلب',
+  name: 'الهلب جروب · مهندس الميدان',
   slug: 'elhelb-mandoub',
   scheme: 'elhelbmandoob',
   version: '1.0.0',
@@ -20,7 +20,7 @@ const config: ExpoConfig = {
   },
   android: {
     package: 'com.elhelb.mandoub',
-    adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#1f513f' },
+    adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#0a1f33' },
     permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'ACCESS_BACKGROUND_LOCATION', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_LOCATION', 'POST_NOTIFICATIONS'],
   },
   web: { bundler: 'metro', output: 'single', favicon: './assets/favicon.png' },
@@ -34,7 +34,7 @@ const config: ExpoConfig = {
     'expo-secure-store',
     'expo-sqlite',
     'expo-font',
-    ['expo-splash-screen', { image: './assets/splash-icon.png', resizeMode: 'contain', backgroundColor: '#1f513f' }],
+    ['expo-splash-screen', { image: './assets/splash-icon.png', resizeMode: 'contain', backgroundColor: '#0a1f33' }],
   ],
   experiments: { baseUrl: process.env.EXPO_BASE_URL || undefined },
   extra: {
