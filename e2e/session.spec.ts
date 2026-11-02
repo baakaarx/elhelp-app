@@ -5,7 +5,8 @@ test.describe('تسجيل الدخول والجلسة', () => {
     await page.goto('/');
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
     await expect(page.getByRole('heading', { name: 'لوحة متابعة الميدان' })).toBeVisible();
-    await expect(page.getByText('مبيدات وأسمدة زراعية')).toBeVisible();
+    await expect(page.locator('.login-aside .tagline')).toContainText('مبيدات وأسمدة زراعية');
+    await expect(page.locator('.login-aside img')).toHaveCount(1);
     await page.getByLabel('البريد الإلكتروني').fill('admin@mandoub.test');
     await page.getByLabel('كلمة المرور').fill('wrong-password');
     await page.getByRole('button', { name: 'دخول لوحة المتابعة' }).click();
