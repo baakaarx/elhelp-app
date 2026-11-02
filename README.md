@@ -12,7 +12,7 @@
 
 | المجلد | التقنية | الوظيفة |
 | --- | --- | --- |
-| `server/` | Node ≥ 22.12 · Express 5 · Socket.IO 4 · `node:sqlite` | REST API + بث حي + مولّد PDF عربي + سجل تدقيق |
+| `server/` | Node ≥ 22.13 · Express 5 · Socket.IO 4 · `node:sqlite` | REST API + بث حي + مولّد PDF عربي + سجل تدقيق |
 | `dashboard/` | React 19 · Vite 8 · Leaflet | خريطة حية، بطاقات الفريق، التقارير اليومية، إدارة الحسابات |
 | `mobile/` | Expo 58 · React Native 0.88 | تسجيل الموقع (أمامي/خلفي)، تقرير سريع، تقرير يومي، صندوق صادر offline |
 | `e2e/` | Playwright | اختبارات المتصفح للدخول والخريطة والتقارير |
@@ -131,7 +131,7 @@ npm run build     # server/dist + dashboard/dist
 ```
 
 `.github/workflows/ci.yml` يشغّل: `npm ci` → `typecheck` → `npm test` → `build` → Playwright
-على Node 22.12. اختبارات Playwright تحتاج تنزيل Chromium (`npx playwright install chromium`)
+على Node 24. اختبارات Playwright تحتاج تنزيل Chromium (`npx playwright install chromium`)
 وهي مُعلَّمة `continue-on-error` لأن متصفحات CI لا تتوفر في كل بيئات المعاينة.
 
 ## بنية البيانات (SQLite)

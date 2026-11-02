@@ -8,7 +8,7 @@
     "mobile"
   ],
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.13"
   },
   "scripts": {
     "dev": "concurrently -k -n API,Dashboard -c green,cyan \"npm run dev -w @mandoub/server\" \"npm run dev -w @mandoub/dashboard\"",
