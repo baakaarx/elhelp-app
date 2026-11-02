@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { api, getToken, patch, post } from './api';
-import { ago, downloadKpisCsv, durationText, formatNumber, logout, me } from './session';
+import { api, getToken, patch, post, setToken } from './api';
+import { ENGINEER_APP_PATH, ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
 import MapView from './MapView';
 import Reports from './Reports';
@@ -87,6 +87,7 @@ export default function App() {
 
   if (user === undefined) return <div className="boot">جارٍ التحقق من الجلسة…</div>;
   if (!user) return <Login onLogin={setUser} />;
+  if (!isManager(user)) return <EngineerRedirect />;
 
   return (
     <div className="app">
@@ -197,6 +198,24 @@ export default function App() {
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
         {tab === 'account' && <Account user={user} overview={overview} />}
       </main>
+    </div>
+  );
+}
+
+/**
+ * A representative who signs in here is sent to the engineer app instead of seeing an
+ * empty manager shell (every admin endpoint would 403). The dashboard token is cleared
+ * first so /app cannot bounce back into this same redirect.
+ */
+function EngineerRedirect() {
+  useEffect(() => {
+    setToken(null);
+    window.location.replace(ENGINEER_APP_PATH);
+  }, []);
+  return (
+    <div className="boot redirect">
+      <p>هذا الحساب لمهندس مبيعات — جارٍ تحويلك إلى تطبيق المهندس…</p>
+      <p className="small"><a href={ENGINEER_APP_PATH}>افتح تطبيق المهندس</a></p>
     </div>
   );
 }

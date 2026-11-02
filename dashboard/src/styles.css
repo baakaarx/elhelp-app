@@ -196,3 +196,8 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .bar-cell { display: flex; align-items: center; gap: 8px; }
 .bar { flex: 1; min-width: 42px; height: 7px; border-radius: 999px; background: #e9efe7; overflow: hidden; }
 .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--green-500), var(--green-700)); border-radius: 999px; }
+
+.login-switch { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: .88rem; }
+.login-switch a { text-decoration: none; }
+.boot.redirect { gap: 8px; text-align: center; padding: 24px; }
+.boot.redirect a { font-weight: 600; }

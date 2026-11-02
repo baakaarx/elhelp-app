@@ -1,6 +1,9 @@
 import { api, post, setToken, getToken } from './api';
 import type { User } from './types';
 
+/** The Expo web build is served by the same API under /app. */
+export const ENGINEER_APP_PATH = '/app';
+
 export async function login(email: string, password: string) {
   const res = await post<{ token: string; expiresAt: number; user: User }>('/api/auth/login', { email, password });
   setToken(res.token);
@@ -66,3 +69,6 @@ export function ago(ts: number | null, now = Date.now()) {
   if (hours < 24) return `منذ ${formatNumber(hours)} ساعة`;
   return `منذ ${formatNumber(Math.round(hours / 24))} يوم`;
 }
+
+/** Representatives belong in the mobile app; the manager dashboard must never impersonate them. */
+export const isManager = (user: User | null | undefined) => user?.role === 'admin';
