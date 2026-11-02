@@ -19,7 +19,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "export:mobile": "npm run export:web -w @mandoub/mobile",
     "test:e2e": "playwright test",
-    "preview": "node scripts/preview.mjs"
+    "preview": "node scripts/preview.mjs",
+    "build:vercel": "node scripts/build-vercel.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
