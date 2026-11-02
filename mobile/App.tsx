@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
@@ -32,9 +32,15 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      {fontsLoaded ? <Root /> : (
-        <View style={styles.loading}><ActivityIndicator color={colors.green700} size="large" /></View>
-      )}
+      {/* The same bundle is served as a web app under /app: keep it in a phone-width column
+          instead of stretching edge to edge on a desktop viewport. */}
+      <View style={styles.shell}>
+        <View style={styles.frame}>
+          {fontsLoaded ? <Root /> : (
+            <View style={styles.loading}><ActivityIndicator color={colors.green700} size="large" /></View>
+          )}
+        </View>
+      </View>
     </SafeAreaProvider>
   );
 }
@@ -67,6 +73,7 @@ function Root() {
   if (!user) {
     return (
       <SafeAreaView style={styles.screen} edges={['top', 'left', 'right', 'bottom']}>
+        <StatusBar style="light" />
         <LoginScreen onLogin={value => { setUser(value); setTab('home'); }} />
       </SafeAreaView>
     );
@@ -126,6 +133,11 @@ function LiveBanner({ since, pending }: { since: number; pending: number }) {
 }
 
 const styles = StyleSheet.create({
+  shell: { flex: 1, backgroundColor: '#dde6ee', alignItems: 'center' },
+  frame: {
+    flex: 1, width: '100%', maxWidth: 540, backgroundColor: colors.cream, overflow: 'hidden',
+    ...(Platform.OS === 'web' ? { boxShadow: '0 26px 80px rgba(7,23,38,0.18)' } : null),
+  },
   screen: { flex: 1, backgroundColor: colors.cream },
   safe: { flex: 1 },
   body: { flex: 1 },

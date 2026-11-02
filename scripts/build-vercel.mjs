@@ -2,7 +2,7 @@
 //   public/        → manager dashboard (Vite build of dashboard/)
 //   public/app/    → engineer web app (Expo web export of mobile/, base path /app)
 // The API itself lives in api/index.js and reuses the real Express app from server/dist.
-import { cp, mkdir, rm, readdir } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, readdir, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -32,6 +32,18 @@ await rm(publicDir, { recursive: true, force: true });
 await mkdir(publicDir, { recursive: true });
 await cp(join(root, 'dashboard', 'dist'), publicDir, { recursive: true });
 await cp(join(root, 'mobile', 'dist'), join(publicDir, 'app'), { recursive: true });
+
+step('3b/4 giving the engineer web app a full-height shell');
+// The Expo export ships a bare #root; without this the page shows a white band under the app
+// and lets the body scroll on desktop.
+const engineerHtml = join(publicDir, 'app', 'index.html');
+const html = await readFile(engineerHtml, 'utf8');
+const shellStyle = '<meta name="theme-color" content="#04121e"/>' +
+  '<style>html,body{height:100%;margin:0;background:#dde6ee}' +
+  '#root{height:100%;display:flex;-webkit-font-smoothing:antialiased}</style>';
+const shelled = (html.includes('</head>') ? html.replace('</head>', `${shellStyle}</head>`) : shellStyle + html)
+  .replace('<html lang="en">', '<html lang="ar" dir="rtl">');
+await writeFile(engineerHtml, shelled);
 
 step('4/4 checking the output');
 for (const [label, target] of [['manager dashboard', join(publicDir, 'index.html')], ['engineer app', join(publicDir, 'app', 'index.html')]]) {
