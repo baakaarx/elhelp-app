@@ -1,8 +1,21 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Store } from './db.js';
 import { hashPassword } from './auth.js';
 import { insertDailyReport, type NewDailyReport } from './dailyReports.js';
 import { localDate } from './geo.js';
+
+/**
+ * Deterministic ids for every seeded demo row.
+ *
+ * On a serverless host (Vercel) each instance seeds its own /tmp database, so the demo rows
+ * have to be byte-identical everywhere: a daily report listed by one instance must stay
+ * downloadable when the next request lands on another instance. Random ids broke exactly
+ * that (the PDF endpoint answered 404 for a report the dashboard had just listed).
+ */
+function demoId(scope: string, key: string | number): string {
+  const hex = createHash('sha1').update(`mandoub-demo:${scope}:${key}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 
 const people = [
   { name: 'أحمد حسن', region: 'مدينة نصر', color: '#27745a', email: 'ahmed@mandoub.test', route: [[30.0566,31.3300],[30.0592,31.3375],[30.0638,31.3450],[30.0690,31.3510],[30.0745,31.3570],[30.0788,31.3650],[30.0740,31.3720],[30.0670,31.3650],[30.0600,31.3530],[30.0530,31.3420]] },
@@ -17,17 +30,17 @@ export function seedDemo(store: Store, timezone = 'Africa/Cairo') {
   if (!store.get("SELECT id FROM users WHERE email='ahmed@mandoub.test'")) {
     store.transaction(() => {
       people.forEach((p, index) => {
-        const userId = randomUUID(), shiftId = randomUUID();
+        const userId = demoId('user', p.email), shiftId = demoId('shift', p.email);
         store.run('INSERT INTO users(id,name,email,password_hash,role,phone,region,color,is_demo,created_at,last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
           userId, p.name, p.email, hashPassword('Demo1234!'), 'rep', `0100000000${index + 1}`, p.region, p.color, 1, now, index === 4 ? now - 3600000 : now);
         store.run('INSERT INTO shifts(id,user_id,started_at,consent_version,consent_at) VALUES (?,?,?,?,?)', shiftId, userId, now - 7200000, 'demo-1', now - 7200000);
         for (let j = 0; j < 65; j++) {
           const pos = routePosition(p.route, (j / 64) * (index === 4 ? 1.4 : 2.3));
           store.run(`INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, randomUUID(), userId, shiftId, pos[0], pos[1], 8 + index * 2, index === 4 ? 0 : 4.2 + index, 45, 86 - index * 7, now - (65 - j) * 90000, now, 'demo');
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, demoId('location', `${p.email}:${j}`), userId, shiftId, pos[0], pos[1], 8 + index * 2, index === 4 ? 0 : 4.2 + index, 45, 86 - index * 7, now - (65 - j) * 90000, now, 'demo');
         }
       });
-      const userId = randomUUID();
+      const userId = demoId('user', 'rep@mandoub.test');
       store.run('INSERT INTO users(id,name,email,password_hash,role,region,color,is_demo,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
         userId, 'مهندس الاختبار', 'rep@mandoub.test', hashPassword('Demo1234!'), 'rep', 'موقعك الحقيقي', '#27745a', 0, now);
     });
@@ -54,7 +67,7 @@ export function seedDemoReports(store: Store, now = Date.now()) {
       const shift = store.get('SELECT id FROM shifts WHERE user_id=? ORDER BY started_at DESC LIMIT 1', u.id);
       const loc = store.get('SELECT lat,lng FROM locations WHERE user_id=? ORDER BY recorded_at DESC LIMIT 1', u.id);
       store.run(`INSERT INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at,reviewed_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, randomUUID(), u.id, shift?.id || null, sample.type, sample.title, sample.body, sample.customer, sample.amount,
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, demoId('report', u.id), u.id, shift?.id || null, sample.type, sample.title, sample.body, sample.customer, sample.amount,
         loc?.lat ?? 30.05, loc?.lng ?? 31.33, 9, index < 3 ? 'new' : 'reviewed', now - (index + 1) * 1500000, index < 3 ? null : now - 600000);
     });
   });
@@ -74,7 +87,7 @@ export function seedDemoDailyReports(store: Store, now = Date.now(), timezone = 
       const shift = store.get('SELECT id FROM shifts WHERE user_id=? ORDER BY started_at DESC LIMIT 1', u.id);
       const loc = store.get('SELECT lat,lng FROM locations WHERE user_id=? ORDER BY recorded_at DESC LIMIT 1', u.id);
       const data: NewDailyReport = {
-        version: 1, id: randomUUID(), engineerName: String(u.name), reportDate: date,
+        version: 1, id: demoId('daily-report', u.id), engineerName: String(u.name), reportDate: date,
         leftAt: '08:00', returnedAt: '17:00', circumstances: index === 2 ? 'ظرف طارئ تجريبي: تأخر الطريق.' : '',
         visits: samples.slice(0, index === 0 ? 3 : 2), signedName: String(u.name), confirmed: true,
         location: loc ? { lat: Number(loc.lat), lng: Number(loc.lng), accuracy: 9 } : null,
@@ -103,7 +116,7 @@ export function seedDemoVisits(store: Store, now = Date.now()) {
         const start = end - item.minutes * 60000;
         const position = routePosition(route, 0.6 + index * 0.7);
         const [lat, lng] = routePosition(route, 0.9 + index * 0.7);
-        const id = randomUUID();
+        const id = demoId('visit', `${rep.id}:${index}`);
         store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,outcome,status,checked_in_at,checked_out_at,duration_seconds,in_lat,in_lng,in_accuracy,out_lat,out_lng,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,'closed',?,?,?,?,?,?,?,?,?)`, id, rep.id, item.customer, item.governorate, item.district, item.village,
           `0100000000${repIndex + 1}`, item.purpose, '', item.outcome, start, end, item.minutes * 60, position[0], position[1], 8, lat, lng, start);

@@ -19,10 +19,11 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
     <div className="login-wrap">
       <div className="login-shell">
         <aside className="login-aside">
-          <img src="/elhelb-logo.png" alt="شعار الهلب جروب" width={132} height={160} />
+          <img className="aside-logo" src="/elhelb-logo.gif" alt="شعار الهلب جروب" width={150} height={183} />
           <div>
             <h2>الهلب جروب</h2>
             <p className="tagline">مبيدات وأسمدة زراعية · منذ ١٩٩٣</p>
+            <p className="aside-note">من المخزن إلى المزرعة — مهندسينا على الطريق كل يوم بأوردرات العملاء.</p>
           </div>
           <ul>
             <li>متابعة ميدانية لحظية لمهندسي المبيعات</li>
@@ -32,7 +33,7 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
         </aside>
         <div className="login-card">
           <div className="login-brand">
-            <span className="brand-mark" aria-hidden="true">ه</span>
+            <img className="brand-mark" src="/elhelb-emblem.png" alt="شعار الهلب جروب" width={52} height={52} />
             <div>
               <h1>لوحة متابعة الميدان</h1>
               <p>الهلب جروب · إدارة مهندسي المبيعات والتقارير</p>
