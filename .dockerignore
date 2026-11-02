@@ -1,0 +1,10 @@
+**/node_modules
+**/dist
+**/.expo
+**/.env
+**/.env.*
+server/data
+.git
+**/*.db
+**/*.db-shm
+**/*.db-wal

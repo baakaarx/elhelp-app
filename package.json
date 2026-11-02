@@ -1,0 +1,28 @@
+{
+  "name": "mandoub",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "server",
+    "dashboard",
+    "mobile"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n API,Dashboard -c green,cyan \"npm run dev -w @mandoub/server\" \"npm run dev -w @mandoub/dashboard\"",
+    "dev:mobile": "npm run start -w @mandoub/mobile",
+    "build": "npm run build -w @mandoub/server && npm run build -w @mandoub/dashboard",
+    "start": "npm run start -w @mandoub/server",
+    "test": "npm run test -w @mandoub/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "export:mobile": "npm run export:web -w @mandoub/mobile",
+    "test:e2e": "playwright test",
+    "preview": "node scripts/preview.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "concurrently": "^9.2.1"
+  }
+}
