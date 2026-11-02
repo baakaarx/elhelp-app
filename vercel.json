@@ -11,14 +11,17 @@
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index" },
-    { "source": "/app", "destination": "/app/index.html" },
-    { "source": "/app/((?!.*\\.).*)", "destination": "/app/index.html" }
-  ],
-  "headers": [
     {
-      "source": "/app/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/app",
+      "destination": "/app/index.html"
+    },
+    {
+      "source": "/app/((?!.*\\.).*)",
+      "destination": "/app/index.html"
     }
   ]
 }
