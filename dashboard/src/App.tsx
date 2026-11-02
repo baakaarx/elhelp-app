@@ -59,7 +59,7 @@ export default function App() {
     socket.on('report', () => refresh());
     socket.on('daily-report', () => refresh());
     socket.on('visit', () => refresh());
-    const poll = setInterval(refresh, connected ? 30000 : 8000);
+    const poll = setInterval(refresh, connected ? 30000 : 2000);
     return () => { clearInterval(poll); socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would churn connections.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -134,7 +134,7 @@ export default function App() {
             </div>
             <div className="live-grid">
               <div className="panel map-panel">
-                <MapView reps={reps} selectedId={selectedId} route={route} />
+                <MapView reps={reps} selectedId={selectedId} route={route} live={connected} />
                 <div className="map-controls">
                   <label className="field inline">
                     <span>يوم المسار</span>

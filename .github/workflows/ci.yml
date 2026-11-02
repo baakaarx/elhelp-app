@@ -57,10 +57,29 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright
-        run: npm run test:e2e
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee playwright.log
+      # Build logs are not always reachable from automation; surface the failing test in the
+      # check-run annotations so a red run is self-explanatory.
+      - name: Explain the failure
+        if: failure()
+        run: |
+          node -e "
+            const fs = require('fs');
+            let log = '';
+            try { log = fs.readFileSync('playwright.log', 'utf8'); } catch {}
+            const lines = log.split(/\r?\n/);
+            const start = lines.findIndex(line => /^\s*\d+\)/.test(line));
+            const excerpt = (start >= 0 ? lines.slice(start, start + 30) : lines.slice(-30)).join(' | ');
+            const clean = excerpt.replace(/%/g, '%25').replace(/\r?\n/g, '%0A').slice(0, 4000);
+            console.log('::error title=Playwright failure::' + clean);
+          "
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: playwright-report
-          path: playwright-report
+          path: |
+            playwright.log
+            playwright-report
           retention-days: 5

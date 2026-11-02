@@ -28,6 +28,8 @@ function prepareEnv() {
     // Every instance has its own /tmp database, so a database-backed session would be lost
     // as soon as the next request lands on another instance. Sign the session instead.
     process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'elhelp-hosted-demo-session-secret';
+    // No background timers on serverless: move the demo team from the overview request instead.
+    process.env.DEMO_SIMULATE = process.env.DEMO_SIMULATE || 'true';
   }
 }
 

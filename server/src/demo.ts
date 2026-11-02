@@ -122,6 +122,46 @@ function routePosition(route: number[][], position: number): number[] {
   const t = position % 1;
   return route[i].map((v, axis) => v + (route[(i + 1) % route.length][axis] - v) * t);
 }
+/**
+ * Request-driven demo movement.
+ *
+ * The hosted demo runs on serverless functions: no long-lived process, so the interval
+ * simulator above never runs and the map would stand still. This variant advances the demo
+ * representatives to the position they "should" be at right now, and is called from the
+ * overview endpoint (throttled). Movement is derived from wall-clock time, so a client that
+ * polls every few seconds sees the markers travel the same route as the real product.
+ */
+let lastDemoTick = 0;
+let lastDemoPrune = 0;
+export function tickDemo(store: Store, minIntervalMs = 1200) {
+  const now = Date.now();
+  if (now - lastDemoTick < minIntervalMs) return false;
+  lastDemoTick = now;
+  const users = store.all("SELECT id,email FROM users WHERE is_demo=1 AND active=1 ORDER BY email");
+  if (!users.length) return false;
+  const prune = now - lastDemoPrune > 60000;
+  if (prune) lastDemoPrune = now;
+  store.transaction(() => {
+    users.forEach((u, index) => {
+      if (index === 4) return; // this demo representative is intentionally stationary
+      const person = people.find(p => p.email === String(u.email));
+      if (!person) return;
+      const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', u.id);
+      if (!shift) return;
+      const progress = 2.3 + ((now / 1000) * 0.02 + index * 0.35) % 3.2;
+      const [lat, lng] = routePosition(person.route, progress);
+      store.run(`INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, randomUUID(), u.id, shift.id, lat, lng, 7 + index, 7.5 + index, 45, 86 - index * 7, now, now, 'demo');
+      store.run('UPDATE users SET last_seen=? WHERE id=?', now, u.id);
+      if (prune) {
+        // Keep the hosted demo database bounded no matter how long it stays warm.
+        store.run(`DELETE FROM locations WHERE user_id=? AND point_id NOT IN
+          (SELECT point_id FROM locations WHERE user_id=? ORDER BY recorded_at DESC LIMIT 900)`, u.id, u.id);
+      }
+    });
+  });
+  return true;
+}
 export function startDemoSimulator(store: Store, onChange: () => void) {
   let tick = 0;
   const timer = setInterval(() => {

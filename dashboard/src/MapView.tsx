@@ -42,7 +42,7 @@ function sample<T>(items: T[], max: number): T[] {
 
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('');
 
-export default function MapView({ reps, selectedId, route }: { reps: Rep[]; selectedId: string | null; route: RouteResponse | null }) {
+export default function MapView({ reps, selectedId, route, live = false }: { reps: Rep[]; selectedId: string | null; route: RouteResponse | null; live?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const layer = useRef<L.LayerGroup | null>(null);
@@ -53,6 +53,7 @@ export default function MapView({ reps, selectedId, route }: { reps: Rep[]; sele
   const [progress, setProgress] = useState(1);
   const [speed, setSpeed] = useState(120);
   const [expanded, setExpanded] = useState(false);
+  const fitKey = useRef('');
 
   const selected = useMemo(() => reps.find(r => r.id === selectedId) ?? null, [reps, selectedId]);
   const points = useMemo(() => (route?.points ?? []).map(p => ({ lat: p.lat, lng: p.lng, at: p.recordedAt })), [route]);
@@ -72,6 +73,10 @@ export default function MapView({ reps, selectedId, route }: { reps: Rep[]; sele
     layer.current = L.layerGroup().addTo(instance);
     map.current = instance;
     const resize = () => instance.invalidateSize();
+    const busy = () => host.current?.classList.add('map-moving');
+    const idle = () => host.current?.classList.remove('map-moving');
+    instance.on('movestart zoomstart', busy);
+    instance.on('moveend zoomend', idle);
     window.addEventListener('resize', resize);
     setTimeout(resize, 250);
     return () => { window.removeEventListener('resize', resize); instance.remove(); map.current = null; };
@@ -155,8 +160,14 @@ export default function MapView({ reps, selectedId, route }: { reps: Rep[]; sele
       );
       bounds.push([lat, lng]);
     }
-    if (bounds.length === 1) instance.setView(bounds[0], 14, { animate: true });
-    else if (bounds.length > 1) instance.fitBounds(L.latLngBounds(bounds).pad(0.18), { animate: true, maxZoom: 15 });
+    // Only re-frame when the cast changes (first load, selection, route switch). Re-fitting on
+    // every poll would fight the operator's pan/zoom while the markers glide.
+    const key = `${selectedId ?? ''}|${bounds.length}|${path.length > 1 ? 'route' : 'pins'}`;
+    if (key !== fitKey.current) {
+      fitKey.current = key;
+      if (bounds.length === 1) instance.setView(bounds[0], 14, { animate: true });
+      else if (bounds.length > 1) instance.fitBounds(L.latLngBounds(bounds).pad(0.18), { animate: true, maxZoom: 15 });
+    }
   }, [reps, selectedId, path, progress, selected]);
 
   async function toggleFullscreen() {
@@ -186,7 +197,7 @@ export default function MapView({ reps, selectedId, route }: { reps: Rep[]; sele
         </button>
       </div>
       {noFixYet && <div className="map-empty">لا توجد إحداثيات بعد. سيظهر المهندس على الخريطة فور استلام أول نقطة موقع من التطبيق.</div>}
-      <div className="map-badge"><span className="map-badge-dot" /> التحديث لحظي · {route?.truncated ? 'المسار مقطوع عند ٢٠٠٠٠ نقطة' : 'المسار الكامل'}</div>
+      <div className="map-badge"><span className="map-badge-dot" /> {live ? 'بثّ لحظي' : 'تحديث كل ثانيتين'} · {route?.truncated ? 'المسار مقطوع عند ٢٠٠٠٠ نقطة' : 'المسار الكامل'}</div>
       {path.length > 1 && (
         <div className="replay" role="group" aria-label="إعادة تشغيل المسار">
           <button className="replay-play" onClick={() => { if (progress >= 1) setProgress(0); setPlaying(value => !value); }} aria-label={playing ? 'إيقاف مؤقت' : 'تشغيل المسار'}>

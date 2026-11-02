@@ -292,6 +292,10 @@ nav { display: grid; gap: 4px; }
   animation: ring 2.2s ease-out infinite;
 }
 @keyframes ring { 0% { transform: scale(.85); opacity: .55; } 70% { transform: scale(1.35); opacity: 0; } 100% { opacity: 0; } }
+/* Glide the marker between polls so movement reads as travel, not teleporting.
+   The transition is paused while the operator pans/zooms (see MapView). */
+.map:not(.map-moving) .pin-rep,
+.map:not(.map-moving) .pin-head { transition: transform .9s linear; }
 .pin-rep.is-selected span { transform: scale(1.12); box-shadow: 0 0 0 4px rgba(231, 206, 134, 0.45), 0 12px 24px -8px rgba(7, 23, 38, 0.85); }
 .pin-head span {
   width: 22px; height: 22px; border-radius: 50%;
