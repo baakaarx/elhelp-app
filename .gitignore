@@ -2,6 +2,7 @@ node_modules/
 .expo/
 dist/
 public/
+dashboard/public/fonts/
 .vercel/
 web-build/
 *.tsbuildinfo

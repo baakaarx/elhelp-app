@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { login } from './api';
 import { colors, fonts, radius, space } from './theme';
 import { Button, Field } from './ui';
@@ -22,8 +22,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        <View style={styles.logo}><Text style={styles.logoText}>ه</Text></View>
-        <Text style={styles.title}>مهندس مبيعات الهلب</Text>
+        <Image source={require('../assets/icon.png')} style={styles.logo} accessibilityLabel="شعار الهلب جروب" />
+        <Text style={styles.title}>الهلب جروب</Text>
+        <Text style={styles.tagline}>مبيدات وأسمدة زراعية · منذ ١٩٩٣</Text>
         <Text style={styles.sub}>سجّل الدخول لبدء وردية الميدان وتسجيل زياراتك وتقاريرك.</Text>
         <View style={styles.card}>
           <Field label="البريد الإلكتروني" value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" placeholder="rep@company.com" style={styles.ltr} />
@@ -43,9 +44,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
 
 const styles = StyleSheet.create({
   scroll: { flexGrow: 1, justifyContent: 'center', padding: space.xl, gap: space.sm },
-  logo: { width: 66, height: 66, borderRadius: 22, backgroundColor: colors.green800, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
-  logoText: { fontFamily: fonts.bold, fontSize: 30, color: '#fdf8ec' },
-  title: { fontFamily: fonts.bold, fontSize: 24, color: colors.green900, textAlign: 'center', marginTop: space.sm },
+  logo: { width: 88, height: 88, alignSelf: 'center', resizeMode: 'contain' },
+  tagline: { fontFamily: fonts.medium, fontSize: 13, color: colors.amber, textAlign: 'center', marginTop: -2 },
+  title: { fontFamily: fonts.bold, fontSize: 26, color: colors.green900, textAlign: 'center', marginTop: space.xs },
   sub: { fontFamily: fonts.regular, fontSize: 13, color: colors.muted, textAlign: 'center', lineHeight: 22, marginBottom: space.md },
   card: { backgroundColor: colors.white, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.line, padding: space.lg, gap: space.md },
   ltr: { textAlign: 'left', writingDirection: 'ltr' },

@@ -79,7 +79,7 @@ export default function SettingsScreen({ user, field, onLogout }: { user: User; 
       <Pressable onPress={onLogout} style={styles.logout} accessibilityRole="button">
         <Text style={styles.logoutText}>تسجيل الخروج وإيقاف التتبع</Text>
       </Pressable>
-      <Text style={styles.footer}>الهلب · مهندس مبيعات · إصدار 1.1.0</Text>
+      <Text style={styles.footer}>الهلب جروب · مهندس مبيعات · إصدار 1.1.0</Text>
     </ScrollView>
   );
 }

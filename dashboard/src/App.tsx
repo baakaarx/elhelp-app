@@ -93,8 +93,8 @@ export default function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">ه</span>
-          <div><strong>الهلب</strong><small>متابعة الميدان</small></div>
+          <img className="brand-img" src="/elhelb-mark.png" alt="الهلب جروب" width={44} height={44} />
+          <div><strong>الهلب جروب</strong><small>متابعة الميدان</small></div>
         </div>
         <nav>
           {tabs.map(item => (
@@ -138,10 +138,10 @@ export default function App() {
                 <div className="map-controls">
                   <label className="field inline">
                     <span>يوم المسار</span>
-                    <input type="date" value={routeDate} max={new Date().toISOString().slice(0, 10)} onChange={e => setRouteDate(e.target.value)} />
+                    <input type="date" lang="ar-EG" value={routeDate} max={new Date().toISOString().slice(0, 10)} onChange={e => setRouteDate(e.target.value)} />
                   </label>
                   {routeDate && <button className="btn ghost sm" onClick={() => setRouteDate('')}>اليوم</button>}
-                  {route && <span className="muted small">{route.date} · {formatNumber(route.distanceMeters / 1000)} كم · {formatNumber(route.points.length)} نقطة</span>}
+                  {route && <span className="muted small">{arabicDate(route.date)} · {formatNumber(route.distanceMeters / 1000)} كم · {formatNumber(route.points.length)} نقطة</span>}
                 </div>
               </div>
               <div className="panel">
@@ -253,8 +253,13 @@ function AlertsPanel({ alerts, onPick }: { alerts: ManagerAlert[]; onPick: (repI
   );
 }
 
+const arabicDate = (iso: string) => {
+  const date = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString('ar-EG', { day: 'numeric', month: 'long', year: 'numeric' });
+};
+
 function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
-  return <div className="card stat"><span className="muted small">{label}</span><strong>{value}</strong><small className="muted">{hint}</small></div>;
+  return <div className="stat"><span className="label">{label}</span><strong>{value}</strong><small>{hint}</small></div>;
 }
 
 function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {

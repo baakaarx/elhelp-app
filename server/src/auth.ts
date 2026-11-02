@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual, createHash, createHmac } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { Store, Row } from './db.js';
 
@@ -18,16 +18,60 @@ export const tokenHash = (token: string) => createHash('sha256').update(token).d
 export function publicUser(row: Row) {
   return { id: row.id, name: row.name, email: row.email, role: row.role, phone: row.phone, region: row.region, color: row.color, isDemo: !!row.is_demo, active: !!row.active };
 }
+/**
+ * Stateless sessions.
+ *
+ * The product normally runs as one process with one SQLite file, so a session is a row.
+ * Hosted demos on serverless platforms have no shared disk: every instance gets its own
+ * empty database, and a session created on one instance is unknown to the next one — the
+ * user is logged out mid-session. When `SESSION_SECRET` is set (hosted demo only) the
+ * session token carries its own HMAC-signed claims, so any instance can verify it and
+ * resolve the account by email. Production keeps the database-backed tokens.
+ */
+const STATELESS_SECRET = process.env.SESSION_SECRET || '';
+export const statelessSessions = () => STATELESS_SECRET.length >= 16;
+const signClaims = (payload: string) => createHmac('sha256', STATELESS_SECRET).update(payload).digest('base64url');
+function statelessToken(email: string, role: string, expiresAt: number) {
+  const payload = `${role}|${expiresAt}|${email}`;
+  return `s1.${Buffer.from(payload, 'utf8').toString('base64url')}.${signClaims(payload)}`;
+}
+function statelessClaims(token: string): { email: string; role: string } | null {
+  const [version, body, signature] = token.split('.');
+  if (version !== 's1' || !body || !signature) return null;
+  const payload = Buffer.from(body, 'base64url').toString('utf8');
+  const expected = signClaims(payload);
+  if (signature.length !== expected.length) return null;
+  if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  const [role, expiresAtRaw, ...rest] = payload.split('|');
+  const email = rest.join('|');
+  const expiresAt = Number(expiresAtRaw);
+  if (!email || !role || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+  return { email, role };
+}
 export function sessionUser(store: Store, token: unknown): Row | undefined {
   if (typeof token !== 'string' || token.length < 20 || token.length > 200) return undefined;
-  return store.get(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
+  const row = store.get(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`, tokenHash(token), Date.now());
+  if (row || !statelessSessions()) return row;
+  const claims = statelessClaims(token);
+  if (!claims) return undefined;
+  return store.get('SELECT * FROM users WHERE email=? AND active=1', claims.email);
 }
 export function createSession(store: Store, userId: string) {
-  const token = randomBytes(32).toString('base64url');
   const now = Date.now();
-  store.run('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)', tokenHash(token), userId, now + SESSION_MS, now);
-  return { token, expiresAt: now + SESSION_MS };
+  const expiresAt = now + SESSION_MS;
+  if (statelessSessions()) {
+    const user = store.get('SELECT email, role FROM users WHERE id=?', userId);
+    if (user) {
+      const token = statelessToken(String(user.email), String(user.role), expiresAt);
+      // Keep the audit row locally; other instances rely on the signature instead.
+      store.run('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)', tokenHash(token), userId, expiresAt, now);
+      return { token, expiresAt };
+    }
+  }
+  const token = randomBytes(32).toString('base64url');
+  store.run('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)', tokenHash(token), userId, expiresAt, now);
+  return { token, expiresAt };
 }
 
 export type ClientRole = 'admin' | 'rep';
