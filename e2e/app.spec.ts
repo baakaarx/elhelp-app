@@ -37,9 +37,9 @@ test.describe('المتابعة الحية والفريق', () => {
   test('navigation switches between team, reports, and privacy pages', async ({ page }) => {
     await signIn(page);
     await page.getByRole('button', { name: /الفريق/ }).click();
-    await expect(page.getByRole('heading', { name: 'الفريق' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'الفريق' })).toBeVisible();
     await page.getByRole('button', { name: /التقارير/ }).click();
-    await expect(page.getByRole('heading', { name: 'التقارير' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'التقارير' })).toBeVisible();
     await page.getByRole('button', { name: /الحساب والخصوصية/ }).click();
     await expect(page.getByRole('heading', { name: 'الخصوصية والاحتفاظ' })).toBeVisible();
     await expect(page.getByText(/لا يبدأ التتبع إلا بعد موافقة/)).toBeVisible();

@@ -93,7 +93,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           if [ -n "$PR" ]; then
-            { echo '```'; tail -n 150 e2e.log; echo '```'; } > e2e-comment.md
+            { echo '```'; tail -n 400 e2e.log; echo '```'; } > e2e-comment.md
             gh pr comment "$PR" --body-file e2e-comment.md || true
           fi
       - uses: actions/upload-artifact@v4

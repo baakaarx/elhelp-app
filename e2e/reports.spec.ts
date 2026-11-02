@@ -7,7 +7,7 @@ async function signIn(page: import('@playwright/test').Page) {
   await page.getByRole('button', { name: 'دخول لوحة المتابعة' }).click();
   await expect(page.getByRole('heading', { name: 'المتابعة الحية' })).toBeVisible();
   await page.getByRole('button', { name: /التقارير/ }).click();
-  await expect(page.getByRole('heading', { name: 'التقارير' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'التقارير' })).toBeVisible();
 }
 
 test.describe('التقارير اليومية والميدانية', () => {
