@@ -37,11 +37,14 @@ test.describe('التقارير اليومية والميدانية', () => {
 
   test('reviewing a report updates its status pill', async ({ page }) => {
     await signIn(page);
-    const card = page.locator('.report').filter({ hasText: 'جديد' }).first();
-    const review = card.getByRole('button', { name: 'تمت المراجعة' });
+    // Count pending pills rather than holding a card handle: the list re-renders after the update.
+    const pending = page.locator('.pill.warn');
+    const before = await pending.count();
+    const review = page.locator('.report').first().getByRole('button', { name: 'تمت المراجعة' });
     if (await review.count()) {
       await review.click();
-      await expect(card.locator('.pill.ok')).toHaveText('تمت المراجعة');
+      await expect(pending).toHaveCount(before - 1);
+      await expect(page.locator('.report').first().locator('.pill.ok')).toBeVisible();
     }
   });
 
