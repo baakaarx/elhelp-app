@@ -1,0 +1,20 @@
+export const hhmmss = (ms: number) => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = String(Math.floor(total / 3600)).padStart(2, '0');
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+  const s = String(total % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+};
+export const clockText = (now = Date.now()) =>
+  new Intl.DateTimeFormat('ar-EG', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' }).format(now);
+export function agoText(ts: number | null, now = Date.now()) {
+  if (!ts) return 'لا يوجد';
+  const seconds = Math.max(0, Math.round((now - ts) / 1000));
+  if (seconds < 45) return 'الآن';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `قبل ${minutes} دقيقة`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `قبل ${hours} ساعة`;
+  return `قبل ${Math.round(hours / 24)} يوم`;
+}
+export const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(Date.now());

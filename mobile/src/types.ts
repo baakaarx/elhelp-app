@@ -42,6 +42,67 @@ export interface DailyReport {
   createdAt: number; reviewedAt: number | null; signedName: string; signedAt: number;
   repName: string; repColor: string; visits: DailyVisit[];
 }
+export type VisitPurpose = 'visit' | 'order' | 'collection' | 'note' | 'issue' | 'other';
+export interface VisitInput {
+  id: string;
+  customerName: string;
+  governorate: string;
+  district: string;
+  village: string;
+  phone: string;
+  purpose: VisitPurpose;
+  notes: string;
+  location: { lat: number; lng: number; accuracy: number | null } | null;
+}
+export interface Visit {
+  id: string;
+  userId: string;
+  customerName: string;
+  governorate: string;
+  district: string;
+  village: string;
+  phone: string;
+  purpose: VisitPurpose;
+  notes: string;
+  outcome: string;
+  status: 'open' | 'closed';
+  checkedInAt: number;
+  checkedOutAt: number | null;
+  durationSeconds: number | null;
+  inLat: number | null;
+  inLng: number | null;
+  inAccuracy: number | null;
+  outLat: number | null;
+  outLng: number | null;
+  repName: string;
+  repColor: string;
+}
+export interface RepSummary {
+  date: string;
+  timezone: string;
+  shift: Shift | null;
+  distanceMeters: number;
+  pointCount: number;
+  firstFixAt: number | null;
+  lastFixAt: number | null;
+  visitsTotal: number;
+  visitsCompleted: number;
+  openVisit: Visit | null;
+  avgVisitSeconds: number | null;
+  collectionsCount: number;
+  collectionAmount: number;
+  dailyReport: { id: string; status: 'new' | 'reviewed'; createdAt: number } | null;
+}
+export interface RouteResponse {
+  date: string;
+  timezone: string;
+  points: Array<{ id: string; lat: number; lng: number; accuracy: number | null; recordedAt: number; source: 'gps' | 'demo' }>;
+  truncated: boolean;
+  distanceMeters: number;
+}
+export const visitPurposeLabels: Record<VisitPurpose, string> = {
+  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
+};
 export type OutboxKind = 'location' | 'report' | 'daily-report';
 export interface OutboxItem {
   key: string; kind: OutboxKind; payload: string; createdAt: number; attempts: number;

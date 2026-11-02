@@ -29,6 +29,8 @@ export interface Rep extends User {
   location: LocationPoint | null;
   distanceMeters: number;
   pointCount: number;
+  visitsToday: number;
+  openVisit: { id: string; customerName: string; checkedInAt: number } | null;
 }
 export interface Overview {
   reps: Rep[];
@@ -103,5 +105,79 @@ export interface RouteResponse {
   distanceMeters: number;
 }
 export const reportTypeLabels: Record<ReportType, string> = {
+  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
+};
+
+export type VisitPurpose = 'visit' | 'order' | 'collection' | 'note' | 'issue' | 'other';
+export interface Visit {
+  id: string;
+  userId: string;
+  customerName: string;
+  governorate: string;
+  district: string;
+  village: string;
+  phone: string;
+  purpose: VisitPurpose;
+  notes: string;
+  outcome: string;
+  status: 'open' | 'closed';
+  checkedInAt: number;
+  checkedOutAt: number | null;
+  durationSeconds: number | null;
+  inLat: number | null;
+  inLng: number | null;
+  inAccuracy: number | null;
+  outLat: number | null;
+  outLng: number | null;
+  repName: string;
+  repColor: string;
+  repIsDemo: number;
+}
+export interface ManagerAlert {
+  id: string;
+  level: 'warn' | 'info';
+  code: 'stale_gps' | 'no_signal' | 'no_visits' | 'missing_daily_report' | 'stale_reviews' | string;
+  title: string;
+  detail: string;
+  repId?: string;
+  repName?: string;
+  at: number;
+}
+export interface KpiRow {
+  repId: string;
+  name: string;
+  color: string;
+  region: string;
+  isDemo: boolean;
+  active: boolean;
+  distanceMeters: number;
+  pointCount: number;
+  visits: number;
+  visitsCompleted: number;
+  avgVisitSeconds: number | null;
+  reports: number;
+  collected: number;
+  dailyReports: number;
+  daysWithData: number;
+  lastFixAt: number | null;
+}
+export interface KpiResponse { from: string; to: string; timezone: string; rows: KpiRow[] }
+export interface RepSummary {
+  date: string;
+  timezone: string;
+  shift: { id: string; started_at: number } | null;
+  distanceMeters: number;
+  pointCount: number;
+  firstFixAt: number | null;
+  lastFixAt: number | null;
+  visitsTotal: number;
+  visitsCompleted: number;
+  openVisit: Visit | null;
+  avgVisitSeconds: number | null;
+  collectionsCount: number;
+  collectionAmount: number;
+  dailyReport: { id: string; status: 'new' | 'reviewed'; createdAt: number } | null;
+}
+export const visitPurposeLabels: Record<VisitPurpose, string> = {
   visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };

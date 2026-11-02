@@ -14,10 +14,25 @@
 | --- | --- | --- |
 | `server/` | Node ≥ 22.13 · Express 5 · Socket.IO 4 · `node:sqlite` | REST API + بث حي + مولّد PDF عربي + سجل تدقيق |
 | `dashboard/` | React 19 · Vite 8 · Leaflet | خريطة حية، بطاقات الفريق، التقارير اليومية، إدارة الحسابات |
-| `mobile/` | Expo 58 · React Native 0.88 | تسجيل الموقع (أمامي/خلفي)، تقرير سريع، تقرير يومي، صندوق صادر offline |
+| `mobile/` | Expo 58 · React Native 0.88 | شاشة رئيسية بملخص اليوم، تسجيل زيارات (check-in/out)، تتبع أمامي وخلفي، تقرير سريع ويومي، صندوق صادر offline |
 | `e2e/` | Playwright | اختبارات المتصفح للدخول والخريطة والتقارير |
 
 npm workspaces من الجذر، بدون monorepo tooling إضافي.
+
+## أهم ما يفعله التطبيق
+
+**للمهندس (الموبايل)**
+- **الرئيسية:** ملخص اليوم (مسافة/زيارات/تحصيل)، عدّاد الوردية، زر بدء/إيقاف التتبع، الزيارة المفتوحة بعدّاد حيّ، مصغّر لخط سير اليوم، وآخر الزيارات.
+- **الزيارات:** تسجيل حضور (check-in) لعميل/مزرعة مع GPS ونوع الزيارة، ثم إنهاء (check-out) بالنتيجة والمبلغ — والزيارة المفتوحة واحدة فقط لحماية دقة السجل.
+- **التقارير:** تقرير سريع يوصل للمدير فورًا، ويعمل أوفلاين ويُرسل تلقائيًا.
+- **اليومي:** نفس ورقة الشركة (وقت الخروج/العودة، ظروف، جدول زيارات، توقيع إلكتروني) ويُصدَّر PDF من اللوحة.
+- **حسابي:** حالة المزامنة، الأذونات، الخصوصية، وخروج يوقف التتبع.
+
+**للمدير (الويب)**
+- **المتابعة الحية:** لوحة تنبيهات (انقطاع GPS، وردية بلا إشارة، لا زيارات، تقرير يومي ناقص)، خريطة الفريق، **إعادة تشغيل خط السير** بشريط تقدّم وسرعات، وبطاقة المهندس مع زياراته اليوم.
+- **الأداء والمؤشرات:** مقارنة الفريق (زيارات، متوسط الزيارة، مسافة، تقارير، تحصيل، تقارير يومية) مع تصدير **CSV** يفتح في Excel.
+- **التقارير:** مراجعة التقارير اليومية والميدانية وتنزيل PDF.
+- **الفريق:** إضافة الحسابات وإيقافها فورًا (يقطع الجلسات والتتبع).
 
 ## تشغيل سريع (وضع العرض التجريبي)
 
@@ -45,7 +60,7 @@ npm run dev         # API + لوحة التحكم مع إعادة التحميل
 npm run dev:mobile  # Expo dev server
 npm run build       # بناء server ثم dashboard
 npm start           # تشغيل الـ API (يقدّم dashboard/dist تلقائيًا)
-npm test            # ٣٩ اختبار API (node:test + supertest + socket.io-client)
+npm test            # ٤٨ اختبار API (node:test + supertest + socket.io-client)
 npm run typecheck   # tsc لكل الوركسبيسز
 npm run test:e2e    # Playwright (يبدأ خادمًا معزولًا على 3100/5174)
 npm run export:mobile  # تصدير نسخة الويب من التطبيق
@@ -81,8 +96,14 @@ GET    /api/overview            (admin) لقطات الفريق + العدادا
 GET    /api/reps                (admin) · POST /api/reps · PATCH /api/reps/:id { active }
 GET    /api/reps/:id/route?date=YYYY-MM-DD   (admin أو صاحب المسار)
 GET    /api/me/shift            (rep) · POST /api/shifts/start { consentVersion } · POST /api/shifts/stop
+GET    /api/me/summary          (rep) ملخص اليوم: مسافة، زيارات، مفتوحة، تحصيل، تقرير يومي
 POST   /api/locations           (rep) دفعة حتى ١٠٠ نقطة، منع تكرار بـ point_id
 POST   /api/presence
+POST   /api/visits/check-in     (rep) زيارة جديدة بموقع ودقة (زيارة مفتوحة واحدة)
+POST   /api/visits/:id/check-out (rep) نتيجة الزيارة + المبلغ، والتحصيل يُنسخ لتقرير مالي
+GET    /api/visits?date=&status=&repId=
+GET    /api/alerts              (admin) تنبيهات الميدان المشفّرة (stale_gps/no_signal/no_visits/missing_daily_report/stale_reviews)
+GET    /api/kpis?from=&to=      (admin) مؤشرات لكل مهندس · GET /api/kpis.csv تصدير Excel
 POST   /api/reports             (rep) · GET /api/reports · PATCH /api/reports/:id { status }
 POST   /api/daily-reports       (rep) · GET /api/daily-reports · GET /api/daily-reports/:id
 PATCH  /api/daily-reports/:id   (admin) { status: 'reviewed' }
@@ -97,6 +118,8 @@ GET    /api/daily-reports/:id/pdf
 - **البيانات لا تتكرر**: كل نقطة موقع وكل تقرير له `id` من العميل، فإعادة الإرسال بعد انقطاع الشبكة آمنة.
 - **المسافة تقديرية**: تُستبعد النقاط بدقة أسوأ من ١٠٠ م والقفزات غير المنطقية؛ ليست أساسًا وحيدًا للرواتب.
 - **التقارير اليومية**: تقرير واحد برقم فريد لكل إرسال، عدة زيارات، توقيع إلكتروني واسم، وملف PDF عربي RTL.
+- **الزيارات**: تفتح مرة واحدة لكل مهندس، ولا تُقبل إلا داخل وردية مفتوحة، وتُغلق بمدة محسوبة — وهي أساس مؤشرات الأداء وخط السير.
+- **التنبيهات** تُحسب عند الطلب من البيانات نفسها (لا مهام خلفية)، فتبقى صحيحة بعد أي إعادة تشغيل.
 
 ## التقرير اليومي و PDF
 
@@ -125,25 +148,25 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 ## الاختبارات و CI
 
 ```bash
-npm test          # # tests 39 · # pass 39 · # fail 0
+npm test          # # tests 48 · # pass 48 · # fail 0
 npm run typecheck # لا أخطاء
 npm run build     # server/dist + dashboard/dist
 ```
 
 `.github/workflows/ci.yml` يشغّل على Node 24: `npm ci` → `typecheck` → `npm test` → `build`،
 ثم مهمة ثانية تشغّل Playwright بعد `npx playwright install --with-deps chromium`
-(١٥ اختبار متصفح: دخول/جلسة/خريطة/تقارير/تنزيل PDF).
+(١٨ اختبار متصفح: دخول/جلسة/خريطة/تنبيهات/إعادة تشغيل المسار/مؤشرات/تقارير/تنزيل PDF وCSV).
 
 > `node:sqlite` يحتاج Node ≥ 22.13 بدون flag. على Node 22.12 يفشل التشغيل بـ
 > `ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite`.
 
 ## بنية البيانات (SQLite)
 
-`users` · `sessions` · `shifts` · `locations` (مفتاح مركّب `user_id + point_id`) · `reports` ·
+`users` · `sessions` · `shifts` · `locations` (مفتاح مركّب `user_id + point_id`) · `visits` · `reports` ·
 `daily_reports` · `daily_report_visits` · `audit_log`.
 
 كل ما هو أقدم من `RETENTION_DAYS` يُحذف تلقائيًا: النقاط، الجلسات المنتهية، سجل التدقيق،
-والتقارير. الورديات المنتهية بلا نقاط تُحذف أيضًا.
+والتقارير، والزيارات. الورديات المنتهية بلا نقاط تُحذف أيضًا.
 
 ## ملاحظات
 

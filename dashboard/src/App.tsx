@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { api, getToken, patch, post } from './api';
-import { ago, formatNumber, logout, me } from './session';
+import { ago, downloadKpisCsv, durationText, formatNumber, logout, me } from './session';
 import Login from './Login';
 import MapView from './MapView';
 import Reports from './Reports';
-import type { Overview, Rep, RouteResponse, User } from './types';
+import Performance from './Performance';
+import type { ManagerAlert, Overview, Rep, Report, RouteResponse, User, Visit } from './types';
+import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'reports' | 'team' | 'account';
+type Tab = 'live' | 'performance' | 'reports' | 'team' | 'account';
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'المتابعة الحية', icon: '◎' },
+  { id: 'performance', label: 'الأداء والمؤشرات', icon: '▲' },
   { id: 'reports', label: 'التقارير', icon: '▤' },
   { id: 'team', label: 'الفريق', icon: '☷' },
   { id: 'account', label: 'الحساب والخصوصية', icon: '⚙' },
@@ -18,8 +21,10 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [alerts, setAlerts] = useState<ManagerAlert[]>([]);
   const [tab, setTab] = useState<Tab>('live');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [visits, setVisits] = useState<Visit[]>([]);
   const [route, setRoute] = useState<RouteResponse | null>(null);
   const [routeDate, setRouteDate] = useState('');
   const [connected, setConnected] = useState(false);
@@ -31,8 +36,15 @@ export default function App() {
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 5000); return () => clearInterval(timer); }, []);
 
   const refresh = useCallback(async () => {
-    try { setOverview(await api<Overview>('/api/overview')); setError(''); }
-    catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.'); }
+    try {
+      const [nextOverview, nextAlerts] = await Promise.all([
+        api<Overview>('/api/overview'),
+        api<{ alerts: ManagerAlert[] }>('/api/alerts'),
+      ]);
+      setOverview(nextOverview);
+      setAlerts(nextAlerts.alerts);
+      setError('');
+    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.'); }
   }, []);
 
   useEffect(() => {
@@ -46,6 +58,7 @@ export default function App() {
     socket.on('overview', (data: Overview) => setOverview(data));
     socket.on('report', () => refresh());
     socket.on('daily-report', () => refresh());
+    socket.on('visit', () => refresh());
     const poll = setInterval(refresh, connected ? 30000 : 8000);
     return () => { clearInterval(poll); socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would churn connections.
@@ -57,14 +70,18 @@ export default function App() {
   const activeToday = reps.filter(r => r.location).length;
   const trackingNow = reps.filter(r => r.tracking).length;
   const totalKm = reps.reduce((sum, r) => sum + r.distanceMeters, 0);
+  const warnCount = alerts.filter(a => a.level === 'warn').length;
 
   useEffect(() => {
-    if (!selectedId) { setRoute(null); return; }
+    if (!selectedId) { setRoute(null); setVisits([]); return; }
     let cancelled = false;
     const query = routeDate ? `?date=${routeDate}` : '';
     api<RouteResponse>(`/api/reps/${selectedId}/route${query}`)
       .then(res => { if (!cancelled) setRoute(res); })
       .catch(() => { if (!cancelled) setRoute(null); });
+    api<{ visits: Visit[] }>(`/api/visits?repId=${selectedId}${query.replace('?', '&')}`)
+      .then(res => { if (!cancelled) setVisits(res.visits); })
+      .catch(() => { if (!cancelled) setVisits([]); });
     return () => { cancelled = true; };
   }, [selectedId, routeDate, overview?.serverTime]);
 
@@ -83,6 +100,7 @@ export default function App() {
             <button key={item.id} className={tab === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(item.id)}>
               <span aria-hidden="true">{item.icon}</span> {item.label}
               {item.id === 'reports' && overview && overview.newReports > 0 && <em className="badge">{formatNumber(overview.newReports)}</em>}
+              {item.id === 'live' && warnCount > 0 && <em className="badge warn">{formatNumber(warnCount)}</em>}
             </button>
           ))}
         </nav>
@@ -106,6 +124,7 @@ export default function App() {
         {error && <p className="error banner" role="alert">{error}</p>}
         {tab === 'live' && (
           <section className="page">
+            {alerts.length > 0 && <AlertsPanel alerts={alerts} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
             <div className="stats">
               <Stat label="مهندسون في الميدان" value={formatNumber(activeToday)} hint={`من ${formatNumber(reps.length)} مهندس`} />
               <Stat label="يتتبع الآن" value={formatNumber(trackingNow)} hint="وردية مفتوحة" />
@@ -134,7 +153,7 @@ export default function App() {
                         <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                         <span className="grow">
                           <strong>{rep.name}</strong>
-                          <small>{rep.region || 'بدون منطقة'} · {rep.tracking ? 'في وردية' : 'لا يتتبع'} · {ago(rep.lastSeen, clock)}</small>
+                          <small>{rep.region || 'بدون منطقة'} · {rep.tracking ? 'في وردية' : 'لا يتتبع'} · {formatNumber(rep.visitsToday)} زيارة · {ago(rep.lastSeen, clock)}</small>
                         </span>
                         <span className={rep.online ? 'status ok' : 'status'} title={rep.online ? 'متصل' : 'غير متصل'} />
                         <small className="mono">{formatNumber(rep.distanceMeters / 1000)} كم</small>
@@ -151,19 +170,59 @@ export default function App() {
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
                       <div><dt>البطارية</dt><dd>{selected.location?.battery !== null && selected.location?.battery !== undefined ? `${formatNumber(selected.location.battery)}٪` : '—'}</dd></div>
                       <div><dt>بداية الوردية</dt><dd>{selected.shiftStartedAt ? new Date(selected.shiftStartedAt).toLocaleTimeString('ar-EG') : '—'}</dd></div>
-                      <div><dt>النقاط اليوم</dt><dd>{formatNumber(selected.pointCount)}</dd></div>
-                      <div><dt>المصدر</dt><dd>{selected.location?.source === 'demo' ? 'محاكاة' : 'GPS'}</dd></div>
+                      <div><dt>زيارات اليوم</dt><dd>{formatNumber(selected.visitsToday)}</dd></div>
+                      <div><dt>زيارة مفتوحة</dt><dd>{selected.openVisit ? selected.openVisit.customerName : 'لا'}</dd></div>
                     </dl>
+                    {visits.length > 0 && (
+                      <div className="selected-visits">
+                        <h5>زيارات {routeDate || 'اليوم'}</h5>
+                        <ul>
+                          {visits.slice(0, 6).map(visit => (
+                            <li key={visit.id}>
+                              <span className="dot" style={{ background: visit.status === 'open' ? '#b45309' : '#2f7a5f' }} aria-hidden="true" />
+                              <span className="grow"><strong>{visit.customerName}</strong><small>{visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}{visit.status === 'open' ? ' · مفتوحة' : ` · ${durationText(visit.durationSeconds)}`}</small></span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             </div>
           </section>
         )}
+        {tab === 'performance' && <Performance reps={reps} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
         {tab === 'account' && <Account user={user} overview={overview} />}
       </main>
+    </div>
+  );
+}
+
+function AlertsPanel({ alerts, onPick }: { alerts: ManagerAlert[]; onPick: (repId?: string) => void }) {
+  const [open, setOpen] = useState(true);
+  const warn = alerts.filter(a => a.level === 'warn');
+  const shown = open ? alerts.slice(0, 8) : alerts.slice(0, 2);
+  return (
+    <div className="alerts-panel" role="region" aria-label="تنبيهات الميدان">
+      <div className="alerts-head">
+        <strong>تنبيهات الميدان <span className="pill warn">{formatNumber(warn.length)} مهم</span> <span className="pill">{formatNumber(alerts.length)} إجمالًا</span></strong>
+        <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>
+      </div>
+      <ul>
+        {shown.map(alert => (
+          <li key={alert.id} className={alert.level === 'warn' ? 'alert warn' : 'alert'}>
+            <span className="alert-dot" aria-hidden="true" />
+            <div className="grow">
+              <strong>{alert.title}{alert.repName ? ` · ${alert.repName}` : ''}</strong>
+              <small>{alert.detail}</small>
+            </div>
+            {alert.repId && <button className="btn ghost sm" onClick={() => onPick(alert.repId)}>فتح</button>}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -242,6 +301,7 @@ function Account({ user, overview }: { user: User; overview: Overview | null }) 
             <div><dt>الدور</dt><dd>{user.role === 'admin' ? 'متابعة (مدير)' : 'مهندس مبيعات'}</dd></div>
             <div><dt>المنطقة</dt><dd>{user.region || '—'}</dd></div>
           </dl>
+          <p className="muted small">تصدير المؤشرات متاح من صفحة «الأداء والمؤشرات» بصيغة CSV تفتح في Excel.</p>
         </div>
         <div className="panel prose">
           <h3 className="panel-title">الخصوصية والاحتفاظ</h3>
@@ -249,7 +309,7 @@ function Account({ user, overview }: { user: User; overview: Overview | null }) 
             <li>لا يبدأ التتبع إلا بعد موافقة صريحة داخل التطبيق، ويظهر مؤشر دائم أثناء التسجيل.</li>
             <li>تُرسل النقاط في دفعات كل ثانية تقريبًا، وتُحذف تلقائيًا بعد <b>{formatNumber(overview?.retentionDays ?? 30)}</b> يومًا.</li>
             <li>المسافات تقديرية لأغراض المتابعة، ولا تُستخدم كأساس وحيد للرواتب أو البدلات.</li>
-            <li>كل عملية حساسة (بدء وردية، إيقاف حساب، تنزيل تقرير) تُسجل في سجل تدقيق.</li>
+            <li>كل عملية حساسة (بدء وردية، إنهاء زيارة، إيقاف حساب، تنزيل تقرير) تُسجل في سجل تدقيق.</li>
             <li>الملفات المرفوعة أو الحسابات التجريبية لا تتضمن بيانات عملاء حقيقية.</li>
           </ul>
           <p className="muted small">المنطقة الزمنية: {overview?.timezone ?? 'Africa/Cairo'} · إصدار الموافقة: 1.0</p>

@@ -45,6 +45,39 @@ test.describe('المتابعة الحية والفريق', () => {
     await expect(page.getByText(/لا يبدأ التتبع إلا بعد موافقة/)).toBeVisible();
   });
 
+  test('the field alerts panel lists exceptions with a jump-to-rep action', async ({ page }) => {
+    await signIn(page);
+    const panel = page.getByRole('region', { name: 'تنبيهات الميدان' });
+    await expect(panel).toBeVisible();
+    await expect(panel.locator('.alert').first()).toBeVisible();
+    await panel.getByRole('button', { name: 'فتح' }).first().click();
+    await expect(page.locator('.selected-summary')).toBeVisible();
+  });
+
+  test('the route replay scrubs the day of the selected representative', async ({ page }) => {
+    await signIn(page);
+    await page.locator('.rep-list .rep').first().click();
+    await expect(page.locator('.selected-summary')).toBeVisible();
+    const replay = page.locator('.replay');
+    await expect(replay).toBeVisible();
+    await replay.getByRole('button', { name: 'تشغيل المسار' }).click();
+    await expect(replay.getByLabel('تقدم المسار')).toBeVisible();
+    await replay.getByLabel('تقدم المسار').fill('500');
+    await expect(replay.locator('.replay-time')).not.toHaveText('—');
+  });
+
+  test('the performance page compares the team and exports a CSV', async ({ page }) => {
+    await signIn(page);
+    await page.getByRole('button', { name: /الأداء والمؤشرات/ }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'الأداء والمؤشرات' })).toBeVisible();
+    await expect(page.locator('.kpi-table')).toBeVisible();
+    await expect(page.locator('.kpi-table tbody tr').first()).toBeVisible();
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: /تصدير CSV/ }).click();
+    const file = await download;
+    expect(file.suggestedFilename()).toMatch(/\.csv$/);
+  });
+
   test('a disabled representative cannot be created twice with the same email', async ({ page }) => {
     await signIn(page);
     await page.getByRole('button', { name: /الفريق/ }).click();
