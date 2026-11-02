@@ -40,6 +40,24 @@ const newReport = z.object({
   location: reportLocation.nullable().default(null),
 }).strict();
 
+const newVisit = z.object({
+  id: z.uuid(),
+  customerName: z.string().trim().min(2, 'اسم العميل / المزرعة مطلوب.').max(120),
+  governorate: z.string().trim().max(80).default(''),
+  district: z.string().trim().max(80).default(''),
+  village: z.string().trim().max(120).default(''),
+  phone: z.string().trim().max(30).default(''),
+  purpose: z.enum(['visit', 'order', 'collection', 'note', 'issue', 'other']).default('visit'),
+  notes: z.string().trim().max(1000).default(''),
+  location: reportLocation.nullable().default(null),
+}).strict();
+const closeVisit = z.object({
+  outcome: z.string().trim().max(1000).default(''),
+  notes: z.string().trim().max(1000).default(''),
+  amount: z.number().finite().min(0).max(1_000_000_000).nullable().default(null),
+  location: reportLocation.nullable().default(null),
+}).strict();
+
 export function createApp(overrides: Partial<Config> = {}) {
   const config = { ...readConfig(), ...overrides };
   const store = new Store(config.dbPath);
@@ -93,11 +111,14 @@ export function createApp(overrides: Partial<Config> = {}) {
       dayStatsCache.set(user.id, stats);
     }
     const online = io.sockets.adapter.rooms.get(`user:${user.id}`)?.size ? true : !!user.last_seen && Date.now() - user.last_seen < 75000;
+    const visitStats = store.get(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?`, user.id, bounds.start, bounds.end);
+    const openVisit = store.get("SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status='open' ORDER BY checked_in_at DESC LIMIT 1", user.id);
     return {
       ...publicUser(user), lastSeen: user.last_seen || null, online, tracking: !!shift,
       shiftStartedAt: shift?.started_at || null,
       location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, speed: location.speed, heading: location.heading, battery: location.battery, recordedAt: location.recorded_at, receivedAt: location.receivedAt, source: location.source } : null,
       distanceMeters: stats.distanceMeters, pointCount: stats.pointCount,
+      visitsToday: Number(visitStats?.total || 0), openVisit: openVisit || null,
     };
   }
   function overview() {
@@ -111,6 +132,29 @@ export function createApp(overrides: Partial<Config> = {}) {
       r.lat, r.lng, r.accuracy, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt,
       u.name AS repName, u.color AS repColor, u.is_demo AS repIsDemo
       FROM reports r JOIN users u ON u.id=r.user_id WHERE r.id=?`, id);
+  }
+  const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
+    v.village, v.phone, v.purpose, v.notes, v.outcome, v.status, v.checked_in_at AS checkedInAt,
+    v.checked_out_at AS checkedOutAt, v.duration_seconds AS durationSeconds,
+    v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
+    v.out_lat AS outLat, v.out_lng AS outLng,
+    u.name AS repName, u.color AS repColor, u.is_demo AS repIsDemo
+    FROM visits v JOIN users u ON u.id = v.user_id`;
+  function visitRow(id: string) { return store.get(`${VISIT_SELECT} WHERE v.id=?`, id); }
+  function listVisits(filter: { userId?: string; repId?: string; date?: string; status?: string }) {
+    const where: string[] = []; const params: any[] = [];
+    if (filter.userId) { where.push('v.user_id=?'); params.push(filter.userId); }
+    if (filter.repId) { where.push('v.user_id=?'); params.push(filter.repId); }
+    if (filter.status) { where.push('v.status=?'); params.push(filter.status); }
+    if (filter.date) {
+      const bounds = dayBounds(filter.date, config.timezone);
+      where.push('v.checked_in_at>=? AND v.checked_in_at<?'); params.push(bounds.start, bounds.end);
+    }
+    return store.all(`${VISIT_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY v.checked_in_at DESC LIMIT 300`, ...params);
+  }
+  function dayDistance(userId: string, start: number, end: number) {
+    const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at', userId, start, end) as unknown as GeoPoint[];
+    return { meters: Math.round(distanceMeters(points)), points: points.length, first: points[0]?.recordedAt ?? null, last: points[points.length - 1]?.recordedAt ?? null };
   }
   function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string }) {
     const where: string[] = []; const params: any[] = [];
@@ -264,6 +308,169 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
     broadcast();
     res.json({ accepted, duplicates });
+  });
+  // ---- Field visits: check in / check out around a customer with GPS proof ----
+  app.post('/api/visits/check-in', repOnly, (req, res) => {
+    const parsed = newVisit.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'راجع بيانات الزيارة: اسم العميل مطلوب.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    if (res.locals.user.is_demo) { res.status(403).json({ error: 'حسابات المحاكاة لا تسجل زيارات. استخدم rep@mandoub.test للتجربة.' }); return; }
+    const data = parsed.data;
+    const existing = visitRow(data.id);
+    if (existing) {
+      if (existing.userId !== res.locals.user.id) { res.status(409).json({ error: 'معرّف الزيارة مستخدم بالفعل.' }); return; }
+      res.status(200).json({ visit: existing, duplicate: true }); return;
+    }
+    const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+    if (!shift) { res.status(409).json({ error: 'ابدأ الوردية أولًا قبل تسجيل الزيارة.' }); return; }
+    const open = store.get('SELECT id FROM visits WHERE user_id=? AND status=?', res.locals.user.id, 'open');
+    if (open) { res.status(409).json({ error: 'لديك زيارة مفتوحة. أنهِها قبل بدء زيارة جديدة.', openVisitId: open.id }); return; }
+    const now = Date.now();
+    store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,in_lat,in_lng,in_accuracy,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
+      data.district, data.village, data.phone, data.purpose, data.notes, now,
+      data.location?.lat ?? null, data.location?.lng ?? null, data.location?.accuracy ?? null, now);
+    store.audit(res.locals.user.id, 'visit.check_in', { visitId: data.id, purpose: data.purpose });
+    io.to('admins').emit('visit', visitRow(data.id));
+    broadcast();
+    res.status(201).json({ visit: visitRow(data.id), duplicate: false });
+  });
+  app.post('/api/visits/:id/check-out', repOnly, (req, res) => {
+    const parsed = closeVisit.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'بيانات إنهاء الزيارة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    const visit = visitRow(String(req.params.id));
+    if (!visit || visit.userId !== res.locals.user.id) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
+    if (visit.status === 'closed') { res.json({ visit, duplicate: true }); return; }
+    const data = parsed.data;
+    const now = Date.now();
+    const duration = Math.max(0, Math.round((now - Number(visit.checkedInAt)) / 1000));
+    store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
+      out_lat=?, out_lng=? WHERE id=?`, now, duration, data.outcome, data.notes || visit.notes,
+      data.location?.lat ?? null, data.location?.lng ?? null, visit.id);
+    // A collection is also a financial event: mirror it into the reports feed for the manager.
+    if (data.amount !== null && data.amount > 0) {
+      store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
+        `تحصيل - ${visit.customerName}`, data.outcome || visit.notes, visit.customerName, data.amount,
+        data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, now);
+    }
+    store.audit(res.locals.user.id, 'visit.check_out', { visitId: visit.id, durationSeconds: duration });
+    io.to('admins').emit('visit', visitRow(visit.id));
+    broadcast();
+    res.json({ visit: visitRow(visit.id), duplicate: false });
+  });
+  app.get('/api/visits', auth, (req, res) => {
+    const isAdmin = res.locals.user.role === 'admin';
+    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
+    const status = req.query.status === 'open' || req.query.status === 'closed' ? req.query.status : undefined;
+    const repId = isAdmin && typeof req.query.repId === 'string' ? req.query.repId : undefined;
+    if (date) { try { dayBounds(date, config.timezone); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; } }
+    res.json({ visits: listVisits({ userId: isAdmin ? repId : res.locals.user.id, date, status }) });
+  });
+  app.get('/api/me/summary', repOnly, (req, res) => {
+    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : localDate(config.timezone);
+    let bounds;
+    try { bounds = dayBounds(date, config.timezone); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
+    const user = res.locals.user;
+    const distance = dayDistance(user.id, bounds.start, bounds.end);
+    const visits = listVisits({ userId: user.id, date });
+    const completed = visits.filter(v => v.status === 'closed');
+    const open = visits.find(v => v.status === 'open') || null;
+    const avgVisitSeconds = completed.length ? Math.round(completed.reduce((sum, v) => sum + Number(v.durationSeconds || 0), 0) / completed.length) : null;
+    const collections = store.get("SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS total FROM reports WHERE user_id=? AND type='collection' AND created_at>=? AND created_at<?", user.id, bounds.start, bounds.end);
+    const daily = store.get('SELECT id, status, created_at AS createdAt FROM daily_reports WHERE user_id=? AND report_date=?', user.id, date);
+    const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
+    res.json({
+      date, timezone: config.timezone, shift: shift || null,
+      distanceMeters: distance.meters, pointCount: distance.points, firstFixAt: distance.first, lastFixAt: distance.last,
+      visitsTotal: visits.length, visitsCompleted: completed.length, openVisit: open, avgVisitSeconds,
+      collectionsCount: Number(collections?.c || 0), collectionAmount: Number(collections?.total || 0),
+      dailyReport: daily || null,
+    });
+  });
+  // ---- Manager view: exception alerts + per-representative KPIs ----
+  app.get('/api/alerts', adminOnly, (_req, res) => {
+    const now = Date.now();
+    const today = localDate(config.timezone);
+    const bounds = dayBounds(today, config.timezone);
+    const alerts: Array<Record<string, any>> = [];
+    const reps = store.all("SELECT * FROM users WHERE role='rep' AND active=1 ORDER BY name");
+    for (const rep of reps) {
+      const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', rep.id);
+      const last = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id);
+      const lastAt = last?.at ? Number(last.at) : null;
+      if (shift && lastAt && now - lastAt > 30 * 60000) {
+        alerts.push({ id: `${rep.id}:stale`, level: 'warn', code: 'stale_gps', repId: rep.id, repName: rep.name, title: 'انقطاع في إرسال الموقع', detail: `آخر إشارة ${Math.round((now - lastAt) / 60000)} دقيقة — تأكد من فتح التطبيق والسماح بالموقع.`, at: lastAt });
+      }
+      if (shift && !lastAt && now - Number(shift.started_at) > 20 * 60000) {
+        alerts.push({ id: `${rep.id}:nosignal`, level: 'warn', code: 'no_signal', repId: rep.id, repName: rep.name, title: 'وردية بدون أي إشارة', detail: 'بدأ الوردية ولم تُسجل أي نقطة موقع بعد.', at: Number(shift.started_at) });
+      }
+      const visitsToday = store.get('SELECT COUNT(*) AS c FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?', rep.id, bounds.start, bounds.end)!;
+      const hasActivity = !!lastAt && lastAt >= bounds.start;
+      if (hasActivity && Number(visitsToday.c) === 0 && now - bounds.start > 2 * 3600000) {
+        alerts.push({ id: `${rep.id}:novisit`, level: 'info', code: 'no_visits', repId: rep.id, repName: rep.name, title: 'لا زيارات مسجلة اليوم', detail: 'المهندس في الميدان لكن لم يسجل أي زيارة اليوم.', at: bounds.start });
+      }
+      const daily = store.get('SELECT id FROM daily_reports WHERE user_id=? AND report_date=?', rep.id, today);
+      const localHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, hour: '2-digit', hourCycle: 'h23' }).format(now));
+      if (hasActivity && !daily && localHour >= 16) {
+        alerts.push({ id: `${rep.id}:daily`, level: 'warn', code: 'missing_daily_report', repId: rep.id, repName: rep.name, title: 'تقرير يومي غير مُرسل', detail: 'مر وقت العمل ولم يُرسل التقرير اليومي بعد.', at: bounds.start });
+      }
+    }
+    const staleReviews = store.get('SELECT COUNT(*) AS c FROM reports WHERE status=? AND created_at<?', 'new', now - 24 * 3600000)!;
+    if (Number(staleReviews.c) > 0) {
+      alerts.push({ id: 'reports:stale', level: 'info', code: 'stale_reviews', title: 'تقارير بانتظار المراجعة', detail: `${staleReviews.c} تقرير مضى عليه أكثر من ٢٤ ساعة.`, at: now });
+    }
+    const order = { warn: 0, info: 1 } as Record<string, number>;
+    alerts.sort((a, b) => (order[a.level] - order[b.level]) || (b.at - a.at));
+    res.json({ alerts, generatedAt: now, date: today });
+  });
+  function kpiRows(from: string, to: string) {
+    const start = dayBounds(from, config.timezone).start;
+    const end = dayBounds(to, config.timezone).end;
+    return store.all("SELECT * FROM users WHERE role='rep' ORDER BY is_demo, name").map(rep => {
+      const distance = dayDistance(rep.id, start, end);
+      const visits = store.get(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed,
+        AVG(CASE WHEN status='closed' THEN duration_seconds END) AS avgDuration
+        FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?`, rep.id, start, end)!;
+      const reportsRow = store.get("SELECT COUNT(*) AS c, COALESCE(SUM(CASE WHEN type='collection' THEN amount ELSE 0 END),0) AS collected FROM reports WHERE user_id=? AND created_at>=? AND created_at<?", rep.id, start, end)!;
+      const dailyRow = store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=? AND created_at>=? AND created_at<?', rep.id, start, end)!;
+      const daysRow = store.get("SELECT COUNT(DISTINCT date(recorded_at/1000,'unixepoch')) AS c FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<?", rep.id, start, end)!;
+      const lastRow = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id)!;
+      return {
+        repId: rep.id, name: rep.name, color: rep.color, region: rep.region, isDemo: !!rep.is_demo, active: !!rep.active,
+        distanceMeters: distance.meters, pointCount: distance.points,
+        visits: Number(visits.total || 0), visitsCompleted: Number(visits.closed || 0),
+        avgVisitSeconds: visits.avgDuration ? Math.round(Number(visits.avgDuration)) : null,
+        reports: Number(reportsRow.c || 0), collected: Number(reportsRow.collected || 0),
+        dailyReports: Number(dailyRow.c || 0), daysWithData: Number(daysRow.c || 0),
+        lastFixAt: lastRow.at ? Number(lastRow.at) : null,
+      };
+    });
+  }
+  app.get('/api/kpis', adminOnly, (req, res) => {
+    const today = localDate(config.timezone);
+    const from = typeof req.query.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : today;
+    const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
+    try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
+    if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+    res.json({ from, to, timezone: config.timezone, rows: kpiRows(from, to) });
+  });
+  app.get('/api/kpis.csv', adminOnly, (req, res) => {
+    const today = localDate(config.timezone);
+    const from = typeof req.query.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : today;
+    const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
+    let rows;
+    try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); rows = kpiRows(from, to); }
+    catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
+    const header = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
+    const csv = [header.join(',')].concat(rows.map(r => [
+      r.name, r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+      (r.distanceMeters / 1000).toFixed(1), r.reports, r.collected, r.dailyReports,
+    ].map(value => `"${String(value).replace(/"/g, '""')}"`).join(','))).join('\r\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="elhelb-kpis-${from}_${to}.csv"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send('\uFEFF' + csv);
   });
   // ---- Reports: the second core feature of the rep app ----
   app.post('/api/reports', repOnly, (req, res) => {

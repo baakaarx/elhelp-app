@@ -78,6 +78,29 @@ export class Store {
       CREATE INDEX IF NOT EXISTS daily_reports_date ON daily_reports(report_date);
       CREATE INDEX IF NOT EXISTS daily_reports_time ON daily_reports(created_at);
       CREATE INDEX IF NOT EXISTS daily_report_visits_report ON daily_report_visits(report_id, position);
+      -- Field visits: a rep checks in at a customer, then checks out. The pair is the
+      -- auditable record used by the manager timeline and the daily KPIs.
+      CREATE TABLE IF NOT EXISTS visits (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        customer_name TEXT NOT NULL,
+        governorate TEXT NOT NULL DEFAULT '',
+        district TEXT NOT NULL DEFAULT '',
+        village TEXT NOT NULL DEFAULT '',
+        phone TEXT NOT NULL DEFAULT '',
+        purpose TEXT NOT NULL DEFAULT 'visit' CHECK(purpose IN ('visit','order','collection','note','issue','other')),
+        notes TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')),
+        checked_in_at INTEGER NOT NULL,
+        checked_out_at INTEGER,
+        duration_seconds INTEGER,
+        in_lat REAL, in_lng REAL, in_accuracy REAL,
+        out_lat REAL, out_lng REAL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS visits_user_time ON visits(user_id, checked_in_at);
+      CREATE INDEX IF NOT EXISTS visits_open ON visits(user_id, status);
     `);
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
@@ -98,6 +121,7 @@ export class Store {
     this.run('DELETE FROM shifts WHERE ended_at IS NOT NULL AND ended_at < ? AND NOT EXISTS (SELECT 1 FROM locations WHERE locations.shift_id = shifts.id)', cutoff);
     this.run('DELETE FROM reports WHERE created_at < ?', cutoff);
     this.run('DELETE FROM daily_reports WHERE created_at < ?', cutoff);
+    this.run('DELETE FROM visits WHERE created_at < ?', cutoff);
   }
   close() { this.db.close(); }
 }

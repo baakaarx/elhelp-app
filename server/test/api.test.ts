@@ -360,6 +360,105 @@ test('the day bounds follow DST transitions in the configured timezone', () => {
   assert.equal(autumn.end - autumn.start, 25 * 3600000);
 });
 
+
+let visitId = '';
+test('a visit check-in stores the customer and opens the visit', async () => {
+  visitId = crypto.randomUUID();
+  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
+    id: visitId, customerName: 'مزرعة الزيارة', governorate: 'القاهرة', district: 'مدينة نصر', village: 'القرية',
+    phone: '01000000009', purpose: 'visit', notes: 'اختبار', location: { lat: 31.21, lng: 29.92, accuracy: 7 },
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.equal(res.body.visit.status, 'open');
+  assert.equal(res.body.visit.customerName, 'مزرعة الزيارة');
+  assert.equal(res.body.visit.inLat, 31.21);
+  assert.equal(res.body.duplicate, false);
+});
+
+test('a second check-in is rejected while a visit is still open', async () => {
+  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id: crypto.randomUUID(), customerName: 'عميل تاني' });
+  assert.equal(res.status, 409);
+  assert.equal(res.body.openVisitId, visitId);
+});
+
+test('the day summary shows the open visit and the collected totals', async () => {
+  const res = await rep.get('/api/me/summary').set(auth(repToken));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.openVisit.id, visitId);
+  assert.ok(res.body.visitsTotal >= 1);
+  assert.equal(typeof res.body.distanceMeters, 'number');
+  assert.equal(res.body.timezone, 'Africa/Cairo');
+});
+
+test('checking out closes the visit with a measured duration', async () => {
+  const res = await rep.post(`/api/visits/${visitId}/check-out`).set(auth(repToken)).send({
+    outcome: 'تمت المتابعة وطلب عينة', notes: 'زيارة ناجحة', amount: null, location: { lat: 31.22, lng: 29.93, accuracy: 6 },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.visit.status, 'closed');
+  assert.ok(res.body.visit.checkedOutAt >= res.body.visit.checkedInAt);
+  assert.ok(res.body.visit.durationSeconds >= 0);
+  assert.equal(res.body.visit.outLat, 31.22);
+});
+
+test('a collection checkout is mirrored into the manager reports feed', async () => {
+  const id = crypto.randomUUID();
+  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerName: 'مؤسسة التحصيل', purpose: 'collection' });
+  const out = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({ outcome: 'تحصيل نقدي', amount: 1250 });
+  assert.equal(out.status, 200);
+  const mirrored = store.get('SELECT * FROM reports WHERE id=?', `visit:${id}`);
+  assert.ok(mirrored, 'collection should appear in reports');
+  assert.equal(mirrored!.type, 'collection');
+  assert.equal(mirrored!.amount, 1250);
+  assert.equal(mirrored!.customer, 'مؤسسة التحصيل');
+});
+
+test('the manager visit feed is scoped by date and representative', async () => {
+  const mine = await rep.get('/api/visits').set(auth(repToken));
+  assert.equal(mine.status, 200);
+  assert.ok(mine.body.visits.every((v: any) => v.userId === repId));
+  const managerFeed = await admin.get(`/api/visits?repId=${repId}`).set(auth(adminToken));
+  assert.equal(managerFeed.status, 200);
+  assert.ok(managerFeed.body.visits.length >= 2);
+  assert.equal(typeof managerFeed.body.visits[0].repName, 'string');
+});
+
+test('manager alerts expose coded exceptions', async () => {
+  const res = await admin.get('/api/alerts').set(auth(adminToken));
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(res.body.alerts));
+  assert.ok(res.body.alerts.length > 0);
+  for (const alert of res.body.alerts) {
+    assert.ok(['warn', 'info'].includes(alert.level));
+    assert.equal(typeof alert.code, 'string');
+    assert.equal(typeof alert.title, 'string');
+  }
+});
+
+test('KPIs aggregate visits, distance and collections per representative', async () => {
+  const res = await admin.get('/api/kpis').set(auth(adminToken));
+  assert.equal(res.status, 200);
+  const mine = res.body.rows.find((row: any) => row.repId === repId);
+  assert.ok(mine);
+  assert.ok(mine.visits >= 2);
+  assert.ok(mine.visitsCompleted >= 2);
+  assert.ok(mine.collected >= 1250);
+  assert.ok(mine.distanceMeters >= 0);
+  assert.equal(typeof mine.daysWithData, 'number');
+});
+
+test('the KPI export is a UTF-8 CSV with Arabic headers and a BOM', async () => {
+  const res = await admin.get('/api/kpis.csv').set(auth(adminToken)).buffer(true).parse((r, done) => {
+    const chunks: Buffer[] = []; r.on('data', c => chunks.push(c)); r.on('end', () => done(null, Buffer.concat(chunks)));
+  });
+  assert.equal(res.status, 200);
+  assert.match(String(res.headers['content-type']), /text\/csv/);
+  assert.deepEqual(res.body.subarray(0, 3), Buffer.from([0xef, 0xbb, 0xbf]));
+  const text = Buffer.from(res.body).toString('utf8').replace('\uFEFF', '');
+  assert.match(text.split('\r\n')[0], /المهندس/);
+  assert.ok(text.split('\r\n').length >= 2);
+});
+
 test('the representative stops tracking and their open shift is closed', async () => {
   const stop = await rep.post('/api/shifts/stop').set(auth(repToken));
   assert.equal(stop.status, 200);

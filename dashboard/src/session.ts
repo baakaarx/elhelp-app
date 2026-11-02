@@ -31,6 +31,30 @@ export async function downloadDailyReportPdf(id: string, fileName: string) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
+export async function downloadKpisCsv(from: string, to: string) {
+  const token = getToken();
+  const res = await fetch(`/api/kpis.csv?from=${from}&to=${to}`, {
+    headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : { 'X-Mandoub-Client': 'admin' },
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error('تعذر تصدير المؤشرات. حاول مرة أخرى.');
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `elhelb-kpis-${from}_${to}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+export const durationText = (seconds: number | null | undefined) => {
+  if (seconds === null || seconds === undefined) return '—';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 1) return 'أقل من دقيقة';
+  if (minutes < 60) return `${formatNumber(minutes)} دقيقة`;
+  return `${formatNumber(Math.floor(minutes / 60))} س ${formatNumber(minutes % 60)} د`;
+};
 export const formatNumber = (value: number) => new Intl.NumberFormat('ar-EG').format(Math.round(value));
 export function ago(ts: number | null, now = Date.now()) {
   if (!ts) return 'لم يظهر بعد';

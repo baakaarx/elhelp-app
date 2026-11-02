@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { DailyReportInput, GeoPoint, ReportInput, Shift, ShiftResponse, User } from './types';
+import type { DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -57,3 +57,10 @@ export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id
 export const myReports = () => get<{ reports: ReportInput[] }>('/api/reports');
 export const myDailyReports = () => get<{ reports: unknown[] }>('/api/daily-reports');
 export const presence = () => post<{ ok: true }>('/api/presence', {});
+
+export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
+export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);
+export const myRoute = (userId: string, date?: string) => get<RouteResponse>(`/api/reps/${userId}/route${date ? `?date=${date}` : ''}`);
+export const checkInVisit = (visit: VisitInput) => post<{ visit: Visit; duplicate: boolean }>('/api/visits/check-in', visit);
+export const checkOutVisit = (id: string, body: { outcome: string; notes: string; amount: number | null; location: { lat: number; lng: number; accuracy: number | null } | null }) =>
+  post<{ visit: Visit; duplicate: boolean }>(`/api/visits/${id}/check-out`, body);
