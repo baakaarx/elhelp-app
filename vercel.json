@@ -7,7 +7,7 @@
     "api/index.js": {
       "memory": 1024,
       "maxDuration": 60,
-      "includeFiles": "node_modules/@expo-google-fonts/**"
+      "includeFiles": "node_modules/{@expo-google-fonts,pdfmake,pdfkit,@foliojs-fork}/**"
     }
   },
   "rewrites": [

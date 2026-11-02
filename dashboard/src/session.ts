@@ -4,6 +4,20 @@ import type { User } from './types';
 /** The Expo web build is served by the same API under /app. */
 export const ENGINEER_APP_PATH = '/app';
 
+/**
+ * Surface the reason the server actually gave instead of a blanket "try again" message.
+ * A 404 on a hosted demo almost always means the request landed on another serverless
+ * instance, and the status code is the only clue the operator can act on.
+ */
+async function failureText(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.clone().json() as { error?: unknown };
+    const message = typeof body?.error === 'string' ? body.error.trim() : '';
+    if (message) return message;
+  } catch { /* proxies can answer with HTML; fall back to the status code below */ }
+  return `${fallback} (${res.status})`;
+}
+
 export async function login(email: string, password: string) {
   const res = await post<{ token: string; expiresAt: number; user: User }>('/api/auth/login', { email, password });
   setToken(res.token);
@@ -23,7 +37,7 @@ export async function downloadDailyReportPdf(id: string, fileName: string) {
     headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : { 'X-Mandoub-Client': 'admin' },
     credentials: 'include',
   });
-  if (!res.ok) throw new Error('تعذر تنزيل التقرير. حاول مرة أخرى.');
+  if (!res.ok) throw new Error(await failureText(res, 'تعذر تنزيل التقرير. حاول مرة أخرى.'));
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -40,7 +54,7 @@ export async function downloadKpisCsv(from: string, to: string) {
     headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : { 'X-Mandoub-Client': 'admin' },
     credentials: 'include',
   });
-  if (!res.ok) throw new Error('تعذر تصدير المؤشرات. حاول مرة أخرى.');
+  if (!res.ok) throw new Error(await failureText(res, 'تعذر تصدير المؤشرات. حاول مرة أخرى.'));
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
