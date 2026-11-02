@@ -80,7 +80,22 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright
-        run: npm run test:e2e
+        id: playwright
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee e2e.log
+      - name: Publish browser test log on failure
+        if: steps.playwright.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -n "$PR" ]; then
+            { echo '```'; tail -n 150 e2e.log; echo '```'; } > e2e-comment.md
+            gh pr comment "$PR" --body-file e2e-comment.md || true
+          fi
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
