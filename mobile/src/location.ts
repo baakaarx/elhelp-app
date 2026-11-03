@@ -17,7 +17,7 @@ export async function captureOnce(options: { maxAgeMs?: number } = {}): Promise<
       Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
       new Promise<null>(resolve => setTimeout(() => resolve(null), 12000)),
     ]);
-    if (!position) return cached?.fix ?? null;
+    if (!position) return null;
     const fix: Fix = {
       lat: position.coords.latitude,
       lng: position.coords.longitude,
@@ -25,6 +25,6 @@ export async function captureOnce(options: { maxAgeMs?: number } = {}): Promise<
     };
     cached = { fix, at: Date.now() };
     return fix;
-  } catch { return cached?.fix ?? null; }
+  } catch { return null; }
 }
 export const clearLocationCache = () => { cached = null; };

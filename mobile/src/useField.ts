@@ -20,6 +20,7 @@ export interface FieldBundle {
   pending: number;
   loading: boolean;
   busy: boolean;
+  trackingActive: boolean;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -36,6 +37,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [pending, setPending] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [trackingActive, setTrackingActive] = useState(false);
   const [error, setError] = useState('');
   const mounted = useRef(true);
 
@@ -54,7 +56,6 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       setSummary({ ...nextSummary, shift: state.shift });
       setVisits(nextVisits.visits);
       setRoute(nextRoute);
-      setError('');
     } catch (e) {
       const status = (e as { status?: number }).status ?? 0;
       if (status === 401) { onSessionExpired(); return; }
@@ -65,7 +66,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [user, onSessionExpired]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setRoute(null); setError(''); return; }
     void refresh();
     const timer = setInterval(async () => {
       const result = await flushOutbox().catch(() => null);
@@ -79,14 +80,24 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const beginShift = useCallback(async ({ background }: { background: boolean }) => {
     setBusy(true); setError('');
     try {
-      const permission = await requestPermissions();
+      const permission = await requestPermissions(background);
       if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن بدء التتبع بدونها.');
       const fix = await captureOnce({ maxAgeMs: 15000 });
       if (!fix) throw new Error('GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل بدء الوردية.');
       const deviceId = await getDeviceId();
       const deviceName = await getDeviceName();
       const res = await startShift('1.0', fix, deviceId, deviceName);
-      await startTracking(res.shift.id, { background: background && permission.background });
+      try {
+        await startTracking(res.shift.id, { background: background && permission.background });
+        setTrackingActive(true);
+      } catch {
+        await stopTracking().catch(() => undefined);
+        setTrackingActive(false);
+        // The server may already have opened the shift. Refresh its state rather than
+        // pretending it didn't, and let the engineer retry from the consent sheet.
+        await refresh();
+        throw new Error('تم بدء الوردية، لكن تعذر تشغيل تتبع الموقع. تأكد من صلاحية الموقع ثم حاول مجددًا.');
+      }
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
@@ -97,6 +108,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     try {
       await stopShift();
       await stopTracking();
+      setTrackingActive(false);
       await flushOutbox();
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
@@ -122,7 +134,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [refresh]);
 
   return {
-    summary, visits, route, pending, loading, busy, error,
+    summary, visits, route, pending, loading, busy, trackingActive, error,
     clearError: () => setError(''),
     refresh, beginShift, finishShift, checkIn, checkOut,
   };

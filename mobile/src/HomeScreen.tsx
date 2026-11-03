@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle, Sheet, Stat } from './ui';
 import RouteMap from './RouteMap';
@@ -49,12 +49,12 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
 
         <Card tone="dark" style={styles.hero}>
           <Row style={{ justifyContent: 'space-between' }}>
-            <Pill label={shift ? 'الوردية شغالة' : 'خارج الوردية'} tone={shift ? 'dark' : 'warn'} />
+            <Pill label={shift ? (field.trackingActive ? 'الوردية شغالة' : 'الوردية مفتوحة · التتبع متوقف') : 'خارج الوردية'} tone={shift && field.trackingActive ? 'dark' : 'warn'} />
             <Text style={styles.heroTimer}>{shift ? shiftElapsed : '—:—:—'}</Text>
           </Row>
           <Text style={styles.heroHint}>
             {shift
-              ? `بدأت ${new Date(shift.started_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })} · يتم تسجيل موقعك كل ثانية`
+              ? `بدأت ${new Date(shift.started_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })} · ${field.trackingActive ? 'يتم تسجيل موقعك' : 'استأنف تسجيل الموقع'}`
               : 'ابدأ الوردية ليبدأ تسجيل موقعك ويظهر مسارك للمدير.'}
           </Text>
           <View style={styles.heroStats}>
@@ -64,6 +64,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
             <View style={styles.heroDivider} />
             <Stat tone="dark" label="تحصيل (ج.م)" value={(summary?.collectionAmount ?? 0).toLocaleString('ar-EG')} />
           </View>
+          {shift && !field.trackingActive ? <Button label="استئناف تسجيل الموقع" onPress={() => setConsentOpen(true)} loading={field.busy} /> : null}
           {shift ? (
             <Button label="إيقاف التتبع وإنهاء الوردية" variant="soft" onPress={async () => { await field.finishShift().catch(() => undefined); }} loading={field.busy} />
           ) : (
@@ -146,9 +147,10 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
 
       <ConsentSheet
         visible={consentOpen}
-        onClose={() => setConsentOpen(false)}
-        onStart={async (background) => { setConsentOpen(false); await field.beginShift({ background }).catch(() => undefined); }}
+        onClose={() => { if (!field.busy) { setConsentOpen(false); field.clearError(); } }}
+        onStart={async (background) => { try { await field.beginShift({ background }); setConsentOpen(false); } catch { /* Keep the sheet open with the error. */ } }}
         busy={field.busy}
+        error={field.error}
       />
       <CheckInSheet visible={checkInOpen} onClose={() => setCheckInOpen(false)} field={field} user={user} />
       <CheckOutSheet visit={checkOutVisit} onClose={() => setCheckOutVisit(null)} field={field} />
@@ -168,18 +170,18 @@ function ActionTile({ icon, label, hint, onPress, tone = 'plain' }: { icon: stri
   );
 }
 
-function ConsentSheet({ visible, onClose, onStart, busy }: { visible: boolean; onClose: () => void; onStart: (background: boolean) => void; busy: boolean }) {
+function ConsentSheet({ visible, onClose, onStart, busy, error }: { visible: boolean; onClose: () => void; onStart: (background: boolean) => void; busy: boolean; error: string }) {
   const [agreed, setAgreed] = useState(false);
   const [background, setBackground] = useState(true);
   useEffect(() => { if (visible) { setAgreed(false); setBackground(true); } }, [visible]);
   return (
-    <ConsentSheetShell visible={visible} onClose={onClose} agreed={agreed} setAgreed={setAgreed} background={background} setBackground={setBackground} onStart={() => onStart(background)} busy={busy} />
+    <ConsentSheetShell visible={visible} onClose={onClose} agreed={agreed} setAgreed={setAgreed} background={background} setBackground={setBackground} onStart={() => onStart(background)} busy={busy} error={error} />
   );
 }
 
-function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, setBackground, onStart, busy }: {
+function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, setBackground, onStart, busy, error }: {
   visible: boolean; onClose: () => void; agreed: boolean; setAgreed: (value: boolean) => void;
-  background: boolean; setBackground: (value: boolean) => void; onStart: () => void; busy: boolean;
+  background: boolean; setBackground: (value: boolean) => void; onStart: () => void; busy: boolean; error: string;
 }) {
   return (
     <Sheet visible={visible} onClose={onClose} title="قبل أن نبدأ تتبع الموقع">
@@ -188,9 +190,10 @@ function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, se
         تُستخدم البيانات لعرض خط سيرك للمدير ولإعداد تقاريرك، وتُحذف تلقائيًا بعد ٣٠ يومًا.
       </Body>
       <Body muted>يمكنك إيقاف التتبع في أي لحظة من الزر الأحمر، ويُسجَّل كل بدء/إيقاف في سجل التدقيق.</Body>
-      <Toggle checked={background} onChange={() => setBackground(!background)} label="السماح بالتسجيل في الخلفية (موصى به حتى لو الشاشة مقفولة)" />
+      {Platform.OS === 'web' ? <Body muted>على المتصفح قد يتوقف تسجيل الموقع عند إغلاق الصفحة أو قفل الشاشة.</Body> : <Toggle checked={background} onChange={() => setBackground(!background)} label="السماح بالتسجيل في الخلفية (موصى به حتى لو الشاشة مقفولة)" />}
       <Toggle checked={agreed} onChange={() => setAgreed(!agreed)} label="أوافق على تسجيل موقعي طوال الوردية وأقر بأن هذا توقيعي على الموافقة." />
-      <Button label="موافق، ابدأ الوردية" onPress={onStart} disabled={!agreed} loading={busy} />
+      {error ? <Text accessibilityRole="alert" style={{ color: colors.danger, textAlign: 'right', fontFamily: fonts.regular }}>{error}</Text> : null}
+      <Button label="موافق، ابدأ الوردية" onPress={onStart} disabled={!agreed || busy} loading={busy} />
     </Sheet>
   );
 }

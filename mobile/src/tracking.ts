@@ -25,10 +25,10 @@ function makeId(): string {
 function randomUUID() { return makeId(); }
 export { randomUUID };
 
-export async function requestPermissions(): Promise<{ foreground: boolean; background: boolean }> {
+export async function requestPermissions(backgroundRequested = true): Promise<{ foreground: boolean; background: boolean }> {
   const foreground = await Location.requestForegroundPermissionsAsync();
   if (foreground.status !== 'granted') return { foreground: false, background: false };
-  if (Platform.OS === 'web') return { foreground: true, background: false };
+  if (Platform.OS === 'web' || !backgroundRequested) return { foreground: true, background: false };
   const background = await Location.requestBackgroundPermissionsAsync();
   return { foreground: true, background: background.status === 'granted' };
 }
@@ -61,14 +61,13 @@ export async function startTracking(id: string, opts: { background: boolean } = 
           recordedAt: position.timestamp || Date.now(),
         };
         for (const listener of listeners) listener(point);
-        void enqueueLocation(point);
+        void enqueueLocation(point).catch(() => undefined);
         const now = Date.now();
-        if (now - lastSent > 3000) { lastSent = now; void flushOutbox(); }
+        if (now - lastSent > 3000) { lastSent = now; void flushOutbox().catch(() => undefined); }
       },
     );
   }
-  const available = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false);
-  if (opts.background && Platform.OS !== 'web' && !available) {
+  if (opts.background && Platform.OS !== 'web' && !(await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false))) {
     await Location.startLocationUpdatesAsync(BACKGROUND_TASK, {
       accuracy: Location.Accuracy.High,
       timeInterval: 5000,

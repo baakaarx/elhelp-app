@@ -83,7 +83,7 @@ function Root() {
   return (
     <View style={styles.screen}>
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
-        {shift ? <LiveBanner since={shift.started_at} pending={field.pending} /> : null}
+        {shift ? <LiveBanner since={shift.started_at} pending={field.pending} trackingActive={field.trackingActive} /> : null}
         {field.error && <View style={styles.errorBar}><Text style={styles.errorText}>{field.error}</Text></View>}
         <View style={styles.body}>
           {tab === 'home' && (
@@ -120,13 +120,13 @@ function Root() {
   );
 }
 
-function LiveBanner({ since, pending }: { since: number; pending: number }) {
+function LiveBanner({ since, pending, trackingActive }: { since: number; pending: number; trackingActive: boolean }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   return (
     <View style={styles.liveBar}>
       <View style={styles.liveDot} />
-      <Text style={styles.liveText}>تسجيل الموقع شغّال · {hhmmss(now - since)}</Text>
+      <Text style={styles.liveText}>{trackingActive ? 'تسجيل الموقع شغّال' : 'الوردية مفتوحة، استأنف تسجيل الموقع'} · {hhmmss(now - since)}</Text>
       {pending > 0 ? <Text style={styles.livePending}>{pending} بالانتظار</Text> : null}
     </View>
   );
