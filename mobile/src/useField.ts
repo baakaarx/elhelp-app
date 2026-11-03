@@ -88,7 +88,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       const deviceName = await getDeviceName();
       const res = await startShift('1.0', fix, deviceId, deviceName);
       try {
-        await startTracking(res.shift.id, { background: background && permission.background });
+        await startTracking(res.shift.id, { background: background && permission.background, startedAt: res.shift.started_at });
         setTrackingActive(true);
       } catch {
         await stopTracking().catch(() => undefined);

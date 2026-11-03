@@ -36,8 +36,7 @@ const MAX_DRAWN_POINTS = 900;
 
 function sample<T>(items: T[], max: number): T[] {
   if (items.length <= max) return items;
-  const step = items.length / max;
-  return Array.from({ length: max }, (_, i) => items[Math.min(items.length - 1, Math.floor(i * step))]);
+  return Array.from({ length: max }, (_, i) => items[Math.round(i * (items.length - 1) / (max - 1))]);
 }
 
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('');
@@ -103,8 +102,8 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
     instance.attributionControl.setPrefix('<a href="https://leafletjs.com/">Leaflet</a>');
   }, [basemap]);
 
-  // Reset the replay whenever the selected route changes: a full trail is the useful default.
-  useEffect(() => { setProgress(1); setPlaying(false); }, [route?.points.length, selectedId]);
+  // New live points must not reset an in-progress replay.
+  useEffect(() => { setProgress(1); setPlaying(false); }, [route?.date, selectedId]);
 
   useEffect(() => {
     if (!playing) return;
@@ -170,11 +169,18 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
     }
     // Only re-frame when the cast changes (first load, selection, route switch). Re-fitting on
     // every poll would fight the operator's pan/zoom while the markers glide.
-    const key = `${selectedId ?? ''}|${bounds.length}|${path.length > 1 ? 'route' : 'pins'}`;
+    const key = selectedId ?? 'all';
     if (key !== fitKey.current) {
-      fitKey.current = key;
-      if (bounds.length === 1) instance.setView(bounds[0], 14, { animate: true });
-      else if (bounds.length > 1) instance.fitBounds(L.latLngBounds(bounds).pad(0.18), { animate: true, maxZoom: 15 });
+      // Don't change the viewport as new points arrive. Focus only on the first
+      // available position for a selection (or the first overall set of pins).
+      if (selectedId && selected?.location) {
+        fitKey.current = key;
+        instance.setView([selected.location.lat, selected.location.lng], 14, { animate: true });
+      } else if (!selectedId && bounds.length) {
+        fitKey.current = key;
+        if (bounds.length === 1) instance.setView(bounds[0], 14, { animate: true });
+        else instance.fitBounds(L.latLngBounds(bounds).pad(0.18), { animate: true, maxZoom: 15 });
+      }
     }
   }, [reps, selectedId, path, progress, selected]);
 

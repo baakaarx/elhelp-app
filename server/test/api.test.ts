@@ -148,6 +148,14 @@ test('starting a shift records the consent version and time', async () => {
   assert.equal(res.body.shift.ended_at, null);
 });
 
+test('the GPS fix at shift start is visible immediately without a second update', async () => {
+  const res = await rep.get('/api/me/shift').set(auth(repToken));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.snapshot.location.lat, 31.2);
+  assert.equal(res.body.snapshot.location.lng, 29.9);
+  assert.equal(res.body.snapshot.location.speed, null);
+});
+
 test('resuming tracking reuses the open shift and still requires GPS', async () => {
   const noFix = await rep.post('/api/shifts/start').set(auth(repToken)).send({ consentVersion: '1.0', deviceId: 'test-device-001' });
   assert.equal(noFix.status, 422);

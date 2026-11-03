@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
+import LocationName from './LocationName';
+import { movementStatus } from './locationStatus';
 import { ago, downloadKpisCsv, durationText, formatNumber } from './session';
 import type { KpiResponse, KpiRow, Rep } from './types';
 
@@ -72,12 +74,12 @@ export default function Performance({ reps }: { reps: Rep[] }) {
             <table className="kpi-table">
               <thead>
                 <tr>
-                  <th>المهندس</th><th>المنطقة</th><th>أيام نشاط</th><th>زيارات</th><th>متوسط الزيارة</th>
+                  <th>المهندس</th><th>المنطقة المسجلة / الموقع</th><th>أيام نشاط</th><th>زيارات</th><th>متوسط الزيارة</th>
                   <th>مسافة (كم)</th><th>تقارير</th><th>تحصيل (ج.م)</th><th>تقارير يومية</th><th>آخر إشارة</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map(row => <KpiTableRow key={row.repId} row={row} />)}
+                {rows.map(row => <KpiTableRow key={row.repId} row={row} rep={reps.find(rep => rep.id === row.repId)} />)}
               </tbody>
               <tfoot>
                 <tr>
@@ -98,12 +100,12 @@ export default function Performance({ reps }: { reps: Rep[] }) {
   );
 }
 
-function KpiTableRow({ row }: { row: KpiRow }) {
+function KpiTableRow({ row, rep }: { row: KpiRow; rep?: Rep }) {
   const bar = Math.min(100, row.visits * 12);
   return (
     <tr>
       <td><span className="dot" style={{ background: row.color }} aria-hidden="true" /> {row.name}{row.isDemo ? <em className="muted small"> (تجريبي)</em> : null}{row.active ? null : <em className="muted small"> · موقوف</em>}</td>
-      <td>{row.region || '—'}</td>
+      <td>{row.region && row.region !== 'موقعك الحقيقي' ? <div>{row.region} <small className="muted">(مسجلة)</small></div> : null}{rep ? <div>{movementStatus(rep)}</div> : null}<LocationName location={rep?.location ?? null} /></td>
       <td className="mono">{formatNumber(row.daysWithData)}</td>
       <td>
         <div className="bar-cell"><span className="mono">{formatNumber(row.visits)}</span><span className="bar"><i style={{ width: `${bar}%` }} /></span></div>

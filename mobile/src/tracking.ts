@@ -43,27 +43,28 @@ export async function currentBattery(): Promise<number | null> {
   } catch { return battery; }
 }
 
-export async function startTracking(id: string, opts: { background: boolean } = { background: true }) {
+export async function startTracking(id: string, opts: { background: boolean; startedAt?: number } = { background: true }) {
   shiftId = id;
   await setActiveShift(id);
   if (!subscription) {
     subscription = await Location.watchPositionAsync(
       { accuracy: Location.Accuracy.High, timeInterval: CHUNK_MS, distanceInterval: 5 },
       position => {
-        if (!shiftId) return;
+        if (!shiftId || !Number.isFinite(position.timestamp) || position.timestamp < (opts.startedAt ?? 0)) return;
         const point: GeoPoint = {
           id: randomUUID(), shiftId,
           lat: position.coords.latitude, lng: position.coords.longitude,
           accuracy: position.coords.accuracy ?? null,
-          speed: position.coords.speed ?? null,
-          heading: position.coords.heading ?? null,
+          speed: position.coords.speed != null && position.coords.speed >= 0 && position.coords.speed <= 150 ? position.coords.speed : null,
+          heading: position.coords.heading != null && position.coords.heading >= 0 && position.coords.heading < 360 ? position.coords.heading : null,
           battery,
           recordedAt: position.timestamp || Date.now(),
         };
         for (const listener of listeners) listener(point);
-        void enqueueLocation(point).catch(() => undefined);
-        const now = Date.now();
-        if (now - lastSent > 3000) { lastSent = now; void flushOutbox().catch(() => undefined); }
+        void enqueueLocation(point).then(() => {
+          const now = Date.now();
+          if (now - lastSent > 3000) { lastSent = now; return flushOutbox(); }
+        }).catch(() => undefined);
       },
     );
   }

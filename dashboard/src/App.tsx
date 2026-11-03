@@ -4,6 +4,8 @@ import { api, getToken, patch, post, setToken } from './api';
 import { ENGINEER_APP_PATH, ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
 import MapView from './MapView';
+import LocationName from './LocationName';
+import { movementStatus } from './locationStatus';
 import Reports from './Reports';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
@@ -161,7 +163,7 @@ export default function App() {
                         <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                         <span className="grow">
                           <strong>{rep.name}</strong>
-                          <small>{rep.region || 'بدون منطقة'} · {rep.tracking ? 'في وردية' : 'لا يتتبع'} · {formatNumber(rep.visitsToday)} زيارة · {ago(rep.lastSeen, clock)}</small>
+                          <small>{movementStatus(rep, clock)} · آخر موقع {ago(rep.location?.recordedAt ?? null, clock)} · {formatNumber(rep.visitsToday)} زيارة</small>
                         </span>
                         <span className={rep.online ? 'status ok' : 'status'} title={rep.online ? 'متصل' : 'غير متصل'} />
                         <small className="mono">{formatNumber(rep.distanceMeters / 1000)} كم</small>
@@ -172,9 +174,10 @@ export default function App() {
                 {selected && (
                   <div className="selected-summary">
                     <h4>{selected.name}</h4>
-                    <p className="muted small">{selected.phone || 'بدون هاتف'} · {selected.region || 'بدون منطقة'}</p>
+                    <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock)}</p>
+                    <LocationName key={selected.id} location={selected.location} />
                     <dl>
-                      <div><dt>آخر إشارة</dt><dd>{ago(selected.lastSeen, clock)}</dd></div>
+                      <div><dt>آخر موقع</dt><dd>{ago(selected.location?.recordedAt ?? null, clock)}</dd></div>
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
                       <div><dt>البطارية</dt><dd>{selected.location?.battery !== null && selected.location?.battery !== undefined ? `${formatNumber(selected.location.battery)}٪` : '—'}</dd></div>
                       <div><dt>بداية الوردية</dt><dd>{selected.shiftStartedAt ? new Date(selected.shiftStartedAt).toLocaleTimeString('ar-EG') : '—'}</dd></div>
