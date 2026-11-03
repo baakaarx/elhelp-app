@@ -3,6 +3,7 @@ import * as Location from 'expo-location';
 import { BACKGROUND_TASK, randomUUID } from './tracking';
 import { enqueueLocation, flushOutbox } from './reports';
 import { getActiveShift } from './storage';
+import { MAX_ACCURACY_M } from './location';
 import type { GeoPoint } from './types';
 
 // Background fixes are queued first, then flushed: the OS may only give us a few seconds.
@@ -12,6 +13,10 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK)) {
     const shiftId = await getActiveShift();
     if (!shiftId) return;
     for (const position of data.locations) {
+      const accuracy = position.coords.accuracy ?? null;
+      // The OS also reports network guesses while a real GPS lock is pending; skip those so
+      // the route does not jump across the city.
+      if (accuracy != null && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > MAX_ACCURACY_M)) continue;
       const point: GeoPoint = {
         id: randomUUID(),
         shiftId,

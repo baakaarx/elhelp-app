@@ -86,6 +86,7 @@ export interface RepSummary {
   pointCount: number;
   firstFixAt: number | null;
   lastFixAt: number | null;
+  lastFixAccuracy?: number | null;
   visitsTotal: number;
   visitsCompleted: number;
   openVisit: Visit | null;

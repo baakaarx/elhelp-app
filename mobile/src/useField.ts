@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { myRoute, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { flushOutbox } from './reports';
-import { requestPermissions, startTracking, stopTracking } from './tracking';
+import { hasBackgroundPermission, hasForegroundPermission, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce } from './location';
 import { getDeviceId, getDeviceName } from './device';
-import { getShiftToken, setShiftToken } from './storage';
+import { getActiveShift, getShiftToken, setShiftToken } from './storage';
 import type { RepSummary, RouteResponse, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
@@ -26,6 +26,7 @@ export interface FieldBundle {
   clearError: () => void;
   refresh: () => Promise<void>;
   beginShift: (options: { background: boolean }) => Promise<void>;
+  resumeTracking: (options: { background: boolean }) => Promise<void>;
   finishShift: () => Promise<void>;
   checkIn: (input: VisitInput) => Promise<void>;
   checkOut: (id: string, input: CheckOutInput) => Promise<void>;
@@ -92,6 +93,44 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     return () => clearInterval(timer);
   }, [user, refresh]);
 
+  /**
+   * Restart the position watcher for a shift that is already open.
+   *
+   * The old "resume" button went through the whole start-shift flow: it asked for consent
+   * again, waited for a fresh GPS fix and could even open a second shift, so a phone indoors
+   * simply could not resume. Now it only re-attaches to the existing shift.
+   */
+  const resumeTracking = useCallback(async ({ background }: { background: boolean }) => {
+    setBusy(true); setError('');
+    try {
+      const permission = await requestPermissions(background);
+      if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن تشغيل التتبع بدونها.');
+      const shift = summary?.shift ?? (await shiftState()).shift;
+      const shiftId = shift?.id ?? await getActiveShift();
+      if (!shiftId) throw new Error('لا توجد وردية مفتوحة على هذا الجهاز. ابدأ وردية جديدة.');
+      await startTracking(shiftId, { background: background && permission.background, startedAt: shift ? Number(shift.started_at) : undefined });
+      setTrackingActive(true);
+      await refresh();
+    } catch (e) { setError((e as Error).message); throw e; }
+    finally { setBusy(false); }
+  }, [refresh, summary]);
+
+  // A closed app or a killed foreground service leaves the shift open but the watcher off.
+  // When the app comes back and permission is still granted, re-attach without asking anything.
+  useEffect(() => {
+    const shift = summary?.shift;
+    if (!shift || trackingActive || busy) return;
+    let cancelled = false;
+    (async () => {
+      if (!(await hasForegroundPermission())) return;
+      const background = await hasBackgroundPermission();
+      if (cancelled) return;
+      await startTracking(shift.id, { background, startedAt: Number(shift.started_at) });
+      if (!cancelled) setTrackingActive(true);
+    })().catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [summary?.shift?.id, summary?.shift?.started_at, trackingActive, busy]);
+
   const beginShift = useCallback(async ({ background }: { background: boolean }) => {
     setBusy(true); setError('');
     try {
@@ -151,6 +190,6 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   return {
     summary, visits, route, pending, loading, busy, trackingActive, error,
     clearError: () => setError(''),
-    refresh, beginShift, finishShift, checkIn, checkOut,
+    refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };
 }

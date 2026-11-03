@@ -189,7 +189,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   }
   function dayDistance(userId: string, start: number, end: number) {
     const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at', userId, start, end) as unknown as GeoPoint[];
-    return { meters: Math.round(distanceMeters(points)), points: points.length, first: points[0]?.recordedAt ?? null, last: points[points.length - 1]?.recordedAt ?? null };
+    const lastPoint = points[points.length - 1];
+    return { meters: Math.round(distanceMeters(points)), points: points.length, first: points[0]?.recordedAt ?? null, last: lastPoint?.recordedAt ?? null, lastAccuracy: lastPoint?.accuracy ?? null };
   }
   function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string }) {
     const where: string[] = []; const params: any[] = [];
@@ -490,7 +491,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
     res.json({
       date, timezone: config.timezone, shift: shift || null,
-      distanceMeters: distance.meters, pointCount: distance.points, firstFixAt: distance.first, lastFixAt: distance.last,
+      distanceMeters: distance.meters, pointCount: distance.points, firstFixAt: distance.first, lastFixAt: distance.last, lastFixAccuracy: distance.lastAccuracy,
       visitsTotal: visits.length, visitsCompleted: completed.length, openVisit: open, avgVisitSeconds,
       collectionsCount: Number(collections?.c || 0), collectionAmount: Number(collections?.total || 0),
       dailyReport: daily || null,

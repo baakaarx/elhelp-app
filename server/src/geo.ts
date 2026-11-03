@@ -9,14 +9,46 @@ export function haversine(a: Pick<GeoPoint, 'lat' | 'lng'>, b: Pick<GeoPoint, 'l
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
   return 6371008.8 * 2 * Math.atan2(Math.sqrt(Math.min(1, Math.max(0, h))), Math.sqrt(Math.max(0, 1 - h)));
 }
-// Conservative estimate, not a validated payroll or reimbursement distance.
+/**
+ * Conservative travelled distance, not a validated payroll or reimbursement figure.
+ *
+ * The naive sum of consecutive fixes failed in the field: a parked phone with ±20m GPS jitter
+ * "drove" several kilometers, and one bad fix dragged the total with it. Here the *step*
+ * between fixes is median-filtered over a small window, so symmetric GPS noise cancels out
+ * while real movement (which repeats the same direction) survives. A step is only added when
+ * it is bigger than the accuracy behind it and the implied speed is humanly possible.
+ */
+const STEP_WINDOW = 5;
+const MIN_STEP_METERS = 10;
+const MAX_HUMAN_SPEED_MPS = 55; // ~200 km/h, above any field visit
+const MAX_USABLE_ACCURACY_M = 100;
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
 export function distanceMeters(points: GeoPoint[]): number {
+  const usable = points.filter(p => p.accuracy === null || (p.accuracy > 0 && p.accuracy <= MAX_USABLE_ACCURACY_M));
+  if (usable.length < 2) return 0;
+  const steps: Array<{ dLat: number; dLng: number; seconds: number }> = [];
   let total = 0;
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1], b = points[i];
-    if ((a.accuracy !== null && a.accuracy > 100) || (b.accuracy !== null && b.accuracy > 100)) continue;
-    const meters = haversine(a, b), seconds = (b.recordedAt - a.recordedAt) / 1000;
-    if (seconds <= 0 || seconds > 600 || meters < 10 || meters / seconds > 55) continue;
+  for (let i = 1; i < usable.length; i++) {
+    const previous = usable[i - 1];
+    const current = usable[i];
+    const seconds = (current.recordedAt - previous.recordedAt) / 1000;
+    if (seconds <= 0 || seconds > 600) { steps.length = 0; continue; }
+    steps.push({ dLat: current.lat - previous.lat, dLng: current.lng - previous.lng, seconds });
+    if (steps.length > STEP_WINDOW) steps.shift();
+    const dLat = median(steps.map(step => step.dLat));
+    const dLng = median(steps.map(step => step.dLng));
+    const stepSeconds = median(steps.map(step => step.seconds));
+    if (stepSeconds <= 0) continue;
+    const meters = haversine(current, { lat: current.lat + dLat, lng: current.lng + dLng });
+    if (meters / stepSeconds > MAX_HUMAN_SPEED_MPS) continue; // a bad fix, not a trip
+    const accuracy = (( previous.accuracy ?? 0) + (current.accuracy ?? 0)) / 2;
+    if (meters < Math.max(MIN_STEP_METERS, accuracy)) continue; // jitter, not movement
     total += meters;
   }
   return total;

@@ -3,15 +3,22 @@ import * as Battery from 'expo-battery';
 import * as Location from 'expo-location';
 import { enqueueLocation, flushOutbox } from './reports';
 import { setActiveShift } from './storage';
+import { MAX_ACCURACY_M, metersBetween } from './location';
 import type { GeoPoint } from './types';
 
 export const BACKGROUND_TASK = 'mandoub-background-location';
 export const CONSENT_VERSION = '1.0';
 const CHUNK_MS = 1000;
+// A fix this loose is a cell-tower guess; queueing it teleports the map and inflates distance.
+const MAX_POINT_ACCURACY_M = MAX_ACCURACY_M;
+// While standing still the GPS jitters by a few meters; one heartbeat a minute is enough.
+const STANDSTILL_MS = 60000;
+const STANDSTILL_METERS = 5;
 
 type Listener = (point: GeoPoint) => void;
 let subscription: Location.LocationSubscription | null = null;
 let shiftId: string | null = null;
+let lastQueued: { lat: number; lng: number; at: number } | null = null;
 const listeners = new Set<Listener>();
 
 function makeId(): string {
@@ -24,6 +31,17 @@ function makeId(): string {
 }
 function randomUUID() { return makeId(); }
 export { randomUUID };
+
+export async function hasForegroundPermission(): Promise<boolean> {
+  try { return (await Location.getForegroundPermissionsAsync()).status === 'granted'; }
+  catch { return false; }
+}
+
+export async function hasBackgroundPermission(): Promise<boolean> {
+  if (Platform.OS === 'web') return false;
+  try { return (await Location.getBackgroundPermissionsAsync()).status === 'granted'; }
+  catch { return false; }
+}
 
 export async function requestPermissions(backgroundRequested = true): Promise<{ foreground: boolean; background: boolean }> {
   const foreground = await Location.requestForegroundPermissionsAsync();
@@ -45,24 +63,33 @@ export async function currentBattery(): Promise<number | null> {
 
 export async function startTracking(id: string, opts: { background: boolean; startedAt?: number } = { background: true }) {
   shiftId = id;
+  lastQueued = null;
   await setActiveShift(id);
   if (!subscription) {
     subscription = await Location.watchPositionAsync(
       { accuracy: Location.Accuracy.High, timeInterval: CHUNK_MS, distanceInterval: 5 },
       position => {
         if (!shiftId || !Number.isFinite(position.timestamp) || position.timestamp < (opts.startedAt ?? 0)) return;
+        const { latitude, longitude, accuracy } = position.coords;
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+        if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return;
+        if (accuracy != null && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > MAX_POINT_ACCURACY_M)) return;
+        const now = Date.now();
+        // Standing still: ignore the jitter but keep a heartbeat so the manager still sees a
+        // live signal (otherwise a parked engineer looks like a lost connection).
+        if (lastQueued && now - lastQueued.at < STANDSTILL_MS && metersBetween(lastQueued, { lat: latitude, lng: longitude }) < STANDSTILL_METERS) return;
         const point: GeoPoint = {
           id: randomUUID(), shiftId,
-          lat: position.coords.latitude, lng: position.coords.longitude,
-          accuracy: position.coords.accuracy ?? null,
+          lat: latitude, lng: longitude,
+          accuracy: accuracy ?? null,
           speed: position.coords.speed != null && position.coords.speed >= 0 && position.coords.speed <= 150 ? position.coords.speed : null,
           heading: position.coords.heading != null && position.coords.heading >= 0 && position.coords.heading < 360 ? position.coords.heading : null,
           battery,
-          recordedAt: position.timestamp || Date.now(),
+          recordedAt: position.timestamp || now,
         };
+        lastQueued = { lat: latitude, lng: longitude, at: now };
         for (const listener of listeners) listener(point);
         void enqueueLocation(point).then(() => {
-          const now = Date.now();
           if (now - lastSent > 3000) { lastSent = now; return flushOutbox(); }
         }).catch(() => undefined);
       },
@@ -86,6 +113,7 @@ export async function startTracking(id: string, opts: { background: boolean; sta
 }
 export async function stopTracking() {
   shiftId = null;
+  lastQueued = null;
   await setActiveShift(null);
   subscription?.remove();
   subscription = null;
