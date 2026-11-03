@@ -476,6 +476,42 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.setHeader('Cache-Control', 'private, no-store');
     res.send('\uFEFF' + csv);
   });
+  // ---- Monthly register: visits + reports per month (international company requirement) ----
+  function monthBounds(month: string) {
+    if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('الشهر بصيغة YYYY-MM');
+    const [y, m] = month.split('-').map(Number);
+    if (m < 1 || m > 12) throw new Error('الشهر غير صحيح');
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const from = `${month}-01`;
+    const to = `${month}-${String(lastDay).padStart(2, '0')}`;
+    const start = dayBounds(from, config.timezone).start;
+    const end = dayBounds(to, config.timezone).end;
+    return { from, to, start, end };
+  }
+  app.get('/api/monthly', adminOnly, (req, res) => {
+    const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
+    try {
+      const { from, to } = monthBounds(month);
+      const rows = kpiRows(from, to);
+      res.json({ month, from, to, timezone: config.timezone, rows });
+    } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
+  app.get('/api/monthly.csv', adminOnly, (req, res) => {
+    const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
+    try {
+      const { from, to } = monthBounds(month);
+      const rows = kpiRows(from, to);
+      const header = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'التحصيل (ج.م)'];
+      const csv = [header.join(',')].concat(rows.map(r => [
+        r.name, r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+        (r.distanceMeters / 1000).toFixed(1), r.reports, r.dailyReports, r.collected,
+      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))).join('\r\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="elhelb-monthly-${month}.csv"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send('\uFEFF' + csv);
+    } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
   // ---- Reports: the second core feature of the rep app ----
   app.post('/api/reports', repOnly, (req, res) => {
     const parsed = newReport.safeParse(req.body);

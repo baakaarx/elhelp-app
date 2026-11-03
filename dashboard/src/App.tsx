@@ -7,12 +7,14 @@ import MapView from './MapView';
 import Reports from './Reports';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
+import Monthly from './Monthly';
 import type { ManagerAlert, Overview, Rep, Report, RouteResponse, User, Visit } from './types';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'reports' | 'team' | 'account' | 'agent';
+type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'team' | 'account' | 'agent';
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'مركز العمليات', icon: '◈' },
+  { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
   { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
   { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
   { id: 'team', label: 'نخبة الفريق', icon: '◆' },
@@ -199,6 +201,7 @@ export default function App() {
           </section>
         )}
         {tab === 'performance' && <Performance reps={reps} />}
+        {tab === 'monthly' && <Monthly reps={reps} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
         {tab === 'agent' && <AgentPanel reps={reps} />}
