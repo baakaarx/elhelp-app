@@ -119,13 +119,17 @@ test('admin overview lists the live representative and pending report counters',
   assert.equal(mine.location, null);
 });
 
+test('starting a shift without GPS is rejected', async () => {
+  const res = await rep.post('/api/shifts/start').set(auth(repToken)).send({ consentVersion: '1.0' as const });
+  assert.equal(res.status, 422);
+  assert.match(res.body.error, /GPS/);
+});
 test('starting a shift without explicit consent is rejected', async () => {
-  const res = await rep.post('/api/shifts/start').set(auth(repToken)).send({});
+  const res = await rep.post('/api/shifts/start').set(auth(repToken)).send({ location: { lat: 31.2, lng: 29.9, accuracy: 10 }, deviceId: 'test-device-001' });
   assert.equal(res.status, 400);
 });
-
 test('starting a shift records the consent version and time', async () => {
-  const res = await rep.post('/api/shifts/start').set(auth(repToken)).send({ consentVersion: '1.0' });
+  const res = await rep.post('/api/shifts/start').set(auth(repToken)).send({ consentVersion: '1.0', location: { lat: 31.2, lng: 29.9, accuracy: 10 }, deviceId: 'test-device-001', deviceName: 'Test Phone' });
   assert.equal(res.status, 200);
   shiftId = res.body.shift.id;
   assert.equal(res.body.shift.consent_version, '1.0');
@@ -146,7 +150,7 @@ test('a simulated demo account cannot start real GPS tracking', async () => {
   const demoRep = request(app);
   const res = await demoRep.post('/api/auth/login').send({ email: demoUser.email, password: 'Demo1234!' });
   assert.equal(res.status, 200);
-  const start = await request(app).post('/api/shifts/start').set(auth(res.body.token)).send({ consentVersion: '1.0' });
+  const start = await request(app).post('/api/shifts/start').set(auth(res.body.token)).send({ consentVersion: '1.0', location: { lat: 31.2, lng: 29.9, accuracy: 10 }, deviceId: 'demo-device-001' });
   assert.equal(start.status, 403);
 });
 
@@ -376,7 +380,7 @@ test('a visit check-in stores the customer and opens the visit', async () => {
 });
 
 test('a second check-in is rejected while a visit is still open', async () => {
-  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id: crypto.randomUUID(), customerName: 'عميل تاني' });
+  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id: crypto.randomUUID(), customerName: 'عميل تاني', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   assert.equal(res.status, 409);
   assert.equal(res.body.openVisitId, visitId);
 });
@@ -403,7 +407,7 @@ test('checking out closes the visit with a measured duration', async () => {
 
 test('a collection checkout is mirrored into the manager reports feed', async () => {
   const id = crypto.randomUUID();
-  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerName: 'مؤسسة التحصيل', purpose: 'collection' });
+  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerName: 'مؤسسة التحصيل', purpose: 'collection', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
   const out = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({ outcome: 'تحصيل نقدي', amount: 1250 });
   assert.equal(out.status, 200);
   const mirrored = store.get('SELECT * FROM reports WHERE id=?', `visit:${id}`);

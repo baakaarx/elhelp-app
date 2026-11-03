@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle, Sheet, Stat } from './ui';
 import RouteMap from './RouteMap';
@@ -7,6 +7,9 @@ import { CheckInSheet, CheckOutSheet } from './VisitSheets';
 import { agoText, clockText, hhmmss } from './format';
 import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
+import { captureOnce } from './location';
+import { getDeviceId } from './device';
+import { reportIdle } from './api';
 
 type Props = {
   user: User;
@@ -68,6 +71,14 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
           )}
           {field.error ? <Text style={styles.error}>{field.error}</Text> : null}
         </Card>
+
+        {(() => {
+          const lastFix = summary?.lastFixAt ? Number(summary.lastFixAt) : null;
+          const idleMs = lastFix ? now - lastFix : null;
+          const showIdle = shift && idleMs !== null && idleMs > 60 * 60 * 1000;
+          if (!showIdle) return null;
+          return <IdleBanner now={now} lastFixAt={lastFix!} />;
+        })()}
 
         {openVisit ? (
           <Card tone="mint" style={styles.openVisit}>
@@ -180,6 +191,53 @@ function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, se
       <Toggle checked={background} onChange={() => setBackground(!background)} label="السماح بالتسجيل في الخلفية (موصى به حتى لو الشاشة مقفولة)" />
       <Toggle checked={agreed} onChange={() => setAgreed(!agreed)} label="أوافق على تسجيل موقعي طوال الوردية وأقر بأن هذا توقيعي على الموافقة." />
       <Button label="موافق، ابدأ الوردية" onPress={onStart} disabled={!agreed} loading={busy} />
+    </Sheet>
+  );
+}
+
+function IdleBanner({ now, lastFixAt }: { now: number; lastFixAt: number }) {
+  const [open, setOpen] = useState(false);
+  const minutes = Math.max(0, Math.round((now - lastFixAt) / 60000));
+  if (!open) {
+    return (
+      <Card tone="mint" style={{ borderColor: '#f0c27a', backgroundColor: '#fff8e6' }}>
+        <Row style={{ justifyContent: 'space-between' }}>
+          <Pill label="تنبيه" tone="warn" />
+          <Text style={{ fontFamily: fonts.bold, color: colors.amber }}>سكون ${minutes} دقيقة</Text>
+        </Row>
+        <Body>لم يتحرك هاتفك منذ ${minutes} دقيقة — يجب كتابة سبب الوقوف ليصل للمدير.</Body>
+        <Button label="كتابة سبب الوقوف" variant="primary" onPress={() => setOpen(true)} />
+      </Card>
+    );
+  }
+  return <IdleSheet onClose={() => setOpen(false)} />;
+}
+
+function IdleSheet({ onClose }: { onClose: () => void }) {
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    if (reason.trim().length < 5) { setError('اكتب سبب الوقوف (٥ أحرف على الأقل).'); return; }
+    setSaving(true); setError('');
+    try {
+      const fix = await captureOnce({ maxAgeMs: 0 });
+      if (!fix) throw new Error('GPS مطلوب — فعّل الموقع لإرسال تبرير الوقوف.');
+      const deviceId = await getDeviceId();
+      await reportIdle(reason.trim(), { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy }, deviceId);
+      onClose();
+    } catch (e) { setError((e as Error).message); }
+    finally { setSaving(false); }
+  };
+  return (
+    <Sheet visible={true} onClose={onClose} title="تبرير الوقوف — ساعة بلا حركة">
+      <Body muted>مربوط بهاتفك تلقائيًا — سيظهر للمدير مع موقعك الآن.</Body>
+      <View style={{ gap: 6 }}>
+        <Text style={styles.toggleLabel}>السبب</Text>
+        <TextInput value={reason} onChangeText={setReason} placeholder="انتظار عميل، عطل سيارة، استراحة…" multiline style={{ minHeight: 80, borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, textAlign: 'right', fontFamily: fonts.regular }} />
+      </View>
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+      <Button label={saving ? 'جارٍ الإرسال…' : 'إرسال التبرير'} onPress={submit} loading={saving} />
     </Sheet>
   );
 }

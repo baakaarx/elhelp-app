@@ -7,17 +7,19 @@ import MapView from './MapView';
 import Reports from './Reports';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
+import Monthly from './Monthly';
 import type { ManagerAlert, Overview, Rep, Report, RouteResponse, User, Visit } from './types';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'reports' | 'team' | 'account' | 'agent';
+type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'team' | 'account' | 'agent';
 const tabs: { id: Tab; label: string; icon: string }[] = [
-  { id: 'live', label: 'المتابعة الحية', icon: '◎' },
-  { id: 'performance', label: 'الأداء والمؤشرات', icon: '▲' },
-  { id: 'reports', label: 'التقارير', icon: '▤' },
-  { id: 'team', label: 'الفريق', icon: '☷' },
+  { id: 'live', label: 'مركز العمليات', icon: '◈' },
+  { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
+  { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
+  { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
+  { id: 'team', label: 'نخبة الفريق', icon: '◆' },
   { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
-  { id: 'account', label: 'الحساب والخصوصية', icon: '⚙' },
+  { id: 'account', label: 'هويتي', icon: '◉' },
 ];
 
 export default function App() {
@@ -98,8 +100,9 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-img" src="/elhelb-mark.png" alt="الهلب جروب" width={44} height={44} />
-          <div><strong>الهلب جروب</strong><small>متابعة الميدان</small></div>
+          <div><strong>ELHELB GROUP</strong><small>Elite Field Network · منذ 1993</small></div>
         </div>
+
         <nav>
           {tabs.map(item => (
             <button key={item.id} className={tab === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(item.id)}>
@@ -198,6 +201,7 @@ export default function App() {
           </section>
         )}
         {tab === 'performance' && <Performance reps={reps} />}
+        {tab === 'monthly' && <Monthly reps={reps} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
         {tab === 'agent' && <AgentPanel reps={reps} />}
@@ -287,6 +291,14 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
     try { await patch(`/api/reps/${rep.id}`, { active: !rep.active }); onChange(); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث الحساب.'); }
   }
+  async function approve(rep: Rep, status: 'approved' | 'rejected') {
+    try { await patch(`/api/reps/${rep.id}/approval`, { status }); onChange(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث الموافقة.'); }
+  }
+  async function resetDevice(rep: Rep) {
+    try { await post(`/api/reps/${rep.id}/reset-device`, {}); onChange(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'تعذر إعادة ربط الجهاز.'); }
+  }
   return (
     <section className="page">
       <header className="page-head"><div><h2>الفريق</h2><p className="muted">أضف المهندسين وتحكم في صلاحية الدخول والتتبع.</p></div></header>
@@ -312,8 +324,12 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
             {reps.map(rep => (
               <li key={rep.id} className="team-row">
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
-                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.isDemo ? 'حساب عرض تجريبي (محاكاة)' : rep.region || 'بدون منطقة'}{rep.active ? '' : ' · موقوف'}</small></span>
-                <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
+                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.isDemo ? 'حساب عرض تجريبي (محاكاة)' : rep.region || 'بدون منطقة'}{rep.active ? '' : ' · موقوف'}{(rep as any).approvalStatus === 'pending' ? ' · بانتظار الموافقة' : ''}{(rep as any).oauthProvider ? ` · ${ (rep as any).oauthProvider}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {(rep as any).approvalStatus === 'pending' && <><button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button><button className="btn ghost sm" onClick={() => approve(rep, 'rejected')}>رفض</button></>}
+                  {(rep as any).deviceId && <button className="btn ghost sm" onClick={() => resetDevice(rep)}>فك ربط الجهاز</button>}
+                  <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
+                </span>
               </li>
             ))}
             {reps.length === 0 && <li className="empty">لا يوجد مهندسون بعد.</li>}

@@ -21,22 +21,22 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
         <aside className="login-aside">
           <img className="aside-logo" src="/elhelb-logo.gif" alt="شعار الهلب جروب" width={150} height={183} />
           <div>
-            <h2>الهلب جروب</h2>
-            <p className="tagline">مبيدات وأسمدة زراعية · منذ ١٩٩٣</p>
-            <p className="aside-note">من المخزن إلى المزرعة — مهندسينا على الطريق كل يوم بأوردرات العملاء.</p>
+            <h2>ELHELB GROUP</h2>
+            <p className="tagline">نخبة الخبراء الميدانيين · منذ ١٩٩٣</p>
+            <p className="aside-note">٣٠ عاماً من الريادة · من المختبر إلى الحقل، خبراؤنا يصنعون الأثر كل يوم.</p>
           </div>
           <ul>
-            <li>متابعة ميدانية لحظية لمهندسي المبيعات</li>
-            <li>زيارات وتقارير يومية موقّعة إلكترونيًا</li>
-            <li>مؤشرات أداء ومسارات قابلة للمراجعة</li>
+            <li>✦ مركز عمليات النخبة — رؤية لحظية لفريقك</li>
+            <li>✦ توثيق إنجازات وزيارات موقعة رقمياً</li>
+            <li>✦ ذكاء ميداني ومؤشرات تأثير قابلة للقياس</li>
           </ul>
         </aside>
         <div className="login-card">
           <div className="login-brand">
             <img className="brand-mark" src="/elhelb-emblem.png" alt="شعار الهلب جروب" width={52} height={52} />
             <div>
-              <h1>لوحة متابعة الميدان</h1>
-              <p>الهلب جروب · إدارة مهندسي المبيعات والتقارير</p>
+              <h1>Elite Operations Center</h1>
+              <p>الهلب جروب الدولية · مركز عمليات النخبة</p>
             </div>
           </div>
           <form onSubmit={submit} className="stack">
@@ -49,15 +49,15 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
               <input type="password" dir="ltr" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
             </label>
             {error && <p className="error" role="alert">{error}</p>}
-            <button className="btn primary" disabled={busy}>{busy ? 'جارٍ الدخول…' : 'دخول لوحة المتابعة'}</button>
+            <button className="btn primary" disabled={busy}>{busy ? 'جارٍ الدخول…' : 'دخول مركز النخبة →'}</button>
           </form>
           <div className="login-switch">
             <span>مهندس مبيعات؟</span>
             <a href="/app" className="btn ghost sm">افتح تطبيق المهندس ←</a>
           </div>
           <div className="login-hint">
-            <p>حساب عرض تجريبي: <b dir="ltr">admin@mandoub.test</b> / <b dir="ltr">Demo1234!</b></p>
-            <p className="muted small">يتم جمع الموقع أثناء الوردية فقط، بموافقة صريحة من المهندس، وتُحذف البيانات بعد مدة الاحتفاظ.</p>
+            <p>دخول النخبة التجريبي: <b dir="ltr">admin@mandoub.test</b> / <b dir="ltr">Demo1234!</b></p>
+            <p className="muted small">🔒 بياناتك محمية بمعايير دولية. الموقع يُجمع أثناء المهمة فقط بموافقتك، ويُحذف تلقائياً بعد مدة الاحتفاظ.</p>
           </div>
         </div>
       </div>

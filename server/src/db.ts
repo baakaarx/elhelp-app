@@ -101,7 +101,27 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS visits_user_time ON visits(user_id, checked_in_at);
       CREATE INDEX IF NOT EXISTS visits_open ON visits(user_id, status);
+      -- Pending approval for OAuth social login (manager must approve)
+      CREATE TABLE IF NOT EXISTS idle_reports (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        shift_id TEXT REFERENCES shifts(id) ON DELETE SET NULL,
+        lat REAL, lng REAL, accuracy REAL, reason TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL, device_id TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      );
     `);
+    // Lightweight migrations for international/enterprise requirements
+    for (const sql of [
+      "ALTER TABLE shifts ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE shifts ADD COLUMN device_name TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE shifts ADD COLUMN start_lat REAL",
+      "ALTER TABLE shifts ADD COLUMN start_lng REAL",
+      "ALTER TABLE shifts ADD COLUMN start_accuracy REAL",
+      "ALTER TABLE users ADD COLUMN oauth_provider TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE users ADD COLUMN oauth_subject TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
+      "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+    ]) { try { this.db.exec(sql); } catch {} }
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
   all(sql: string, ...params: any[]): Row[] { return this.db.prepare(sql).all(...params) as Row[]; }

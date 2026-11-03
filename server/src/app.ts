@@ -41,6 +41,12 @@ const newReport = z.object({
   location: reportLocation.nullable().default(null),
 }).strict();
 
+const startShiftSchema = z.object({
+  consentVersion: z.literal(CONSENT_VERSION),
+  location: reportLocation,
+  deviceId: z.string().trim().min(3).max(120),
+  deviceName: z.string().trim().max(120).optional().default(''),
+}).strict();
 const newVisit = z.object({
   id: z.uuid(),
   customerName: z.string().trim().min(2, 'اسم العميل / المزرعة مطلوب.').max(120),
@@ -50,7 +56,7 @@ const newVisit = z.object({
   phone: z.string().trim().max(30).default(''),
   purpose: z.enum(['visit', 'order', 'collection', 'note', 'issue', 'other']).default('visit'),
   notes: z.string().trim().max(1000).default(''),
-  location: reportLocation.nullable().default(null),
+  location: reportLocation,
 }).strict();
 const closeVisit = z.object({
   outcome: z.string().trim().max(1000).default(''),
@@ -209,10 +215,60 @@ export function createApp(overrides: Partial<Config> = {}) {
     const dummy = '00000000000000000000000000000000:' + '00'.repeat(64);
     const valid = verifyPassword(parsed.data.password, user?.password_hash || dummy);
     if (!user || !valid) { res.status(401).json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' }); return; }
+    if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير — سيتم تفعيله قريبًا.', code: 'PENDING_APPROVAL' }); return; }
+    if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
     const session = createSession(store, user.id);
     setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
     store.audit(user.id, 'auth.login');
     res.json({ ...session, user: publicUser(user) });
+  });
+  // ---- Social login (Google / Apple) — manager approval required ----
+  const socialSchema = z.object({ provider: z.enum(['google', 'apple']), idToken: z.string().min(10).max(8000), deviceId: z.string().trim().min(3).max(120).optional(), deviceName: z.string().trim().max(120).optional().default('') }).strict();
+  function parseJwtPayload(token: string): any | null {
+    try { const p = token.split('.')[1]; if (!p) return null; const json = Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); return JSON.parse(json); } catch { return null; }
+  }
+  app.post('/api/auth/social', (req, res) => {
+    const parsed = socialSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'بيانات تسجيل الدخول الاجتماعي غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    const { provider, idToken, deviceId } = parsed.data;
+    const payload = parseJwtPayload(idToken);
+    if (!payload || !payload.email || !payload.sub) { res.status(401).json({ error: 'رمز الدخول الاجتماعي غير صالح.', code: 'INVALID_SOCIAL_TOKEN' }); return; }
+    const email = String(payload.email).toLowerCase().trim();
+    const name = String(payload.name || payload.given_name || email.split('@')[0]).trim().slice(0, 80);
+    const subject = String(payload.sub);
+    let user = store.get('SELECT * FROM users WHERE email=?', email);
+    if (!user) {
+      const id = randomUUID();
+      store.run('INSERT INTO users(id,name,email,password_hash,role,oauth_provider,oauth_subject,approval_status,device_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        id, name, email, 'social:' + subject.slice(0, 20), 'rep', provider, subject, 'pending', deviceId || '', Date.now());
+      store.audit(id, 'auth.social_register', { provider, email });
+      res.status(202).json({ error: 'تم إنشاء حسابك وهو بانتظار موافقة المدير — سيصلك إشعار عند التفعيل.', code: 'PENDING_APPROVAL', email });
+      return;
+    }
+    if (user.oauth_provider && user.oauth_provider !== provider) { res.status(409).json({ error: 'هذا البريد مرتبط بمزوّد دخول آخر.', code: 'PROVIDER_MISMATCH' }); return; }
+    if (!user.oauth_provider) { store.run('UPDATE users SET oauth_provider=?, oauth_subject=? WHERE id=?', provider, subject, user.id); }
+    if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير.', code: 'PENDING_APPROVAL' }); return; }
+    if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
+    if (!user.active) { res.status(401).json({ error: 'الحساب موقوف.' }); return; }
+    if (deviceId) {
+      const existing = String(user.device_id || '').trim();
+      if (!existing) store.run('UPDATE users SET device_id=? WHERE id=?', deviceId, user.id);
+      else if (existing !== deviceId) { res.status(403).json({ error: `هذا الحساب مرتبط بهاتف آخر (${existing.slice(0, 8)}…). تواصل مع المدير لإعادة الربط.`, code: 'DEVICE_MISMATCH' }); return; }
+    }
+    const session = createSession(store, user.id);
+    setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
+    store.audit(user.id, 'auth.social_login', { provider });
+    res.json({ ...session, user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
+  });
+  app.patch('/api/reps/:id/approval', adminOnly, (req, res) => {
+    const parsed = z.object({ status: z.enum(['approved', 'rejected', 'pending']) }).strict().safeParse(req.body);
+    const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
+    if (!parsed.success || !user) { res.status(400).json({ error: 'بيانات الموافقة غير صحيحة.' }); return; }
+    store.run('UPDATE users SET approval_status=? WHERE id=?', parsed.data.status, user.id);
+    if (parsed.data.status !== 'approved') { store.run('DELETE FROM sessions WHERE user_id=?', user.id); io.in(`user:${user.id}`).disconnectSockets(true); }
+    store.audit(res.locals.user.id, 'rep.approval', { repId: user.id, status: parsed.data.status });
+    broadcast();
+    res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
   app.get('/api/auth/me', auth, (_req, res) => { res.json({ user: publicUser(res.locals.user) }); });
   app.post('/api/auth/logout', auth, (req, res) => {
@@ -268,19 +324,51 @@ export function createApp(overrides: Partial<Config> = {}) {
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     res.json({ shift: shift || null, snapshot: repSnapshot(res.locals.user), consentVersion: CONSENT_VERSION });
   });
+  const bindDevice = (user: any, deviceId: string): string | null => {
+    const existing = String(user.device_id || '').trim();
+    if (!existing) { store.run('UPDATE users SET device_id=? WHERE id=?', deviceId, user.id); return null; }
+    if (existing !== deviceId) return `هذا الحساب مرتبط بهاتف آخر (${existing.slice(0, 8)}…). تواصل مع المدير لإعادة الربط.`;
+    return null;
+  };
   app.post('/api/shifts/start', repOnly, (req, res) => {
-    const parsed = z.object({ consentVersion: z.literal(CONSENT_VERSION) }).strict().safeParse(req.body);
-    if (!parsed.success) { res.status(400).json({ error: 'موافقتك الصريحة مطلوبة قبل بدء التتبع.' }); return; }
+    const parsed = startShiftSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const hasLocation = req.body && typeof req.body.location === 'object' && req.body.location !== null;
+      const hasDevice = req.body && typeof req.body.deviceId === 'string' && req.body.deviceId.trim().length >= 3;
+      if (!hasLocation) { res.status(422).json({ error: 'GPS مطلوب — فعّل الموقع وامنح الإذن قبل بدء الوردية.', code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+      if (!hasDevice) { res.status(422).json({ error: 'الجهاز غير موثّق — أرسل معرّف الهاتف.', code: 'DEVICE_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+      res.status(400).json({ error: 'بيانات بدء الوردية غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
+    }
     if (res.locals.user.is_demo) { res.status(403).json({ error: 'هذا حساب عرض تجريبي فقط. استخدم rep@mandoub.test لاختبار GPS الحقيقي.' }); return; }
+    const deviceErr = bindDevice(res.locals.user, parsed.data.deviceId);
+    if (deviceErr) { res.status(403).json({ error: deviceErr, code: 'DEVICE_MISMATCH' }); return; }
     let shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     if (!shift) {
       const id = randomUUID(), now = Date.now();
-      store.run('INSERT INTO shifts(id,user_id,started_at,consent_version,consent_at) VALUES (?,?,?,?,?)', id, res.locals.user.id, now, CONSENT_VERSION, now);
-      store.audit(res.locals.user.id, 'shift.start', { consentVersion: CONSENT_VERSION });
+      store.run('INSERT INTO shifts(id,user_id,started_at,consent_version,consent_at,device_id,device_name,start_lat,start_lng,start_accuracy) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        id, res.locals.user.id, now, CONSENT_VERSION, now, parsed.data.deviceId, parsed.data.deviceName || '', parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null);
+      store.audit(res.locals.user.id, 'shift.start', { consentVersion: CONSENT_VERSION, deviceId: parsed.data.deviceId, lat: parsed.data.location.lat, lng: parsed.data.location.lng });
       shift = store.get('SELECT * FROM shifts WHERE id=?', id);
     }
     broadcast();
     res.json({ shift });
+  });
+  const idleSchema = z.object({ reason: z.string().trim().min(5).max(1000), location: reportLocation, deviceId: z.string().trim().min(3).max(120) }).strict();
+  app.post('/api/shifts/idle', repOnly, (req, res) => {
+    const parsed = idleSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'سبب الوقوف مطلوب مع الموقع — لا يمكن ترك الحقل فارغًا.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    const deviceErr = bindDevice(res.locals.user, parsed.data.deviceId);
+    if (deviceErr) { res.status(403).json({ error: deviceErr, code: 'DEVICE_MISMATCH' }); return; }
+    const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+    const now = Date.now();
+    const lastLoc = store.get('SELECT recorded_at FROM locations WHERE user_id=? ORDER BY recorded_at DESC LIMIT 1', res.locals.user.id);
+    const idleMinutes = lastLoc ? Math.round((now - Number(lastLoc.recorded_at)) / 60000) : 0;
+    const id = randomUUID();
+    store.run('INSERT INTO idle_reports(id,user_id,shift_id,lat,lng,accuracy,reason,duration_minutes,device_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      id, res.locals.user.id, shift?.id ?? null, parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null, parsed.data.reason, idleMinutes, parsed.data.deviceId, now);
+    store.audit(res.locals.user.id, 'shift.idle_report', { reason: parsed.data.reason, idleMinutes, deviceId: parsed.data.deviceId });
+    broadcast();
+    res.status(201).json({ id, idleMinutes });
   });
   app.post('/api/shifts/stop', repOnly, (_req, res) => { endShift(res.locals.user.id); broadcast(); res.json({ ok: true }); });
   app.post('/api/presence', repOnly, (_req, res) => {
@@ -316,8 +404,16 @@ export function createApp(overrides: Partial<Config> = {}) {
   // ---- Field visits: check in / check out around a customer with GPS proof ----
   app.post('/api/visits/check-in', repOnly, (req, res) => {
     const parsed = newVisit.safeParse(req.body);
-    if (!parsed.success) { res.status(400).json({ error: 'راجع بيانات الزيارة: اسم العميل مطلوب.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    if (!parsed.success) {
+      const hasLoc = req.body && typeof req.body.location === 'object' && req.body.location !== null && typeof req.body.location.lat === 'number';
+      if (!hasLoc) { res.status(422).json({ error: 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.', code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+      res.status(400).json({ error: 'راجع بيانات الزيارة: اسم العميل مطلوب.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
+    }
     if (res.locals.user.is_demo) { res.status(403).json({ error: 'حسابات المحاكاة لا تسجل زيارات. استخدم rep@mandoub.test للتجربة.' }); return; }
+    if (req.body && typeof req.body.deviceId === 'string' && req.body.deviceId.trim().length >= 3) {
+      const de = bindDevice(res.locals.user, String(req.body.deviceId).trim());
+      if (de) { res.status(403).json({ error: de, code: 'DEVICE_MISMATCH' }); return; }
+    }
     const data = parsed.data;
     const existing = visitRow(data.id);
     if (existing) {
@@ -332,7 +428,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,in_lat,in_lng,in_accuracy,created_at)
       VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
       data.district, data.village, data.phone, data.purpose, data.notes, now,
-      data.location?.lat ?? null, data.location?.lng ?? null, data.location?.accuracy ?? null, now);
+      data.location.lat, data.location.lng, data.location.accuracy ?? null, now);
     store.audit(res.locals.user.id, 'visit.check_in', { visitId: data.id, purpose: data.purpose });
     io.to('admins').emit('visit', visitRow(data.id));
     broadcast();
@@ -405,6 +501,12 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (shift && lastAt && now - lastAt > 30 * 60000) {
         alerts.push({ id: `${rep.id}:stale`, level: 'warn', code: 'stale_gps', repId: rep.id, repName: rep.name, title: 'انقطاع في إرسال الموقع', detail: `آخر إشارة ${Math.round((now - lastAt) / 60000)} دقيقة — تأكد من فتح التطبيق والسماح بالموقع.`, at: lastAt });
       }
+      if (shift && lastAt && now - lastAt > 60 * 60000) {
+        const recentJustification = store.get('SELECT id FROM idle_reports WHERE user_id=? AND created_at>?', rep.id, now - 70 * 60000);
+        if (!recentJustification) {
+          alerts.push({ id: `${rep.id}:idle`, level: 'warn', code: 'idle_without_reason', repId: rep.id, repName: rep.name, title: 'سكون لأكثر من ساعة بدون تبرير', detail: `لا حركة منذ ${Math.round((now - lastAt) / 60000)} دقيقة ولم يُرسل تبرير وقوف.`, at: lastAt });
+        }
+      }
       if (shift && !lastAt && now - Number(shift.started_at) > 20 * 60000) {
         alerts.push({ id: `${rep.id}:nosignal`, level: 'warn', code: 'no_signal', repId: rep.id, repName: rep.name, title: 'وردية بدون أي إشارة', detail: 'بدأ الوردية ولم تُسجل أي نقطة موقع بعد.', at: Number(shift.started_at) });
       }
@@ -426,6 +528,25 @@ export function createApp(overrides: Partial<Config> = {}) {
     const order = { warn: 0, info: 1 } as Record<string, number>;
     alerts.sort((a, b) => (order[a.level] - order[b.level]) || (b.at - a.at));
     res.json({ alerts, generatedAt: now, date: today });
+  });
+  app.get('/api/idle-reports', auth, (req, res) => {
+    const isAdmin = res.locals.user.role === 'admin';
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
+    let where = isAdmin ? '1=1' : 'idle_reports.user_id=?';
+    const params: any[] = isAdmin ? [] : [res.locals.user.id];
+    if (date) { try { const b = dayBounds(date, config.timezone); where += ' AND idle_reports.created_at>=? AND idle_reports.created_at<?'; params.push(b.start, b.end); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; } }
+    if (isAdmin && typeof req.query.repId === 'string') { where += ' AND idle_reports.user_id=?'; params.push(req.query.repId); }
+    const rows = store.all(`SELECT idle_reports.*, users.name AS repName FROM idle_reports JOIN users ON users.id=idle_reports.user_id WHERE ${where} ORDER BY idle_reports.created_at DESC LIMIT ?`, ...params, limit);
+    res.json({ reports: rows.map(r => ({ id: r.id, userId: r.user_id, repName: r.repName, shiftId: r.shift_id, lat: r.lat, lng: r.lng, accuracy: r.accuracy, reason: r.reason, durationMinutes: r.duration_minutes, deviceId: r.device_id, createdAt: r.created_at })) });
+  });
+  app.post('/api/reps/:id/reset-device', adminOnly, (req, res) => {
+    const user = store.get('SELECT * FROM users WHERE id=?', String(req.params.id));
+    if (!user) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
+    store.run('UPDATE users SET device_id=? WHERE id=?', '', user.id);
+    store.audit(res.locals.user.id, 'rep.reset_device', { repId: user.id });
+    broadcast();
+    res.json({ ok: true });
   });
   function kpiRows(from: string, to: string) {
     const start = dayBounds(from, config.timezone).start;
@@ -475,6 +596,42 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.setHeader('Content-Disposition', `attachment; filename="elhelb-kpis-${from}_${to}.csv"`);
     res.setHeader('Cache-Control', 'private, no-store');
     res.send('\uFEFF' + csv);
+  });
+  // ---- Monthly register: visits + reports per month (international company requirement) ----
+  function monthBounds(month: string) {
+    if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('الشهر بصيغة YYYY-MM');
+    const [y, m] = month.split('-').map(Number);
+    if (m < 1 || m > 12) throw new Error('الشهر غير صحيح');
+    const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const from = `${month}-01`;
+    const to = `${month}-${String(lastDay).padStart(2, '0')}`;
+    const start = dayBounds(from, config.timezone).start;
+    const end = dayBounds(to, config.timezone).end;
+    return { from, to, start, end };
+  }
+  app.get('/api/monthly', adminOnly, (req, res) => {
+    const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
+    try {
+      const { from, to } = monthBounds(month);
+      const rows = kpiRows(from, to);
+      res.json({ month, from, to, timezone: config.timezone, rows });
+    } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
+  app.get('/api/monthly.csv', adminOnly, (req, res) => {
+    const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
+    try {
+      const { from, to } = monthBounds(month);
+      const rows = kpiRows(from, to);
+      const header = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'التحصيل (ج.م)'];
+      const csv = [header.join(',')].concat(rows.map(r => [
+        r.name, r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+        (r.distanceMeters / 1000).toFixed(1), r.reports, r.dailyReports, r.collected,
+      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))).join('\r\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="elhelb-monthly-${month}.csv"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send('\uFEFF' + csv);
+    } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
   // ---- Reports: the second core feature of the rep app ----
   app.post('/api/reports', repOnly, (req, res) => {

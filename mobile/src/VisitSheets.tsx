@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { captureOnce, type Fix } from './location';
+import { getDeviceId } from './device';
 import { randomUUID } from './tracking';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Field, Pill, Row, Sheet } from './ui';
@@ -35,12 +36,15 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
     if (customerName.trim().length < 2) { setError('اكتب اسم العميل أو المزرعة.'); return; }
     setSaving(true); setError('');
     try {
-      const location = fix ?? await captureOnce();
+      const location = fix ?? await captureOnce({ maxAgeMs: 0 });
+      if (!location) throw new Error('GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل تسجيل الزيارة.');
+      const deviceId = await getDeviceId();
       await field.checkIn({
         id: randomUUID(), customerName: customerName.trim(), purpose,
         governorate: governorate.trim(), district: district.trim(), village: village.trim(), phone: phone.trim(), notes: notes.trim(),
-        location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy } : null,
-      });
+        location: { lat: location.lat, lng: location.lng, accuracy: location.accuracy },
+        deviceId,
+      } as any);
       haptic();
       onClose();
     } catch (e) { setError((e as Error).message); }

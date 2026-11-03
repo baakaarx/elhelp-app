@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { myRoute, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { flushOutbox } from './reports';
 import { requestPermissions, startTracking, stopTracking } from './tracking';
+import { captureOnce } from './location';
+import { getDeviceId, getDeviceName } from './device';
 import type { RepSummary, RouteResponse, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
@@ -79,7 +81,11 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     try {
       const permission = await requestPermissions();
       if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن بدء التتبع بدونها.');
-      const res = await startShift('1.0');
+      const fix = await captureOnce({ maxAgeMs: 15000 });
+      if (!fix) throw new Error('GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل بدء الوردية.');
+      const deviceId = await getDeviceId();
+      const deviceName = await getDeviceName();
+      const res = await startShift('1.0', fix, deviceId, deviceName);
       await startTracking(res.shift.id, { background: background && permission.background });
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
