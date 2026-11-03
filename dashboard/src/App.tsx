@@ -6,15 +6,17 @@ import Login from './Login';
 import MapView from './MapView';
 import Reports from './Reports';
 import Performance from './Performance';
+import AgentPanel from './AgentPanel';
 import type { ManagerAlert, Overview, Rep, Report, RouteResponse, User, Visit } from './types';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'reports' | 'team' | 'account';
+type Tab = 'live' | 'performance' | 'reports' | 'team' | 'account' | 'agent';
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'المتابعة الحية', icon: '◎' },
   { id: 'performance', label: 'الأداء والمؤشرات', icon: '▲' },
   { id: 'reports', label: 'التقارير', icon: '▤' },
   { id: 'team', label: 'الفريق', icon: '☷' },
+  { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
   { id: 'account', label: 'الحساب والخصوصية', icon: '⚙' },
 ];
 
@@ -198,6 +200,7 @@ export default function App() {
         {tab === 'performance' && <Performance reps={reps} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
+        {tab === 'agent' && <AgentPanel reps={reps} />}
         {tab === 'account' && <Account user={user} overview={overview} />}
       </main>
     </div>
