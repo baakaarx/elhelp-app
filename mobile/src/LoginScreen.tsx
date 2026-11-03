@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { login } from './api';
+import { login, socialLogin } from './api';
+import { getDeviceId, getDeviceName } from './device';
 import { colors, fonts, radius, shadow, space } from './theme';
 import { Button, Field } from './ui';
 import type { User } from './types';
@@ -24,6 +25,32 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
     setBusy(true); setError('');
     try { onLogin(await login(email, password)); }
     catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function handleSocial(provider: 'google' | 'apple') {
+    // On web: Google Identity Services would provide id_token; on native: expo-auth-session
+    // For now we prompt for token in dev, and show pending-approval guidance
+    // In production, replace with proper OAuth flow using EXPO_PUBLIC_GOOGLE_CLIENT_ID
+    setError('');
+    // If running on web with GIS available, try to use it, otherwise prompt
+    const w = typeof window !== 'undefined' ? (window as any) : null;
+    if (w?.google?.accounts?.id && provider === 'google') {
+      try { w.google.accounts.id.prompt(); return; } catch {}
+    }
+    // Fallback: simple prompt for testing — manager can later configure real OAuth
+    const token = typeof window !== 'undefined' ? window.prompt(provider === 'google' ? 'الصق Google ID Token (للاختبار) — في الإنتاج سيُفتح تسجيل Google تلقائياً بعد إعداد VITE_GOOGLE_CLIENT_ID' : 'الصق Apple ID Token (للاختبار)') : null;
+    if (!token) {
+      setError(provider === 'google' ? 'لتفعيل Google ضع GOOGLE_CLIENT_ID في Vercel، أو الصق التوكن للاختبار' : 'لتفعيل Apple ضع Apple Client ID في Vercel');
+      return;
+    }
+    setBusy(true);
+    try {
+      const deviceId = await getDeviceId();
+      const deviceName = await getDeviceName();
+      const user = await socialLogin(provider, token.trim(), deviceId, deviceName);
+      onLogin(user);
+    } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
 
@@ -54,6 +81,20 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
             <Field label="كلمة المرور" value={password} onChangeText={setPassword} secureTextEntry placeholder="••••••••" style={styles.ltr} />
             {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
             <Button label={busy ? 'جارٍ الدخول…' : 'دخول'} onPress={submit} loading={busy} />
+            <View style={styles.divider}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>أو بدون كلمة سر</Text>
+              <View style={styles.dividerLine} />
+            </View>
+            <View style={{ gap: 10 }}>
+              <Pressable onPress={() => handleSocial('google')} style={({ pressed }) => [styles.socialBtn, styles.googleBtn, pressed && { opacity: 0.85 }]}>
+                <Text style={styles.googleText}>🔵 المتابعة بـ Google (Gmail)</Text>
+              </Pressable>
+              <Pressable onPress={() => handleSocial('apple')} style={({ pressed }) => [styles.socialBtn, styles.appleBtn, pressed && { opacity: 0.85 }]}>
+                <Text style={styles.appleText}> المتابعة بـ Apple (iCloud)</Text>
+              </Pressable>
+              <Text style={styles.socialHint}>الدخول بـ Google/Apple ينشئ حسابك تلقائياً وينتظر <Text style={{ fontFamily: fonts.bold }}>موافقة المدير</Text> — بدون تسجيل يدوي.</Text>
+            </View>
           </View>
 
           <View style={styles.hint}>
@@ -88,6 +129,15 @@ const styles = StyleSheet.create({
   cardTitle: { fontFamily: fonts.bold, fontSize: 15.5, color: colors.green900, textAlign: 'right' },
   ltr: { textAlign: 'left', writingDirection: 'ltr' },
   error: { fontFamily: fonts.regular, fontSize: 12.5, color: colors.danger, textAlign: 'right' },
+  divider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 2, opacity: 0.6 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: colors.line },
+  dividerText: { fontFamily: fonts.regular, fontSize: 11.5, color: colors.muted },
+  socialBtn: { borderRadius: 10, paddingVertical: 12, alignItems: 'center', borderWidth: 1 },
+  googleBtn: { backgroundColor: '#fff', borderColor: '#dadce0' },
+  googleText: { fontFamily: fonts.medium, fontSize: 13.5, color: '#1f1f1f' },
+  appleBtn: { backgroundColor: '#000', borderColor: '#000' },
+  appleText: { fontFamily: fonts.medium, fontSize: 13.5, color: '#fff' },
+  socialHint: { fontFamily: fonts.regular, fontSize: 11, color: colors.muted, textAlign: 'center', lineHeight: 16 },
   hint: {
     borderRadius: radius.md, padding: space.md, gap: 3,
     backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)',
