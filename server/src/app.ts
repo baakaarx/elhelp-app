@@ -8,7 +8,7 @@ import { Server } from 'socket.io';
 import { z } from 'zod';
 import { Store } from './db.js';
 import { readConfig, type Config } from './config.js';
-import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
+import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS, statelessShiftClaims, statelessShiftToken, statelessSessions } from './auth.js';
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { seedDemo, startDemoSimulator, tickDemo } from './demo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
@@ -95,9 +95,32 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.run('INSERT INTO users(id,name,email,password_hash,role,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), 'متابعة الهلب', config.adminEmail, hashPassword(config.adminPassword), 'admin', Date.now());
   }
   if (config.demo) seedDemo(store, config.timezone);
-  const auth = requireAuth(store);
-  const adminOnly = requireAuth(store, 'admin');
-  const repOnly = requireAuth(store, 'rep');
+  /**
+   * Rebuild a signed shift on whichever instance handled this request.
+   *
+   * Only relevant for stateless (hosted demo) sessions: the shift token is signed by the
+   * server, so an instance with an empty database can recreate the same row instead of
+   * answering "you are outside the shift" and dropping the engineer out mid-workday.
+   */
+  function adoptSignedShift(req: express.Request, user: Record<string, any>) {
+    try {
+      const claims = statelessShiftClaims(req.headers['x-mandoub-shift']);
+      if (!claims || claims.email !== String(user.email)) return;
+      const existing = store.get('SELECT id,user_id,ended_at FROM shifts WHERE id=?', claims.shiftId);
+      if (existing) {
+        if (String(existing.user_id) !== String(user.id)) return;
+        if (existing.ended_at) return; // an explicit stop on this instance wins
+        return;
+      }
+      store.run(`INSERT OR IGNORE INTO shifts(id,user_id,started_at,consent_version,consent_at,device_id,device_name,start_lat,start_lng,start_accuracy)
+        VALUES (?,?,?,?,?,'','',NULL,NULL,NULL)`, claims.shiftId, user.id, claims.startedAt, CONSENT_VERSION, claims.startedAt);
+    } catch { /* never let demo bookkeeping break an authenticated request */ }
+  }
+  const withSignedShift = (guard: ReturnType<typeof requireAuth>): express.RequestHandler =>
+    (req, res, next) => guard(req, res, () => { adoptSignedShift(req, res.locals.user); next(); });
+  const auth = withSignedShift(requireAuth(store));
+  const adminOnly = withSignedShift(requireAuth(store, 'admin'));
+  const repOnly = withSignedShift(requireAuth(store, 'rep'));
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
   const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
 
@@ -289,8 +312,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     const points = (truncated ? rows.slice(0, 20000) : rows) as unknown as GeoPoint[];
     res.json({ date, timezone: config.timezone, points, truncated, distanceMeters: Math.round(distanceMeters(points)) });
   });
-  app.get('/api/me/shift', repOnly, (_req, res) => {
-    const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+  app.get('/api/me/shift', repOnly, (req, res) => {
+    // With stateless sessions the signed shift token is the authority: another instance of
+    // the hosted demo has its own database and cannot know about this shift any other way.
+    const claims = statelessShiftClaims(req.headers['x-mandoub-shift']);
+    const shift = statelessSessions()
+      ? (claims && claims.email === String(res.locals.user.email)
+        ? store.get('SELECT * FROM shifts WHERE id=? AND user_id=? AND ended_at IS NULL', claims.shiftId, res.locals.user.id)
+        : undefined)
+      : store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     res.json({ shift: shift || null, snapshot: repSnapshot(res.locals.user), consentVersion: CONSENT_VERSION });
   });
   const bindDevice = (user: any, deviceId: string): string | null => {
@@ -325,7 +355,12 @@ export function createApp(overrides: Partial<Config> = {}) {
       shift = store.get('SELECT * FROM shifts WHERE id=?', id);
     }
     broadcast();
-    res.json({ shift });
+    // Hosted-demo sessions carry a signed copy of the shift so the next request can land on
+    // a different instance without the app thinking the shift was closed.
+    const shiftToken = shift
+      ? statelessShiftToken(String(res.locals.user.email), String(shift.id), Number(shift.started_at))
+      : null;
+    res.json({ shift, shiftToken });
   });
   const idleSchema = z.object({ reason: z.string().trim().min(5).max(1000), location: reportLocation, deviceId: z.string().trim().min(3).max(120) }).strict();
   app.post('/api/shifts/idle', repOnly, (req, res) => {

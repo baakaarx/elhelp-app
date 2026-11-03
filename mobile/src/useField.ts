@@ -4,6 +4,7 @@ import { flushOutbox } from './reports';
 import { requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce } from './location';
 import { getDeviceId, getDeviceName } from './device';
+import { getShiftToken, setShiftToken } from './storage';
 import type { RepSummary, RouteResponse, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
@@ -52,8 +53,22 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         myVisits(),
         myRoute(user.id).catch(() => null),
       ]);
+      // A single empty answer used to look like "the shift ended": on the hosted demo each
+      // request can reach a different instance. Confirm before dropping the engineer out.
+      let shift = state.shift;
+      if (!shift && (await getShiftToken())) {
+        await new Promise(resolve => setTimeout(resolve, 900));
+        const retry = await shiftState().catch(() => null);
+        if (retry?.shift) shift = retry.shift;
+        else {
+          await setShiftToken(null);
+          await stopTracking().catch(() => undefined);
+          setTrackingActive(false);
+          setError('الوردية اتقفلت على الحساب من السيرفر. ابدأ وردية جديدة عشان تسجيل الموقع يرجع.');
+        }
+      }
       if (!mounted.current) return;
-      setSummary({ ...nextSummary, shift: state.shift });
+      setSummary({ ...nextSummary, shift } as RepSummary);
       setVisits(nextVisits.visits);
       setRoute(nextRoute);
     } catch (e) {

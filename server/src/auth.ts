@@ -28,42 +28,101 @@ export function publicUser(row: Row) {
  * session token carries its own HMAC-signed claims, so any instance can verify it and
  * resolve the account by email. Production keeps the database-backed tokens.
  */
-const STATELESS_SECRET = process.env.SESSION_SECRET || '';
-export const statelessSessions = () => STATELESS_SECRET.length >= 16;
-const signClaims = (payload: string) => createHmac('sha256', STATELESS_SECRET).update(payload).digest('base64url');
-function statelessToken(email: string, role: string, expiresAt: number) {
-  const payload = `${role}|${expiresAt}|${email}`;
-  return `s1.${Buffer.from(payload, 'utf8').toString('base64url')}.${signClaims(payload)}`;
-}
-function statelessClaims(token: string): { email: string; role: string } | null {
-  const [version, body, signature] = token.split('.');
-  if (version !== 's1' || !body || !signature) return null;
-  const payload = Buffer.from(body, 'base64url').toString('utf8');
+// Read lazily: tests start separate app instances with their own environment values.
+const secret = () => process.env.SESSION_SECRET || '';
+export const statelessSessions = () => secret().length >= 16;
+const signClaims = (payload: string) => createHmac('sha256', secret()).update(payload).digest('base64url');
+const signatureValid = (payload: string, signature: string) => {
   const expected = signClaims(payload);
-  if (signature.length !== expected.length) return null;
-  if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
-  const [role, expiresAtRaw, ...rest] = payload.split('|');
-  const email = rest.join('|');
+  if (signature.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+};
+const b64 = (value: string) => Buffer.from(value, 'utf8').toString('base64url');
+const unb64 = (value: string) => Buffer.from(value, 'base64url').toString('utf8');
+function statelessToken(email: string, role: string, name: string, expiresAt: number) {
+  const payload = `${role}|${expiresAt}|${b64(name)}|${email}`;
+  return `s2.${b64(payload)}.${signClaims(payload)}`;
+}
+function statelessClaims(token: string): { email: string; role: string; name: string } | null {
+  const [version, body, signature] = token.split('.');
+  if (!body || !signature) return null;
+  const payload = unb64(body);
+  if (!signatureValid(payload, signature)) return null;
+  if (version === 's1') {
+    // Tokens issued before the display name became part of the signature stay valid.
+    const [role, expiresAtRaw, ...rest] = payload.split('|');
+    const email = rest.join('|');
+    const expiresAt = Number(expiresAtRaw);
+    if (!email || !role || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+    return { email, role, name: email.split('@')[0] };
+  }
+  if (version !== 's2') return null;
+  const [role, expiresAtRaw, nameRaw, email] = payload.split('|');
   const expiresAt = Number(expiresAtRaw);
-  if (!email || !role || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
-  return { email, role };
+  if (!email || !role || !nameRaw || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+  return { email, role, name: unb64(nameRaw) };
+}
+/**
+ * Mirror an account onto an instance that has never seen it.
+ *
+ * The hosted demo keeps one SQLite file per serverless instance. A representative created
+ * from the dashboard exists only on the instance that handled the creation, so every later
+ * request that lands elsewhere answered 401 and the app dropped back to the login screen
+ * (and the shift vanished with it). A signed session carries the account's email, role and
+ * name, so any instance can recreate a stable stand-in row with an id derived from the email.
+ * The stand-in only ever exists when stateless sessions are enabled (hosted demo).
+ */
+function mirrorUser(store: Store, claims: { email: string; role: string; name: string }): Row | undefined {
+  const hex = createHash('sha1').update(`mandoub-mirror:${claims.email}`).digest('hex');
+  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  const role = claims.role === 'admin' ? 'admin' : 'rep';
+  const name = (claims.name || claims.email.split('@')[0]).slice(0, 80) || claims.email;
+  store.run(`INSERT OR IGNORE INTO users(id,name,email,password_hash,role,color,is_demo,active,approval_status,created_at)
+    VALUES (?,?,?,'',?,?,0,1,'approved',?)`, id, name, claims.email, role, role === 'admin' ? '#28745b' : '#27745a', Date.now());
+  return store.get('SELECT * FROM users WHERE email=? AND active=1', claims.email);
 }
 export function sessionUser(store: Store, token: unknown): Row | undefined {
-  if (typeof token !== 'string' || token.length < 20 || token.length > 200) return undefined;
+  if (typeof token !== 'string' || token.length < 20 || token.length > 300) return undefined;
   const row = store.get(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`, tokenHash(token), Date.now());
   if (row || !statelessSessions()) return row;
   const claims = statelessClaims(token);
   if (!claims) return undefined;
-  return store.get('SELECT * FROM users WHERE email=? AND active=1', claims.email);
+  const found = store.get('SELECT * FROM users WHERE email=? AND active=1', claims.email);
+  return found ?? mirrorUser(store, claims);
+}
+/**
+ * The shift also has to survive an instance switch, otherwise the app looks like it ended
+ * the shift every 15 seconds (the poll hits a fresh instance with an empty database) and the
+ * engineer cannot check in a visit. The token below is signed by the server and carries the
+ * shift id, its start time and the owning account's email, so any instance can rebuild the
+ * same shift row on demand instead of inventing a new one.
+ */
+const SHIFT_TTL_MS = 20 * 3600000;
+export function statelessShiftToken(email: string, shiftId: string, startedAt: number): string | null {
+  if (!statelessSessions()) return null;
+  const payload = `${email}|${shiftId}|${startedAt}`;
+  return `sh1.${b64(payload)}.${signClaims(payload)}`;
+}
+export function statelessShiftClaims(token: unknown): { email: string; shiftId: string; startedAt: number } | null {
+  if (!statelessSessions() || typeof token !== 'string') return null;
+  const [version, body, signature] = token.split('.');
+  if (version !== 'sh1' || !body || !signature) return null;
+  const payload = unb64(body);
+  if (!signatureValid(payload, signature)) return null;
+  const [email, shiftId, startedAtRaw] = payload.split('|');
+  const startedAt = Number(startedAtRaw);
+  if (!email || !shiftId || !Number.isFinite(startedAt)) return null;
+  if (startedAt > Date.now() + 60000 || Date.now() - startedAt > SHIFT_TTL_MS) return null;
+  return { email, shiftId, startedAt };
 }
 export function createSession(store: Store, userId: string) {
   const now = Date.now();
   const expiresAt = now + SESSION_MS;
   if (statelessSessions()) {
-    const user = store.get('SELECT email, role FROM users WHERE id=?', userId);
+    const user = store.get('SELECT email, role, name FROM users WHERE id=?', userId);
     if (user) {
-      const token = statelessToken(String(user.email), String(user.role), expiresAt);
+      const token = statelessToken(String(user.email), String(user.role), String(user.name || ''), expiresAt);
       // Keep the audit row locally; other instances rely on the signature instead.
       store.run('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)', tokenHash(token), userId, expiresAt, now);
       return { token, expiresAt };
