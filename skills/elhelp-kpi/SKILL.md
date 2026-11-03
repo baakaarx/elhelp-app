@@ -11,7 +11,7 @@ description: تحليل مؤشرات أداء الفريق الميداني - ز
 - `visits` / `visitsCompleted` — إجمالي الزيارات والمكتملة
 - `avgVisitSeconds` — متوسط مدة الزيارة
 - `reports` / `dailyReports` — التقارير السريعة واليومية
-- `collected` — إجمالي التحصيل (من `visits.amount` + `reports.amount`)
+- `collected` — إجمالي التحصيل (من `reports.amount` حيث `type='collection'`)
 - `daysWithData` — أيام النشاط الفعلي
 
 ## كيف يفسرها الـ Agent (بدون API)

@@ -4,7 +4,6 @@
  * Usage:
  *   npm run agent -- review
  *   npm run agent -- summarize --repId <uuid> --date 2026-11-02
- *   npm run agent -- kpi --from 2026-10-01 --to 2026-11-02
  *   npm run agent -- route --repId <uuid> --date 2026-11-02
  *   npm run agent -- alerts
  *   npm run agent -- skills
@@ -44,13 +43,10 @@ ElHelp Agent (بدون API) — الأوامر:
                                       ملخص يوم مهندس أو كل الفريق
   route --repId UUID [--date YYYY-MM-DD]
                                       تحليل مسار GPS
-  kpi --from YYYY-MM-DD --to YYYY-MM-DD
-                                      تحليل مؤشرات الأداء
 
 أمثلة:
   npm run agent -- review
   npm run agent -- alerts
-  npm run agent -- kpi --from 2026-11-01 --to 2026-11-02
 `);
     process.exit(0);
   }
@@ -63,10 +59,6 @@ ElHelp Agent (بدون API) — الأوامر:
     const repId = getArg('repId');
     if (!repId) { console.error('route يحتاج --repId'); process.exit(1); }
     input = { task: 'analyze-route', repId, date: getArg('date') };
-  } else if (cmd === 'kpi') {
-    const from = getArg('from'), to = getArg('to');
-    if (!from || !to) { console.error('kpi يحتاج --from و --to'); process.exit(1); }
-    input = { task: 'kpi-insights', from, to };
   } else {
     console.error(`أمر غير معروف: ${cmd} — استخدم help`);
     process.exit(1);

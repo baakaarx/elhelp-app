@@ -5,7 +5,6 @@ import { localDate } from '../geo.js';
 import { reviewDailyReports } from './tasks/reviewDailyReports.js';
 import { summarizeDay } from './tasks/summarizeDay.js';
 import { analyzeRoute } from './tasks/analyzeRoute.js';
-import { kpiInsights } from './tasks/kpiInsights.js';
 import { fieldAlerts } from './tasks/fieldAlerts.js';
 
 export class ElHelpAgent {
@@ -53,12 +52,6 @@ export class ElHelpAgent {
         if (!input.repId) throw new Error('repId مطلوب لتحليل المسار');
         const r = analyzeRoute(this.store, { repId: input.repId, date: input.date, timezone: this.timezone });
         result = { summary: r.summary, details: r.details, suggestions: r.suggestions, skill: 'elhelp-tracking' };
-        break;
-      }
-      case 'kpi-insights': {
-        if (!input.from || !input.to) throw new Error('from و to مطلوبان لتحليل KPI');
-        const r = kpiInsights(this.store, { from: input.from, to: input.to, timezone: this.timezone });
-        result = { summary: r.summary, details: r.details, suggestions: r.suggestions, skill: 'elhelp-kpi' };
         break;
       }
       case 'field-alerts': {

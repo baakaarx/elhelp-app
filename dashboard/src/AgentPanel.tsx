@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, post } from './api';
 
-type TaskName = 'review-daily-reports' | 'summarize-day' | 'analyze-route' | 'kpi-insights' | 'field-alerts';
+type TaskName = 'review-daily-reports' | 'summarize-day' | 'analyze-route' | 'field-alerts';
 
 interface AgentSkill { id: string; name: string; description: string; }
 interface AgentResult {
@@ -26,8 +26,6 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
   const [task, setTask] = useState<TaskName>('field-alerts');
   const [repId, setRepId] = useState('');
   const [date, setDate] = useState(cairoDate());
-  const [from, setFrom] = useState(cairoDate(new Date(Date.now() - 7 * 86400000)));
-  const [to, setTo] = useState(cairoDate());
 
   const load = async () => {
     try {
@@ -55,7 +53,6 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
     const body: any = { task };
     if ((task === 'summarize-day' || task === 'analyze-route') && repId) body.repId = repId;
     if ((task === 'summarize-day' || task === 'analyze-route') && date) body.date = toIso(date);
-    if (task === 'kpi-insights') { body.from = toIso(from); body.to = toIso(to); }
     try {
       const res = await post<{ result: AgentResult }>('/api/agent/run', body);
       setResult(res.result);
@@ -96,7 +93,6 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
             <option value="review-daily-reports">مراجعة التقارير اليومية</option>
             <option value="summarize-day">ملخص يوم مهندس/فريق</option>
             <option value="analyze-route">تحليل مسار GPS</option>
-            <option value="kpi-insights">تحليل مؤشرات الأداء KPI</option>
           </select>
         </label>
 
@@ -115,13 +111,6 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
             <span>التاريخ</span>
             <input type="date" value={date} onChange={e => setDate(e.target.value)} />
           </label>
-        )}
-
-        {task === 'kpi-insights' && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <label className="field" style={{ flex: 1 }}><span>من</span><input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label>
-            <label className="field" style={{ flex: 1 }}><span>إلى</span><input type="date" value={to} onChange={e => setTo(e.target.value)} /></label>
-          </div>
         )}
 
         <button className="btn" onClick={run} disabled={loading}>
@@ -153,7 +142,7 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
       )}
 
       <div className="muted small" style={{ marginTop: 16, borderTop: '1px dashed #e2e8e1', paddingTop: 10 }}>
-        <strong>كيف يعمل بدون API؟</strong> كل مهمة هي كود TypeScript محلي يقرأ من SQLite مباشرة — نفس حسابات الخادم للمسافة والـ KPI، لكن مع تلخيص ذكي بالعربية. تقدر تشغّله أيضاً من الطرفية: <code>npm run agent -- alerts</code>
+        <strong>كيف يعمل بدون API؟</strong> كل مهمة هي كود TypeScript محلي يقرأ من SQLite مباشرة — نفس حسابات الخادم للمسافة والزيارات، لكن مع تلخيص ذكي بالعربية. تقدر تشغّله أيضاً من الطرفية: <code>npm run agent -- alerts</code>
       </div>
     </section>
   );

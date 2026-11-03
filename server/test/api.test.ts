@@ -253,13 +253,11 @@ test('an unknown engineer id gives a clear message, not a schema error', async (
 
 test('every assistant task runs against the real schema', async () => {
   const today = localDate('Africa/Cairo');
-  const weekAgo = localDate('Africa/Cairo', Date.now() - 7 * 86400000);
   const bodies: Array<Record<string, unknown>> = [
     { task: 'field-alerts' },
     { task: 'review-daily-reports' },
     { task: 'summarize-day', date: today },
     { task: 'analyze-route', repId, date: today },
-    { task: 'kpi-insights', from: weekAgo, to: today },
   ];
   for (const body of bodies) {
     const res = await admin.post('/api/agent/run').set(auth(adminToken)).send(body);
@@ -269,7 +267,14 @@ test('every assistant task runs against the real schema', async () => {
   }
 });
 
-test('collections made while checking out are counted in the KPI task', async () => {
+test('the KPI analysis task is gone from the assistant', async () => {
+  const today = localDate('Africa/Cairo');
+  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({ task: 'kpi-insights', from: today, to: today });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.match(res.body.error, /بيانات المهمة غير صحيحة/);
+});
+
+test('collections made while checking out are counted in the KPI report', async () => {
   const open = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
     id: crypto.randomUUID(), customerName: 'مزرعة التحصيل', purpose: 'collection',
     location: { lat: 31.2, lng: 29.9, accuracy: 8 }, deviceId: 'test-device-001',
@@ -280,9 +285,9 @@ test('collections made while checking out are counted in the KPI task', async ()
   });
   assert.equal(closed.status, 200, JSON.stringify(closed.body));
   const today = localDate('Africa/Cairo');
-  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({ task: 'kpi-insights', from: today, to: today });
+  const res = await admin.get(`/api/kpis?from=${today}&to=${today}`).set(auth(adminToken));
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  const rows = res.body.result.details.rows as Array<{ repId: string; collected: number }>;
+  const rows = res.body.rows as Array<{ repId: string; collected: number }>;
   const mine = rows.find(row => row.repId === repId);
   assert.ok(mine, 'the representative must appear in the KPI rows');
   assert.ok(mine!.collected >= 2500, `expected the collection to be counted, got ${mine!.collected}`);
