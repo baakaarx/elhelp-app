@@ -224,43 +224,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.audit(user.id, 'auth.login');
     res.json({ ...session, user: publicUser(user) });
   });
-  // ---- Social login (Google / Apple) — manager approval required ----
-  const socialSchema = z.object({ provider: z.enum(['google', 'apple']), idToken: z.string().min(10).max(8000), deviceId: z.string().trim().min(3).max(120).optional(), deviceName: z.string().trim().max(120).optional().default('') }).strict();
-  function parseJwtPayload(token: string): any | null {
-    try { const p = token.split('.')[1]; if (!p) return null; const json = Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); return JSON.parse(json); } catch { return null; }
-  }
-  app.post('/api/auth/social', (req, res) => {
-    const parsed = socialSchema.safeParse(req.body);
-    if (!parsed.success) { res.status(400).json({ error: 'بيانات تسجيل الدخول الاجتماعي غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
-    const { provider, idToken, deviceId } = parsed.data;
-    const payload = parseJwtPayload(idToken);
-    if (!payload || !payload.email || !payload.sub) { res.status(401).json({ error: 'رمز الدخول الاجتماعي غير صالح.', code: 'INVALID_SOCIAL_TOKEN' }); return; }
-    const email = String(payload.email).toLowerCase().trim();
-    const name = String(payload.name || payload.given_name || email.split('@')[0]).trim().slice(0, 80);
-    const subject = String(payload.sub);
-    let user = store.get('SELECT * FROM users WHERE email=?', email);
-    if (!user) {
-      const id = randomUUID();
-      store.run('INSERT INTO users(id,name,email,password_hash,role,oauth_provider,oauth_subject,approval_status,device_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        id, name, email, 'social:' + subject.slice(0, 20), 'rep', provider, subject, 'pending', deviceId || '', Date.now());
-      store.audit(id, 'auth.social_register', { provider, email });
-      res.status(202).json({ error: 'تم إنشاء حسابك وهو بانتظار موافقة المدير — سيصلك إشعار عند التفعيل.', code: 'PENDING_APPROVAL', email });
-      return;
-    }
-    if (user.oauth_provider && user.oauth_provider !== provider) { res.status(409).json({ error: 'هذا البريد مرتبط بمزوّد دخول آخر.', code: 'PROVIDER_MISMATCH' }); return; }
-    if (!user.oauth_provider) { store.run('UPDATE users SET oauth_provider=?, oauth_subject=? WHERE id=?', provider, subject, user.id); }
-    if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير.', code: 'PENDING_APPROVAL' }); return; }
-    if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
-    if (!user.active) { res.status(401).json({ error: 'الحساب موقوف.' }); return; }
-    if (deviceId) {
-      const existing = String(user.device_id || '').trim();
-      if (!existing) store.run('UPDATE users SET device_id=? WHERE id=?', deviceId, user.id);
-      else if (existing !== deviceId) { res.status(403).json({ error: `هذا الحساب مرتبط بهاتف آخر (${existing.slice(0, 8)}…). تواصل مع المدير لإعادة الربط.`, code: 'DEVICE_MISMATCH' }); return; }
-    }
-    const session = createSession(store, user.id);
-    setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
-    store.audit(user.id, 'auth.social_login', { provider });
-    res.json({ ...session, user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
+  // Do not accept social tokens until their signature, issuer and audience are verified.
+  // Decoding a JWT alone lets anyone impersonate an existing account.
+  app.post('/api/auth/social', (_req, res) => {
+    res.status(503).json({ error: 'تسجيل الدخول بـ Google وApple غير مفعّل حالياً.', code: 'SOCIAL_LOGIN_UNAVAILABLE' });
   });
   app.patch('/api/reps/:id/approval', adminOnly, (req, res) => {
     const parsed = z.object({ status: z.enum(['approved', 'rejected', 'pending']) }).strict().safeParse(req.body);

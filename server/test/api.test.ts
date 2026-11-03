@@ -48,6 +48,17 @@ test('health endpoint reports demo mode and consent version', async () => {
   assert.equal(res.body.retentionDays, 30);
 });
 
+test('social login rejects an unsigned token impersonating the administrator', async () => {
+  const payload = Buffer.from(JSON.stringify({ email: 'admin@mandoub.test', sub: 'forged' })).toString('base64url');
+  for (const provider of ['google', 'apple']) {
+    const res = await request(app).post('/api/auth/social').send({ provider, idToken: `e30.${payload}.fake` });
+    assert.equal(res.status, 503);
+    assert.equal(res.body.code, 'SOCIAL_LOGIN_UNAVAILABLE');
+    assert.equal(res.body.token, undefined);
+    assert.equal(res.headers['set-cookie'], undefined);
+  }
+});
+
 test('admin login returns a session and an HttpOnly cookie', async () => {
   const res = await login(admin, 'admin@mandoub.test', 'TestPassword123!');
   adminToken = res.body.token;
