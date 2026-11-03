@@ -16,7 +16,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 export const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 export function publicUser(row: Row) {
-  return { id: row.id, name: row.name, email: row.email, role: row.role, phone: row.phone, region: row.region, color: row.color, isDemo: !!row.is_demo, active: !!row.active };
+  return { id: row.id, name: row.name, email: row.email, role: row.role, phone: row.phone, region: row.region, color: row.color, isDemo: !!row.is_demo, active: !!row.active, approvalStatus: String(row.approval_status || 'approved'), deviceId: String(row.device_id || ''), oauthProvider: String(row.oauth_provider || '') };
 }
 /**
  * Stateless sessions.

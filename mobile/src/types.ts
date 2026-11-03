@@ -52,7 +52,8 @@ export interface VisitInput {
   phone: string;
   purpose: VisitPurpose;
   notes: string;
-  location: { lat: number; lng: number; accuracy: number | null } | null;
+  location: { lat: number; lng: number; accuracy: number | null };
+  deviceId?: string;
 }
 export interface Visit {
   id: string;

@@ -22,7 +22,7 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
   const [error, setError] = useState('');
 
   // form fields — use Africa/Cairo for correct local date (not UTC)
-  const cairoDate = (d = new Date()) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+  const cairoDate = (d = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(d);
   const [task, setTask] = useState<TaskName>('field-alerts');
   const [repId, setRepId] = useState('');
   const [date, setDate] = useState(cairoDate());

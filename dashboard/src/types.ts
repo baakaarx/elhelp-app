@@ -9,6 +9,9 @@ export interface User {
   color: string;
   isDemo: boolean;
   active: boolean;
+  approvalStatus?: string;
+  deviceId?: string;
+  oauthProvider?: string;
 }
 export interface LocationPoint {
   lat: number;

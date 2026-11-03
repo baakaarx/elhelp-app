@@ -49,8 +49,13 @@ export async function logout() {
   try { await post('/api/auth/logout', {}); } finally { await setToken(null); }
 }
 export const shiftState = () => get<ShiftResponse>('/api/me/shift');
-export const startShift = (consentVersion: string) => post<{ shift: Shift }>('/api/shifts/start', { consentVersion });
+export const startShift = (consentVersion: string, location: { lat: number; lng: number; accuracy: number | null }, deviceId: string, deviceName?: string) =>
+  post<{ shift: Shift }>('/api/shifts/start', { consentVersion, location, deviceId, deviceName });
 export const stopShift = () => post<{ ok: true }>('/api/shifts/stop', {});
+export const reportIdle = (reason: string, location: { lat: number; lng: number; accuracy: number | null }, deviceId: string) =>
+  post<{ id: string; idleMinutes: number }>('/api/shifts/idle', { reason, location, deviceId });
+export const socialLogin = (provider: 'google' | 'apple', idToken: string, deviceId?: string, deviceName?: string) =>
+  post<{ token: string; user: User }>('/api/auth/social', { provider, idToken, deviceId, deviceName });
 export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points });
 export const sendReport = (report: ReportInput) => post<{ report: { id: string } }>('/api/reports', report);
 export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id: string } }>('/api/daily-reports', report);
