@@ -21,12 +21,13 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // form fields
+  // form fields — use Africa/Cairo for correct local date (not UTC)
+  const cairoDate = (d = new Date()) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
   const [task, setTask] = useState<TaskName>('field-alerts');
   const [repId, setRepId] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [from, setFrom] = useState(new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10));
-  const [to, setTo] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(cairoDate());
+  const [from, setFrom] = useState(cairoDate(new Date(Date.now() - 7 * 86400000)));
+  const [to, setTo] = useState(cairoDate());
 
   const load = async () => {
     try {
@@ -44,10 +45,9 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
   const run = async () => {
     setLoading(true); setError(''); setResult(null);
     const body: any = { task };
-    if (repId) body.repId = repId;
-    if (date) body.date = date;
-    if (from) body.from = from;
-    if (to) body.to = to;
+    if ((task === 'summarize-day' || task === 'analyze-route') && repId) body.repId = repId;
+    if ((task === 'summarize-day' || task === 'analyze-route') && date) body.date = date;
+    if (task === 'kpi-insights') { body.from = from; body.to = to; }
     try {
       const res = await post<{ result: AgentResult }>('/api/agent/run', body);
       setResult(res.result);

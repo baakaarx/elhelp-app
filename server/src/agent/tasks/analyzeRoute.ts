@@ -1,8 +1,8 @@
 import type { Store } from '../../db.js';
-import { dayBounds, distanceMeters, haversine } from '../../geo.js';
+import { dayBounds, distanceMeters, haversine, localDate } from '../../geo.js';
 
 export function analyzeRoute(store: Store, opts: { repId: string; date?: string; timezone: string }) {
-  const date = opts.date || new Date().toISOString().slice(0, 10);
+  const date = opts.date || localDate(opts.timezone);
   const bounds = dayBounds(date, opts.timezone);
   const rep = store.get("SELECT id, name, color FROM users WHERE id=? AND role='rep'", opts.repId);
   if (!rep) throw new Error('المهندس غير موجود');

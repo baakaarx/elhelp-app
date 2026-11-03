@@ -5,16 +5,11 @@ export function summarizeDay(store: Store, opts: { repId?: string; date?: string
   const date = opts.date || localDate(opts.timezone);
   const bounds = dayBounds(date, opts.timezone);
 
-  let repFilter = '';
-  const params: any[] = [bounds.start, bounds.end];
-  if (opts.repId) {
-    repFilter = 'AND user_id=?';
-    params.push(opts.repId);
-  }
-
   const reps = opts.repId
     ? store.all("SELECT id, name, color FROM users WHERE id=? AND role='rep'", opts.repId)
     : store.all("SELECT id, name, color FROM users WHERE role='rep' AND active=1");
+
+  if (opts.repId && reps.length === 0) throw new Error('المهندس غير موجود');
 
   const results = reps.map(rep => {
     const repId = String(rep.id);

@@ -8,7 +8,9 @@ export function createAgentRouter(store: Store, config: Config) {
   const agent = new ElHelpAgent(store, config.timezone, { retentionDays: config.retentionDays });
   const router = Router();
 
-  // Public status (needs auth elsewhere)
+  // All agent routes require auth (mounted with auth middleware in app.ts)
+  const adminTasks = new Set(['review-daily-reports', 'kpi-insights', 'field-alerts']);
+
   router.get('/status', (_req, res) => {
     res.json(agent.getStatus());
   });
@@ -18,6 +20,7 @@ export function createAgentRouter(store: Store, config: Config) {
   });
 
   router.post('/refresh', (_req, res) => {
+    if ((res.locals as any).user?.role !== 'admin') { res.status(403).json({ error: 'للمدير فقط.' }); return; }
     agent.refreshSkills();
     res.json({ ok: true, skills: agent.skills });
   });
@@ -37,6 +40,16 @@ export function createAgentRouter(store: Store, config: Config) {
       res.status(400).json({ error: 'بيانات المهمة غير صحيحة', issues: parsed.error.issues });
       return;
     }
+    // Admin-only tasks: prevent reps from seeing all-team data
+    if (adminTasks.has(parsed.data.task) && (res.locals as any).user?.role !== 'admin') {
+      res.status(403).json({ error: 'هذه المهمة للمدير فقط.' }); return;
+    }
+    // Reps can only query their own data for summarize/route
+    if ((parsed.data.task === 'summarize-day' || parsed.data.task === 'analyze-route') && parsed.data.repId) {
+      const role = (res.locals as any).user?.role;
+      const uid = (res.locals as any).user?.id;
+      if (role === 'rep' && uid !== parsed.data.repId) { res.status(403).json({ error: 'يمكنك عرض بياناتك فقط.' }); return; }
+    }
     try {
       const result = await agent.run(parsed.data as any);
       // audit
@@ -48,8 +61,9 @@ export function createAgentRouter(store: Store, config: Config) {
     }
   });
 
-  // Convenience: GET shortcuts for dashboard
+  // Convenience: GET shortcuts for dashboard (admin only)
   router.get('/run/review', async (_req, res) => {
+    if ((res.locals as any).user?.role !== 'admin') { res.status(403).json({ error: 'للمدير فقط.' }); return; }
     const result = await agent.run({ task: 'review-daily-reports' });
     res.json({ result });
   });

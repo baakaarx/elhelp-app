@@ -1,6 +1,7 @@
 import type { Store } from '../db.js';
 import type { AgentRunInput, AgentResult, AgentStatus, Skill } from './types.js';
 import { loadSkills } from './skills.js';
+import { localDate } from '../geo.js';
 import { reviewDailyReports } from './tasks/reviewDailyReports.js';
 import { summarizeDay } from './tasks/summarizeDay.js';
 import { analyzeRoute } from './tasks/analyzeRoute.js';
@@ -42,7 +43,7 @@ export class ElHelpAgent {
         break;
       }
       case 'summarize-day': {
-        if (!input.date) input.date = new Date().toISOString().slice(0, 10);
+        if (!input.date) input.date = localDate(this.timezone);
         // validate date via dayBounds indirectly
         const r = summarizeDay(this.store, { repId: input.repId, date: input.date, timezone: this.timezone });
         result = { summary: r.summary, details: r.details, suggestions: r.suggestions, skill: 'elhelp-tracking' };
