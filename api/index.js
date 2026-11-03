@@ -26,7 +26,8 @@ function prepareEnv() {
     process.env.ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@mandoub.test';
     process.env.ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Demo1234!';
     // Every instance has its own /tmp database, so a database-backed session would be lost
-    // as soon as the next request lands on another instance. Sign the session instead.
+    // as soon as the next request lands on another instance. Sign the session instead; the
+    // same secret also signs the open shift and rebuilds it on whichever instance answers.
     process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'elhelp-hosted-demo-session-secret';
     // No background timers on serverless: move the demo team from the overview request instead.
     process.env.DEMO_SIMULATE = process.env.DEMO_SIMULATE || 'true';

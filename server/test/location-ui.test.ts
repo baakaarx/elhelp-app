@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { movementStatus } from '../../dashboard/src/locationStatus.js';
+import type { Rep } from '../../dashboard/src/types.js';
+import { sendLocationChunks } from '../../mobile/src/locationQueue.js';
+import type { GeoPoint } from '../../mobile/src/types.js';
+
+test('movement does not report a stale, weak or unavailable fix as moving or stopped', () => {
+  const now = Date.now();
+  const rep = { tracking: true, location: { recordedAt: now, accuracy: 10, speed: 0 } } as Rep;
+  assert.match(movementStatus(rep, now), /واقف تقريبًا/);
+  assert.match(movementStatus({ ...rep, location: { ...rep.location!, speed: 2 } }, now), /يتحرك تقريبًا/);
+  assert.match(movementStatus({ ...rep, location: { ...rep.location!, accuracy: 212 } }, now), /ضعيفة/);
+  assert.match(movementStatus({ ...rep, location: { ...rep.location!, speed: null } }, now), /غير متاحة/);
+  assert.match(movementStatus(rep, now + 91000), /قديمة/);
+});
+
+test('a bad GPS fix does not discard valid neighbours in the same batch', async () => {
+  const points = ['good-1', 'bad', 'good-2'].map(id => ({ id } as GeoPoint));
+  const sent: string[] = [], removed: string[] = [];
+  const count = await sendLocationChunks(points, async chunk => {
+    if (chunk.some(point => point.id === 'bad')) throw { status: 422 };
+    sent.push(...chunk.map(point => point.id));
+  }, async id => { removed.push(id); });
+  assert.deepEqual(sent, ['good-1', 'good-2']);
+  assert.deepEqual(removed, ['good-1', 'bad', 'good-2']);
+  assert.equal(count, 2);
+});
+
+test('GPS queue retains points for authentication, rate-limit and server errors', async () => {
+  for (const status of [0, 401, 429, 500]) {
+    const removed: string[] = [];
+    const count = await sendLocationChunks([{ id: 'point' } as GeoPoint], async () => { throw { status }; }, async id => { removed.push(id); });
+    assert.equal(count, 0);
+    assert.deepEqual(removed, []);
+  }
+});

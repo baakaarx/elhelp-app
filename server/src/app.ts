@@ -8,7 +8,7 @@ import { Server } from 'socket.io';
 import { z } from 'zod';
 import { Store } from './db.js';
 import { readConfig, type Config } from './config.js';
-import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
+import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS, statelessShiftClaims, statelessShiftToken, statelessSessions } from './auth.js';
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { seedDemo, startDemoSimulator, tickDemo } from './demo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
@@ -95,9 +95,32 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.run('INSERT INTO users(id,name,email,password_hash,role,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), 'متابعة الهلب', config.adminEmail, hashPassword(config.adminPassword), 'admin', Date.now());
   }
   if (config.demo) seedDemo(store, config.timezone);
-  const auth = requireAuth(store);
-  const adminOnly = requireAuth(store, 'admin');
-  const repOnly = requireAuth(store, 'rep');
+  /**
+   * Rebuild a signed shift on whichever instance handled this request.
+   *
+   * Only relevant for stateless (hosted demo) sessions: the shift token is signed by the
+   * server, so an instance with an empty database can recreate the same row instead of
+   * answering "you are outside the shift" and dropping the engineer out mid-workday.
+   */
+  function adoptSignedShift(req: express.Request, user: Record<string, any>) {
+    try {
+      const claims = statelessShiftClaims(req.headers['x-mandoub-shift']);
+      if (!claims || claims.email !== String(user.email)) return;
+      const existing = store.get('SELECT id,user_id,ended_at FROM shifts WHERE id=?', claims.shiftId);
+      if (existing) {
+        if (String(existing.user_id) !== String(user.id)) return;
+        if (existing.ended_at) return; // an explicit stop on this instance wins
+        return;
+      }
+      store.run(`INSERT OR IGNORE INTO shifts(id,user_id,started_at,consent_version,consent_at,device_id,device_name,start_lat,start_lng,start_accuracy)
+        VALUES (?,?,?,?,?,'','',NULL,NULL,NULL)`, claims.shiftId, user.id, claims.startedAt, CONSENT_VERSION, claims.startedAt);
+    } catch { /* never let demo bookkeeping break an authenticated request */ }
+  }
+  const withSignedShift = (guard: ReturnType<typeof requireAuth>): express.RequestHandler =>
+    (req, res, next) => guard(req, res, () => { adoptSignedShift(req, res.locals.user); next(); });
+  const auth = withSignedShift(requireAuth(store));
+  const adminOnly = withSignedShift(requireAuth(store, 'admin'));
+  const repOnly = withSignedShift(requireAuth(store, 'rep'));
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
   const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
 
@@ -166,7 +189,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   }
   function dayDistance(userId: string, start: number, end: number) {
     const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at', userId, start, end) as unknown as GeoPoint[];
-    return { meters: Math.round(distanceMeters(points)), points: points.length, first: points[0]?.recordedAt ?? null, last: points[points.length - 1]?.recordedAt ?? null };
+    const lastPoint = points[points.length - 1];
+    return { meters: Math.round(distanceMeters(points)), points: points.length, first: points[0]?.recordedAt ?? null, last: lastPoint?.recordedAt ?? null, lastAccuracy: lastPoint?.accuracy ?? null };
   }
   function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string }) {
     const where: string[] = []; const params: any[] = [];
@@ -224,43 +248,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.audit(user.id, 'auth.login');
     res.json({ ...session, user: publicUser(user) });
   });
-  // ---- Social login (Google / Apple) — manager approval required ----
-  const socialSchema = z.object({ provider: z.enum(['google', 'apple']), idToken: z.string().min(10).max(8000), deviceId: z.string().trim().min(3).max(120).optional(), deviceName: z.string().trim().max(120).optional().default('') }).strict();
-  function parseJwtPayload(token: string): any | null {
-    try { const p = token.split('.')[1]; if (!p) return null; const json = Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); return JSON.parse(json); } catch { return null; }
-  }
-  app.post('/api/auth/social', (req, res) => {
-    const parsed = socialSchema.safeParse(req.body);
-    if (!parsed.success) { res.status(400).json({ error: 'بيانات تسجيل الدخول الاجتماعي غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
-    const { provider, idToken, deviceId } = parsed.data;
-    const payload = parseJwtPayload(idToken);
-    if (!payload || !payload.email || !payload.sub) { res.status(401).json({ error: 'رمز الدخول الاجتماعي غير صالح.', code: 'INVALID_SOCIAL_TOKEN' }); return; }
-    const email = String(payload.email).toLowerCase().trim();
-    const name = String(payload.name || payload.given_name || email.split('@')[0]).trim().slice(0, 80);
-    const subject = String(payload.sub);
-    let user = store.get('SELECT * FROM users WHERE email=?', email);
-    if (!user) {
-      const id = randomUUID();
-      store.run('INSERT INTO users(id,name,email,password_hash,role,oauth_provider,oauth_subject,approval_status,device_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        id, name, email, 'social:' + subject.slice(0, 20), 'rep', provider, subject, 'pending', deviceId || '', Date.now());
-      store.audit(id, 'auth.social_register', { provider, email });
-      res.status(202).json({ error: 'تم إنشاء حسابك وهو بانتظار موافقة المدير — سيصلك إشعار عند التفعيل.', code: 'PENDING_APPROVAL', email });
-      return;
-    }
-    if (user.oauth_provider && user.oauth_provider !== provider) { res.status(409).json({ error: 'هذا البريد مرتبط بمزوّد دخول آخر.', code: 'PROVIDER_MISMATCH' }); return; }
-    if (!user.oauth_provider) { store.run('UPDATE users SET oauth_provider=?, oauth_subject=? WHERE id=?', provider, subject, user.id); }
-    if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير.', code: 'PENDING_APPROVAL' }); return; }
-    if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
-    if (!user.active) { res.status(401).json({ error: 'الحساب موقوف.' }); return; }
-    if (deviceId) {
-      const existing = String(user.device_id || '').trim();
-      if (!existing) store.run('UPDATE users SET device_id=? WHERE id=?', deviceId, user.id);
-      else if (existing !== deviceId) { res.status(403).json({ error: `هذا الحساب مرتبط بهاتف آخر (${existing.slice(0, 8)}…). تواصل مع المدير لإعادة الربط.`, code: 'DEVICE_MISMATCH' }); return; }
-    }
-    const session = createSession(store, user.id);
-    setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
-    store.audit(user.id, 'auth.social_login', { provider });
-    res.json({ ...session, user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
+  // Do not accept social tokens until their signature, issuer and audience are verified.
+  // Decoding a JWT alone lets anyone impersonate an existing account.
+  app.post('/api/auth/social', (_req, res) => {
+    res.status(503).json({ error: 'تسجيل الدخول بـ Google وApple غير مفعّل حالياً.', code: 'SOCIAL_LOGIN_UNAVAILABLE' });
   });
   app.patch('/api/reps/:id/approval', adminOnly, (req, res) => {
     const parsed = z.object({ status: z.enum(['approved', 'rejected', 'pending']) }).strict().safeParse(req.body);
@@ -322,8 +313,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     const points = (truncated ? rows.slice(0, 20000) : rows) as unknown as GeoPoint[];
     res.json({ date, timezone: config.timezone, points, truncated, distanceMeters: Math.round(distanceMeters(points)) });
   });
-  app.get('/api/me/shift', repOnly, (_req, res) => {
-    const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+  app.get('/api/me/shift', repOnly, (req, res) => {
+    // With stateless sessions the signed shift token is the authority: another instance of
+    // the hosted demo has its own database and cannot know about this shift any other way.
+    const claims = statelessShiftClaims(req.headers['x-mandoub-shift']);
+    const shift = statelessSessions()
+      ? (claims && claims.email === String(res.locals.user.email)
+        ? store.get('SELECT * FROM shifts WHERE id=? AND user_id=? AND ended_at IS NULL', claims.shiftId, res.locals.user.id)
+        : undefined)
+      : store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     res.json({ shift: shift || null, snapshot: repSnapshot(res.locals.user), consentVersion: CONSENT_VERSION });
   });
   const bindDevice = (user: any, deviceId: string): string | null => {
@@ -347,13 +345,23 @@ export function createApp(overrides: Partial<Config> = {}) {
     let shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     if (!shift) {
       const id = randomUUID(), now = Date.now();
-      store.run('INSERT INTO shifts(id,user_id,started_at,consent_version,consent_at,device_id,device_name,start_lat,start_lng,start_accuracy) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        id, res.locals.user.id, now, CONSENT_VERSION, now, parsed.data.deviceId, parsed.data.deviceName || '', parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null);
-      store.audit(res.locals.user.id, 'shift.start', { consentVersion: CONSENT_VERSION, deviceId: parsed.data.deviceId, lat: parsed.data.location.lat, lng: parsed.data.location.lng });
+      store.transaction(() => {
+        store.run('INSERT INTO shifts(id,user_id,started_at,consent_version,consent_at,device_id,device_name,start_lat,start_lng,start_accuracy) VALUES (?,?,?,?,?,?,?,?,?,?)',
+          id, res.locals.user.id, now, CONSENT_VERSION, now, parsed.data.deviceId, parsed.data.deviceName || '', parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null);
+        store.run(`INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
+          VALUES (?,?,?,?,?,?,NULL,NULL,NULL,?,?,'gps')`, randomUUID(), res.locals.user.id, id, parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null, now, now);
+        store.run('UPDATE users SET last_seen=? WHERE id=?', now, res.locals.user.id);
+        store.audit(res.locals.user.id, 'shift.start', { consentVersion: CONSENT_VERSION, deviceId: parsed.data.deviceId, lat: parsed.data.location.lat, lng: parsed.data.location.lng });
+      });
       shift = store.get('SELECT * FROM shifts WHERE id=?', id);
     }
     broadcast();
-    res.json({ shift });
+    // Hosted-demo sessions carry a signed copy of the shift so the next request can land on
+    // a different instance without the app thinking the shift was closed.
+    const shiftToken = shift
+      ? statelessShiftToken(String(res.locals.user.email), String(shift.id), Number(shift.started_at))
+      : null;
+    res.json({ shift, shiftToken });
   });
   const idleSchema = z.object({ reason: z.string().trim().min(5).max(1000), location: reportLocation, deviceId: z.string().trim().min(3).max(120) }).strict();
   app.post('/api/shifts/idle', repOnly, (req, res) => {
@@ -483,7 +491,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
     res.json({
       date, timezone: config.timezone, shift: shift || null,
-      distanceMeters: distance.meters, pointCount: distance.points, firstFixAt: distance.first, lastFixAt: distance.last,
+      distanceMeters: distance.meters, pointCount: distance.points, firstFixAt: distance.first, lastFixAt: distance.last, lastFixAccuracy: distance.lastAccuracy,
       visitsTotal: visits.length, visitsCompleted: completed.length, openVisit: open, avgVisitSeconds,
       collectionsCount: Number(collections?.c || 0), collectionAmount: Number(collections?.total || 0),
       dailyReport: daily || null,

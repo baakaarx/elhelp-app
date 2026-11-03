@@ -1,5 +1,6 @@
 import { pushLocations, sendDailyReport, sendReport } from './api';
 import { createQueue, type Outbox } from './queue';
+import { sendLocationChunks } from './locationQueue';
 import type { DailyReportInput, GeoPoint, ReportInput } from './types';
 
 let queuePromise: Promise<Outbox> | null = null;
@@ -10,7 +11,13 @@ export async function enqueueLocation(point: GeoPoint) { await (await outbox()).
 export async function enqueueReport(report: ReportInput) { await (await outbox()).add('report', report); }
 export async function enqueueDailyReport(report: DailyReportInput) { await (await outbox()).add('daily-report', report); }
 
-export async function flushOutbox(): Promise<{ sent: number; pending: number }> {
+let flushing: Promise<{ sent: number; pending: number }> | null = null;
+export function flushOutbox(): Promise<{ sent: number; pending: number }> {
+  if (!flushing) flushing = flushOnce().finally(() => { flushing = null; });
+  return flushing;
+}
+
+async function flushOnce(): Promise<{ sent: number; pending: number }> {
   const queue = await outbox();
   const items = await queue.list(200);
   let sent = 0;
@@ -31,21 +38,7 @@ export async function flushOutbox(): Promise<{ sent: number; pending: number }> 
       if (status === 401) break;
     }
   }
-  if (locations.length) {
-    try {
-      let accepted = 0;
-      for (let i = 0; i < locations.length; i += 80) {
-        const chunk = locations.slice(i, i + 80);
-        await pushLocations(chunk);
-        accepted += chunk.length;
-      }
-      for (const point of locations) await queue.remove(point.id);
-      sent += accepted;
-    } catch (error) {
-      if (((error as { status?: number }).status ?? 0) >= 400) {
-        for (const point of locations) await queue.remove(point.id);
-      }
-    }
-  }
+  // Preserve unsent fixes on transient errors and isolate invalid points.
+  sent += await sendLocationChunks(locations, pushLocations, id => queue.remove(id));
   return { sent, pending: await queue.count() };
 }

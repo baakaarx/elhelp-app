@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Image, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { login, socialLogin } from './api';
-import { getDeviceId, getDeviceName } from './device';
+import Svg, { Path } from 'react-native-svg';
+import { login } from './api';
 import { colors, fonts, radius, shadow, space } from './theme';
 import { Button, Field } from './ui';
 import type { User } from './types';
@@ -28,30 +28,8 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
     finally { setBusy(false); }
   }
 
-  async function handleSocial(provider: 'google' | 'apple') {
-    // On web: Google Identity Services would provide id_token; on native: expo-auth-session
-    // For now we prompt for token in dev, and show pending-approval guidance
-    // In production, replace with proper OAuth flow using EXPO_PUBLIC_GOOGLE_CLIENT_ID
-    setError('');
-    // If running on web with GIS available, try to use it, otherwise prompt
-    const w = typeof window !== 'undefined' ? (window as any) : null;
-    if (w?.google?.accounts?.id && provider === 'google') {
-      try { w.google.accounts.id.prompt(); return; } catch {}
-    }
-    // Fallback: simple prompt for testing — manager can later configure real OAuth
-    const token = typeof window !== 'undefined' ? window.prompt(provider === 'google' ? 'الصق Google ID Token (للاختبار) — في الإنتاج سيُفتح تسجيل Google تلقائياً بعد إعداد VITE_GOOGLE_CLIENT_ID' : 'الصق Apple ID Token (للاختبار)') : null;
-    if (!token) {
-      setError(provider === 'google' ? 'لتفعيل Google ضع GOOGLE_CLIENT_ID في Vercel، أو الصق التوكن للاختبار' : 'لتفعيل Apple ضع Apple Client ID في Vercel');
-      return;
-    }
-    setBusy(true);
-    try {
-      const deviceId = await getDeviceId();
-      const deviceName = await getDeviceName();
-      const user = await socialLogin(provider, token.trim(), deviceId, deviceName);
-      onLogin(user);
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+  function handleSocial() {
+    setError('تسجيل الدخول بـ Google وApple غير مفعّل حالياً.');
   }
 
   return (
@@ -87,13 +65,20 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
               <View style={styles.dividerLine} />
             </View>
             <View style={{ gap: 10 }}>
-              <Pressable onPress={() => handleSocial('google')} style={({ pressed }) => [styles.socialBtn, styles.googleBtn, pressed && { opacity: 0.85 }]}>
-                <Text style={styles.googleText}>🔵 المتابعة بـ Google (Gmail)</Text>
+              <Pressable onPress={handleSocial} style={({ pressed }) => [styles.socialBtn, styles.googleBtn, pressed && { opacity: 0.85 }]}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" accessible={false}>
+                  <Path fill="#4285F4" d="M21.35 12.25c0-.72-.06-1.4-.18-2.06H12v3.9h5.24a4.48 4.48 0 0 1-1.95 2.94v2.54h3.17c1.85-1.71 2.89-4.22 2.89-7.32z" />
+                  <Path fill="#34A853" d="M12 21.75c2.64 0 4.86-.87 6.48-2.36l-3.17-2.46c-.88.59-2.01.94-3.31.94-2.55 0-4.71-1.72-5.48-4.04H3.25v2.53A9.75 9.75 0 0 0 12 21.75z" />
+                  <Path fill="#FBBC05" d="M6.52 13.83a5.86 5.86 0 0 1 0-3.66V7.64H3.25a9.75 9.75 0 0 0 0 8.72l3.27-2.53z" />
+                  <Path fill="#EA4335" d="M12 6.13c1.44 0 2.73.5 3.75 1.47l2.81-2.81A9.36 9.36 0 0 0 12 2.25a9.75 9.75 0 0 0-8.75 5.39l3.27 2.53C7.29 7.85 9.45 6.13 12 6.13z" />
+                </Svg>
+                <Text style={styles.googleText}>المتابعة بـ Google (Gmail)</Text>
               </Pressable>
-              <Pressable onPress={() => handleSocial('apple')} style={({ pressed }) => [styles.socialBtn, styles.appleBtn, pressed && { opacity: 0.85 }]}>
-                <Text style={styles.appleText}> المتابعة بـ Apple (iCloud)</Text>
+              <Pressable onPress={handleSocial} style={({ pressed }) => [styles.socialBtn, styles.appleBtn, pressed && { opacity: 0.85 }]}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" accessible={false}><Path fill="#fff" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701" /></Svg>
+                <Text style={styles.appleText}>المتابعة بـ Apple (iCloud)</Text>
               </Pressable>
-              <Text style={styles.socialHint}>الدخول بـ Google/Apple ينشئ حسابك تلقائياً وينتظر <Text style={{ fontFamily: fonts.bold }}>موافقة المدير</Text> — بدون تسجيل يدوي.</Text>
+              <Text style={styles.socialHint}>تسجيل الدخول بـ Google وApple غير مفعّل حالياً.</Text>
             </View>
           </View>
 
@@ -132,7 +117,7 @@ const styles = StyleSheet.create({
   divider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 2, opacity: 0.6 },
   dividerLine: { flex: 1, height: 1, backgroundColor: colors.line },
   dividerText: { fontFamily: fonts.regular, fontSize: 11.5, color: colors.muted },
-  socialBtn: { borderRadius: 10, paddingVertical: 12, alignItems: 'center', borderWidth: 1 },
+  socialBtn: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, borderWidth: 1 },
   googleBtn: { backgroundColor: '#fff', borderColor: '#dadce0' },
   googleText: { fontFamily: fonts.medium, fontSize: 13.5, color: '#1f1f1f' },
   appleBtn: { backgroundColor: '#000', borderColor: '#000' },

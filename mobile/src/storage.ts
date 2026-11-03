@@ -4,6 +4,8 @@ import * as SecureStore from 'expo-secure-store';
 const TOKEN_KEY = 'mandoub_token';
 const CONSENT_KEY = 'mandoub_consent_at';
 const SHIFT_KEY = 'mandoub_active_shift';
+// Signed by the server (hosted demo only): lets any instance recognise an open shift.
+const SHIFT_TOKEN_KEY = 'mandoub_shift_token';
 
 // SecureStore has no web implementation; the packaged web build uses localStorage.
 const web = Platform.OS === 'web' && typeof localStorage !== 'undefined';
@@ -43,5 +45,17 @@ export async function setActiveShift(id: string | null): Promise<void> {
     if (web) { if (id) localStorage.setItem(SHIFT_KEY, id); else localStorage.removeItem(SHIFT_KEY); return; }
     if (id) await SecureStore.setItemAsync(SHIFT_KEY, id);
     else await SecureStore.deleteItemAsync(SHIFT_KEY);
+  } catch { /* non-fatal */ }
+}
+
+export async function getShiftToken(): Promise<string | null> {
+  try { return web ? localStorage.getItem(SHIFT_TOKEN_KEY) : await SecureStore.getItemAsync(SHIFT_TOKEN_KEY); }
+  catch { return null; }
+}
+export async function setShiftToken(token: string | null): Promise<void> {
+  try {
+    if (web) { if (token) localStorage.setItem(SHIFT_TOKEN_KEY, token); else localStorage.removeItem(SHIFT_TOKEN_KEY); return; }
+    if (token) await SecureStore.setItemAsync(SHIFT_TOKEN_KEY, token);
+    else await SecureStore.deleteItemAsync(SHIFT_TOKEN_KEY);
   } catch { /* non-fatal */ }
 }

@@ -4,7 +4,7 @@ import request from 'supertest';
 import { io as connectClient, type Socket } from 'socket.io-client';
 import { createApp } from '../src/app.js';
 import { hashPassword } from '../src/auth.js';
-import { dayBounds } from '../src/geo.js';
+import { dayBounds, localDate } from '../src/geo.js';
 import { dailyReportPdf } from '../src/dailyPdf.js';
 
 const config = {
@@ -46,6 +46,17 @@ test('health endpoint reports demo mode and consent version', async () => {
   assert.equal(res.body.timezone, 'Africa/Cairo');
   assert.equal(res.body.consentVersion, '1.0');
   assert.equal(res.body.retentionDays, 30);
+});
+
+test('social login rejects an unsigned token impersonating the administrator', async () => {
+  const payload = Buffer.from(JSON.stringify({ email: 'admin@mandoub.test', sub: 'forged' })).toString('base64url');
+  for (const provider of ['google', 'apple']) {
+    const res = await request(app).post('/api/auth/social').send({ provider, idToken: `e30.${payload}.fake` });
+    assert.equal(res.status, 503);
+    assert.equal(res.body.code, 'SOCIAL_LOGIN_UNAVAILABLE');
+    assert.equal(res.body.token, undefined);
+    assert.equal(res.headers['set-cookie'], undefined);
+  }
 });
 
 test('admin login returns a session and an HttpOnly cookie', async () => {
@@ -137,6 +148,22 @@ test('starting a shift records the consent version and time', async () => {
   assert.equal(res.body.shift.ended_at, null);
 });
 
+test('the GPS fix at shift start is visible immediately without a second update', async () => {
+  const res = await rep.get('/api/me/shift').set(auth(repToken));
+  assert.equal(res.status, 200);
+  assert.equal(res.body.snapshot.location.lat, 31.2);
+  assert.equal(res.body.snapshot.location.lng, 29.9);
+  assert.equal(res.body.snapshot.location.speed, null);
+});
+
+test('resuming tracking reuses the open shift and still requires GPS', async () => {
+  const noFix = await rep.post('/api/shifts/start').set(auth(repToken)).send({ consentVersion: '1.0', deviceId: 'test-device-001' });
+  assert.equal(noFix.status, 422);
+  const resumed = await rep.post('/api/shifts/start').set(auth(repToken)).send({ consentVersion: '1.0', location: { lat: 31.2, lng: 29.9, accuracy: 10 }, deviceId: 'test-device-001' });
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.shift.id, shiftId);
+});
+
 test('/me/shift exposes the open shift and snapshot', async () => {
   const res = await rep.get('/api/me/shift').set(auth(repToken));
   assert.equal(res.status, 200);
@@ -204,6 +231,61 @@ test('the representative can read today\'s own route', async () => {
   assert.equal(res.body.truncated, false);
   assert.ok(res.body.distanceMeters >= 0);
   assert.equal(res.body.points[0].source, 'gps');
+});
+
+test('the assistant can summarise a demo engineer (demo ids are valid UUIDs)', async () => {
+  const demoRep = store.get("SELECT id, name FROM users WHERE is_demo=1 ORDER BY email LIMIT 1")!;
+  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({
+    task: 'summarize-day', repId: demoRep.id, date: localDate('Africa/Cairo'),
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.result.task, 'summarize-day');
+  assert.match(res.body.result.summary, new RegExp(String(demoRep.name)));
+});
+
+test('an unknown engineer id gives a clear message, not a schema error', async () => {
+  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({
+    task: 'summarize-day', repId: 'legacy-id-without-uuid-shape', date: localDate('Africa/Cairo'),
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.match(res.body.error, /المهندس غير موجود/);
+});
+
+test('every assistant task runs against the real schema', async () => {
+  const today = localDate('Africa/Cairo');
+  const weekAgo = localDate('Africa/Cairo', Date.now() - 7 * 86400000);
+  const bodies: Array<Record<string, unknown>> = [
+    { task: 'field-alerts' },
+    { task: 'review-daily-reports' },
+    { task: 'summarize-day', date: today },
+    { task: 'analyze-route', repId, date: today },
+    { task: 'kpi-insights', from: weekAgo, to: today },
+  ];
+  for (const body of bodies) {
+    const res = await admin.post('/api/agent/run').set(auth(adminToken)).send(body);
+    assert.equal(res.status, 200, `${body.task}: ${JSON.stringify(res.body)}`);
+    assert.equal(res.body.result.task, body.task);
+    assert.equal(typeof res.body.result.summary, 'string');
+  }
+});
+
+test('collections made while checking out are counted in the KPI task', async () => {
+  const open = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
+    id: crypto.randomUUID(), customerName: 'مزرعة التحصيل', purpose: 'collection',
+    location: { lat: 31.2, lng: 29.9, accuracy: 8 }, deviceId: 'test-device-001',
+  });
+  assert.equal(open.status, 201, JSON.stringify(open.body));
+  const closed = await rep.post(`/api/visits/${open.body.visit.id}/check-out`).set(auth(repToken)).send({
+    outcome: 'تم التحصيل', notes: '', amount: 2500, location: { lat: 31.2, lng: 29.9, accuracy: 8 },
+  });
+  assert.equal(closed.status, 200, JSON.stringify(closed.body));
+  const today = localDate('Africa/Cairo');
+  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({ task: 'kpi-insights', from: today, to: today });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const rows = res.body.result.details.rows as Array<{ repId: string; collected: number }>;
+  const mine = rows.find(row => row.repId === repId);
+  assert.ok(mine, 'the representative must appear in the KPI rows');
+  assert.ok(mine!.collected >= 2500, `expected the collection to be counted, got ${mine!.collected}`);
 });
 
 test('the representative cannot read another representative\'s route', async () => {

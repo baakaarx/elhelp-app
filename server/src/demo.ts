@@ -14,7 +14,11 @@ import { localDate } from './geo.js';
  */
 function demoId(scope: string, key: string | number): string {
   const hex = createHash('sha1').update(`mandoub-demo:${scope}:${key}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  // Force the RFC 4122 version/variant nibbles. The ids stay deterministic, but they are real
+  // UUIDs now — API validation (z.uuid) rejects anything else, which is why picking a demo
+  // engineer in the assistant used to answer "بيانات المهمة غير صحيحة".
+  const uuid = `${hex.slice(0, 12)}4${hex.slice(13, 16)}8${hex.slice(17, 32)}`;
+  return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20, 32)}`;
 }
 
 const people = [

@@ -4,7 +4,7 @@ import { dayBounds, localDate } from './geo.js';
 
 export const DAILY_REPORT_VERSION = 1;
 const text = (max: number) => z.string().trim().max(max);
-const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'الوقت بصيغة 24 ساعة، مثل 08:30.');
+const clock = z.string().trim().max(30);
 export const dailyVisitSchema = z.object({
   customerName: text(120).min(2, 'اسم العميل / المزرعة مطلوب.'),
   governorate: text(80).default(''),

@@ -26,14 +26,15 @@ export function kpiInsights(store: Store, opts: { from: string; to: string; time
   const rows: KpiLikeRow[] = reps.map((u: any) => {
     const repId = String(u.id);
     const points = store.all('SELECT lat,lng,accuracy,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<?', repId, fromMs, toMs) as any[];
-    const visits = store.all('SELECT status, duration_seconds, amount FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?', repId, fromMs, toMs) as any[];
-    const reports = store.all('SELECT amount FROM reports WHERE user_id=? AND created_at>=? AND created_at<?', repId, fromMs, toMs) as any[];
+    // `visits` has no amount column: a collection made while checking out is mirrored into
+    // the reports feed (type='collection'), which is the single source of money in this app.
+    const visits = store.all('SELECT status, duration_seconds FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?', repId, fromMs, toMs) as any[];
+    const reports = store.all('SELECT type, amount FROM reports WHERE user_id=? AND created_at>=? AND created_at<?', repId, fromMs, toMs) as any[];
     const dailyReports = store.all('SELECT id FROM daily_reports WHERE user_id=? AND created_at>=? AND created_at<?', repId, fromMs, toMs) as any[];
 
     const closed = visits.filter(v => v.status === 'closed' && v.duration_seconds);
     const avgVisit = closed.length ? Math.round(closed.reduce((a, v) => a + Number(v.duration_seconds), 0) / closed.length) : null;
-    const collectedVisits = visits.reduce((a, v) => a + (Number(v.amount) || 0), 0);
-    const collectedReports = reports.reduce((a, r) => a + (Number(r.amount) || 0), 0);
+    const collected = reports.reduce((a, r) => a + (r.type === 'collection' ? Number(r.amount) || 0 : 0), 0);
 
     return {
       repId,
@@ -45,7 +46,7 @@ export function kpiInsights(store: Store, opts: { from: string; to: string; time
       visitsCompleted: visits.filter(v => v.status === 'closed').length,
       avgVisitSeconds: avgVisit,
       reports: reports.length,
-      collected: collectedVisits + collectedReports,
+      collected,
       dailyReports: dailyReports.length,
       isDemo: !!u.is_demo,
     } as any;
