@@ -15,7 +15,7 @@ const emptyVisit = (): DailyVisitInput => ({
 });
 const todayInCairo = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(Date.now());
 const dayName = (date: string) => new Intl.DateTimeFormat('ar-EG', { weekday: 'long', timeZone: 'Africa/Cairo' }).format(new Date(`${date}T12:00:00Z`));
-const timeOk = (value: string) => value === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+const timeOk = (value: string) => value.trim().length === 0 || value.trim().length < 30;
 
 export default function DailyReports({ user, onDone }: { user: User; onDone?: () => void }) {
   const [engineerName, setEngineerName] = useState(user.name);
@@ -40,7 +40,7 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
   function validate(): string | null {
     if (engineerName.trim().length < 2) return 'اكتب اسم المهندس.';
     if (!dateValid) return 'التاريخ غير صحيح أو في المستقبل.';
-    if (!timeOk(leftAt) || !timeOk(returnedAt)) return 'الوقت بصيغة 24 ساعة، مثل 08:30.';
+    if (!timeOk(leftAt) || !timeOk(returnedAt)) return 'الوقت طويل جداً — اختصره.';
     if (!filled) return 'أضف زيارة واحدة على الأقل مع اسم العميل / المزرعة.';
     if (signedName.trim().length < 2) return 'اكتب اسمك في خانة التوقيع.';
     if (!confirmed) return 'أكد صحة البيانات ووقّع إلكترونيًا قبل الإرسال.';
