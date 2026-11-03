@@ -251,6 +251,43 @@ test('an unknown engineer id gives a clear message, not a schema error', async (
   assert.match(res.body.error, /المهندس غير موجود/);
 });
 
+test('every assistant task runs against the real schema', async () => {
+  const today = localDate('Africa/Cairo');
+  const weekAgo = localDate('Africa/Cairo', Date.now() - 7 * 86400000);
+  const bodies: Array<Record<string, unknown>> = [
+    { task: 'field-alerts' },
+    { task: 'review-daily-reports' },
+    { task: 'summarize-day', date: today },
+    { task: 'analyze-route', repId, date: today },
+    { task: 'kpi-insights', from: weekAgo, to: today },
+  ];
+  for (const body of bodies) {
+    const res = await admin.post('/api/agent/run').set(auth(adminToken)).send(body);
+    assert.equal(res.status, 200, `${body.task}: ${JSON.stringify(res.body)}`);
+    assert.equal(res.body.result.task, body.task);
+    assert.equal(typeof res.body.result.summary, 'string');
+  }
+});
+
+test('collections made while checking out are counted in the KPI task', async () => {
+  const open = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
+    id: crypto.randomUUID(), customerName: 'مزرعة التحصيل', purpose: 'collection',
+    location: { lat: 31.2, lng: 29.9, accuracy: 8 }, deviceId: 'test-device-001',
+  });
+  assert.equal(open.status, 201, JSON.stringify(open.body));
+  const closed = await rep.post(`/api/visits/${open.body.visit.id}/check-out`).set(auth(repToken)).send({
+    outcome: 'تم التحصيل', notes: '', amount: 2500, location: { lat: 31.2, lng: 29.9, accuracy: 8 },
+  });
+  assert.equal(closed.status, 200, JSON.stringify(closed.body));
+  const today = localDate('Africa/Cairo');
+  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({ task: 'kpi-insights', from: today, to: today });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const rows = res.body.result.details.rows as Array<{ repId: string; collected: number }>;
+  const mine = rows.find(row => row.repId === repId);
+  assert.ok(mine, 'the representative must appear in the KPI rows');
+  assert.ok(mine!.collected >= 2500, `expected the collection to be counted, got ${mine!.collected}`);
+});
+
 test('the representative cannot read another representative\'s route', async () => {
   const other = store.get("SELECT id FROM users WHERE is_demo=1 ORDER BY email LIMIT 1")!.id;
   const res = await rep.get(`/api/reps/${other}/route`).set(auth(repToken));
