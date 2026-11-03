@@ -9,7 +9,7 @@ export function createAgentRouter(store: Store, config: Config) {
   const router = Router();
 
   // All agent routes require auth (mounted with auth middleware in app.ts)
-  const adminTasks = new Set(['review-daily-reports', 'kpi-insights', 'field-alerts']);
+  const adminTasks = new Set(['review-daily-reports', 'field-alerts']);
 
   router.get('/status', (_req, res) => {
     res.json(agent.getStatus());
@@ -35,14 +35,12 @@ export function createAgentRouter(store: Store, config: Config) {
   };
   const isoDate = z.string().transform(v => toIsoDate(v) || v).pipe(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'التاريخ يجب أن يكون YYYY-MM-DD'));
   const runSchema = z.object({
-    task: z.enum(['review-daily-reports', 'summarize-day', 'analyze-route', 'kpi-insights', 'field-alerts']),
+    task: z.enum(['review-daily-reports', 'summarize-day', 'analyze-route', 'field-alerts']),
     // Accept any id the database might hold: random UUIDs, deterministic demo ids or ids
     // created before this check existed. Whether the engineer exists is answered by the task
     // itself ("المهندس غير موجود") instead of a misleading "بيانات المهمة غير صحيحة".
     repId: z.string().trim().min(1).max(64).optional().or(z.literal('').transform(() => undefined)),
     date: isoDate.optional(),
-    from: isoDate.optional(),
-    to: isoDate.optional(),
     limit: z.number().int().min(1).max(100).optional(),
   });
 
