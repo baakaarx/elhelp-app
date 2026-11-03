@@ -25,12 +25,21 @@ export function createAgentRouter(store: Store, config: Config) {
     res.json({ ok: true, skills: agent.skills });
   });
 
+  const toIsoDate = (s: string): string | undefined => {
+    if (!s) return undefined;
+    const t = s.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) { const [_, d, mo, y] = m; return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`; }
+    return t;
+  };
+  const isoDate = z.string().transform(v => toIsoDate(v) || v).pipe(z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'التاريخ يجب أن يكون YYYY-MM-DD'));
   const runSchema = z.object({
     task: z.enum(['review-daily-reports', 'summarize-day', 'analyze-route', 'kpi-insights', 'field-alerts']),
-    repId: z.string().uuid().optional(),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    repId: z.string().uuid().optional().or(z.literal('').transform(() => undefined)),
+    date: isoDate.optional(),
+    from: isoDate.optional(),
+    to: isoDate.optional(),
     limit: z.number().int().min(1).max(100).optional(),
   });
 

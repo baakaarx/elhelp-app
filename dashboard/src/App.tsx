@@ -272,21 +272,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
 }
 
 function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
-  const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', region: '' });
-  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true); setError(''); setMessage('');
-    try {
-      await post('/api/reps', form);
-      setMessage(`تم إنشاء حساب ${form.name}.`);
-      setForm({ name: '', email: '', password: '', phone: '', region: '' });
-      onChange();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إنشاء الحساب.'); }
-    finally { setBusy(false); }
-  }
   async function toggle(rep: Rep) {
     try { await patch(`/api/reps/${rep.id}`, { active: !rep.active }); onChange(); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث الحساب.'); }
@@ -299,41 +285,60 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
     try { await post(`/api/reps/${rep.id}/reset-device`, {}); onChange(); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر إعادة ربط الجهاز.'); }
   }
+  const pending = reps.filter(r => (r as any).approvalStatus === 'pending');
+  const inWork = reps.filter(r => r.tracking || r.online);
   return (
     <section className="page">
-      <header className="page-head"><div><h2>الفريق</h2><p className="muted">أضف المهندسين وتحكم في صلاحية الدخول والتتبع.</p></div></header>
+      <header className="page-head"><div><h2>الفريق</h2><p className="muted">إدارة الفريق — من في الميدان حالاً وطابور القبول للمنضمين الجدد.</p></div></header>
+      {error && <p className="error banner" role="alert">{error}</p>}
       <div className="two-col">
         <div className="panel">
-          <h3 className="panel-title">إضافة مهندس</h3>
-          <form className="stack" onSubmit={submit}>
-            <label className="field"><span>الاسم</span><input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="محمد أحمد" /></label>
-            <label className="field"><span>البريد الإلكتروني</span><input required type="email" dir="ltr" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="rep@company.com" /></label>
-            <label className="field"><span>كلمة مرور مؤقتة (١٠ أحرف على الأقل)</span><input required minLength={10} type="password" dir="ltr" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></label>
-            <div className="row">
-              <label className="field"><span>الهاتف</span><input dir="ltr" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} /></label>
-              <label className="field"><span>المنطقة</span><input value={form.region} onChange={e => setForm({ ...form, region: e.target.value })} placeholder="الإسكندرية" /></label>
-            </div>
-            {message && <p className="ok-text">{message}</p>}
-            {error && <p className="error" role="alert">{error}</p>}
-            <button className="btn primary" disabled={busy}>{busy ? 'جارٍ الإنشاء…' : 'إنشاء الحساب'}</button>
-          </form>
+          <h3 className="panel-title">قبول المهندسين <span className="pill warn">{formatNumber(pending.length)} بانتظار الموافقة</span></h3>
+          <p className="muted small">اللي سجّل بـ Google / Apple بيستنى موافقتك — اضغط قبول ليبدأ شغله فوراً، أو رفض لحجبه. بدون تسجيل يدوي.</p>
+          <ul className="rep-list">
+            {pending.length === 0 && <li className="empty">لا يوجد طلبات جديدة — كل المهندسين مقبولين.</li>}
+            {pending.map(rep => (
+              <li key={rep.id} className="team-row" style={{ borderColor: '#f0c27a', background: '#fffaf0' }}>
+                <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
+                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {new Date((rep as any).created_at || Date.now()).toLocaleDateString('ar-EG')}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
+                <span style={{ display: 'flex', gap: 6 }}>
+                  <button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button>
+                  <button className="btn ghost sm" onClick={() => approve(rep, 'rejected')}>رفض</button>
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
         <div className="panel">
-          <h3 className="panel-title">الحسابات ({formatNumber(reps.length)})</h3>
+          <h3 className="panel-title">الناس اللي في الشغل حالاً ({formatNumber(inWork.length)} / {formatNumber(reps.filter(r => r.active).length)})</h3>
+          <p className="muted small">يظهر فقط المهندسين اللي فاتحين وردية أو متصلين الآن — مربوط بجهازهم.</p>
           <ul className="rep-list">
-            {reps.map(rep => (
+            {inWork.length === 0 && <li className="empty">مفيش حد في الشغل دلوقتي — أول ما يفتح وردية هيظهر هنا بعلامة خضراء.</li>}
+            {inWork.map(rep => (
               <li key={rep.id} className="team-row">
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
-                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.isDemo ? 'حساب عرض تجريبي (محاكاة)' : rep.region || 'بدون منطقة'}{rep.active ? '' : ' · موقوف'}{(rep as any).approvalStatus === 'pending' ? ' · بانتظار الموافقة' : ''}{(rep as any).oauthProvider ? ` · ${ (rep as any).oauthProvider}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
+                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.tracking ? '● في وردية الآن' : '○ متصل'} · {rep.region || 'بدون منطقة'} · {formatNumber(rep.visitsToday)} زيارة اليوم · {rep.shiftStartedAt ? `بدأ ${new Date(rep.shiftStartedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {(rep as any).approvalStatus === 'pending' && <><button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button><button className="btn ghost sm" onClick={() => approve(rep, 'rejected')}>رفض</button></>}
                   {(rep as any).deviceId && <button className="btn ghost sm" onClick={() => resetDevice(rep)}>فك ربط الجهاز</button>}
                   <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                 </span>
               </li>
             ))}
-            {reps.length === 0 && <li className="empty">لا يوجد مهندسون بعد.</li>}
           </ul>
+          {reps.filter(r => !inWork.includes(r) && r.active && (r as any).approvalStatus !== 'pending').length > 0 && (
+            <>
+              <h4 className="muted small" style={{ marginTop: 12 }}>باقي الفريق (خارج الوردية)</h4>
+              <ul className="rep-list muted">
+                {reps.filter(r => !inWork.includes(r) && r.active && (r as any).approvalStatus !== 'pending').slice(0, 8).map(rep => (
+                  <li key={rep.id} className="team-row" style={{ opacity: 0.85 }}>
+                    <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
+                    <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}</small></span>
+                    <button className="btn ghost sm" onClick={() => toggle(rep)}>إيقاف</button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       </div>
     </section>

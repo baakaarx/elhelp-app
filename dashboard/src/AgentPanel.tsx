@@ -42,16 +42,27 @@ export default function AgentPanel({ reps }: { reps: { id: string; name: string 
 
   useEffect(() => { load(); }, []);
 
+  const toIso = (v: string) => {
+    if (!v) return v;
+    const t = v.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    const m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) return `${m[3]}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    return t;
+  };
   const run = async () => {
     setLoading(true); setError(''); setResult(null);
     const body: any = { task };
     if ((task === 'summarize-day' || task === 'analyze-route') && repId) body.repId = repId;
-    if ((task === 'summarize-day' || task === 'analyze-route') && date) body.date = date;
-    if (task === 'kpi-insights') { body.from = from; body.to = to; }
+    if ((task === 'summarize-day' || task === 'analyze-route') && date) body.date = toIso(date);
+    if (task === 'kpi-insights') { body.from = toIso(from); body.to = toIso(to); }
     try {
       const res = await post<{ result: AgentResult }>('/api/agent/run', body);
       setResult(res.result);
-    } catch (e: any) { setError(e.message); }
+    } catch (e: any) {
+      const issues = e?.issues ? ` — ${e.issues.map((x: any) => `${x.path?.join('.')}: ${x.message}`).join(' | ')}` : '';
+      setError((e.message || 'فشل') + issues);
+    }
     finally { setLoading(false); }
   };
 

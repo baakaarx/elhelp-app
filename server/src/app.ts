@@ -57,6 +57,8 @@ const newVisit = z.object({
   purpose: z.enum(['visit', 'order', 'collection', 'note', 'issue', 'other']).default('visit'),
   notes: z.string().trim().max(1000).default(''),
   location: reportLocation,
+  deviceId: z.string().trim().min(3).max(120).optional(),
+  deviceName: z.string().trim().max(120).optional(),
 }).strict();
 const closeVisit = z.object({
   outcome: z.string().trim().max(1000).default(''),
