@@ -4,7 +4,7 @@ import request from 'supertest';
 import { io as connectClient, type Socket } from 'socket.io-client';
 import { createApp } from '../src/app.js';
 import { hashPassword } from '../src/auth.js';
-import { dayBounds } from '../src/geo.js';
+import { dayBounds, localDate } from '../src/geo.js';
 import { dailyReportPdf } from '../src/dailyPdf.js';
 
 const config = {
@@ -231,6 +231,24 @@ test('the representative can read today\'s own route', async () => {
   assert.equal(res.body.truncated, false);
   assert.ok(res.body.distanceMeters >= 0);
   assert.equal(res.body.points[0].source, 'gps');
+});
+
+test('the assistant can summarise a demo engineer (demo ids are valid UUIDs)', async () => {
+  const demoRep = store.get("SELECT id, name FROM users WHERE is_demo=1 ORDER BY email LIMIT 1")!;
+  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({
+    task: 'summarize-day', repId: demoRep.id, date: localDate('Africa/Cairo'),
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.result.task, 'summarize-day');
+  assert.match(res.body.result.summary, new RegExp(String(demoRep.name)));
+});
+
+test('an unknown engineer id gives a clear message, not a schema error', async () => {
+  const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({
+    task: 'summarize-day', repId: 'legacy-id-without-uuid-shape', date: localDate('Africa/Cairo'),
+  });
+  assert.equal(res.status, 400, JSON.stringify(res.body));
+  assert.match(res.body.error, /المهندس غير موجود/);
 });
 
 test('the representative cannot read another representative\'s route', async () => {

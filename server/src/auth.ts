@@ -74,7 +74,10 @@ function statelessClaims(token: string): { email: string; role: string; name: st
  */
 function mirrorUser(store: Store, claims: { email: string; role: string; name: string }): Row | undefined {
   const hex = createHash('sha1').update(`mandoub-mirror:${claims.email}`).digest('hex');
-  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  // Same rule as the demo rows: deterministic, but a valid RFC 4122 UUID so API validation
+  // and every "rep id" field accept it.
+  const uuid = `${hex.slice(0, 12)}4${hex.slice(13, 16)}8${hex.slice(17, 32)}`;
+  const id = `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20, 32)}`;
   const role = claims.role === 'admin' ? 'admin' : 'rep';
   const name = (claims.name || claims.email.split('@')[0]).slice(0, 80) || claims.email;
   store.run(`INSERT OR IGNORE INTO users(id,name,email,password_hash,role,color,is_demo,active,approval_status,created_at)
