@@ -100,7 +100,7 @@ export default function App() {
           <img className="brand-img" src="/elhelb-mark.png" alt="الهلب جروب" width={44} height={44} />
           <div><strong>ELHELB GROUP</strong><small>Elite Field Network · منذ 1993</small></div>
         </div>
-        <div className="elite-badge">✦ عضو في شبكة نخبة الخبراء الدوليين</div>
+
         <nav>
           {tabs.map(item => (
             <button key={item.id} className={tab === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(item.id)}>
@@ -120,15 +120,13 @@ export default function App() {
         <header className="topbar">
           <div>
             <h1>{tabs.find(t => t.id === tab)?.label}</h1>
-            <p className="muted small">{new Date(clock).toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short' })} · أهلاً بك، {user.name} ✦ {user.role === 'admin' ? 'قائد النخبة' : 'خبير ميداني'}</p>
+            <p className="muted small">{new Date(clock).toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short' })} · {user.name}</p>
           </div>
           <div className="topbar-actions">
-            <span className="elite-level">ELITE L4</span>
             <button className="btn ghost sm" onClick={() => refresh()}>تحديث</button>
             <button className="btn ghost sm" onClick={async () => { await logout(); setUser(null); }}>خروج</button>
           </div>
         </header>
-        <div className="impact-banner">🌍 أنت جزء من أكبر شبكة خبراء زراعيين في الشرق الأوسط — كل زيارة تصنع فرقاً لـ 12,000 فدان.</div>
         {error && <p className="error banner" role="alert">{error}</p>}
         {tab === 'live' && (
           <section className="page">
