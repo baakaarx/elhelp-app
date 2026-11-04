@@ -7,6 +7,15 @@ import { hashPassword } from '../src/auth.js';
 import { dayBounds, localDate } from '../src/geo.js';
 import { dailyReportPdf } from '../src/dailyPdf.js';
 
+// CSV helpers: read the body as raw bytes (the BOM matters) and split it into lines.
+const csvParser = (r: request.Response, done: (err: Error | null, body?: Buffer) => void) => {
+  const chunks: Buffer[] = [];
+  r.on('data', (chunk: Buffer) => chunks.push(chunk));
+  r.on('end', () => done(null, Buffer.concat(chunks)));
+};
+const csvLines = (body: Buffer): string[] =>
+  Buffer.from(body).toString('utf8').replace('\uFEFF', '').split('\r\n').filter(line => line.length > 0);
+
 const config = {
   dbPath: ':memory:', demo: true, production: false, retentionDays: 30, timezone: 'Africa/Cairo',
   adminEmail: 'admin@mandoub.test', adminPassword: 'TestPassword123!', allowedOrigins: [], port: 0,
@@ -545,9 +554,32 @@ test('the KPI export is a UTF-8 CSV with Arabic headers and a BOM', async () => 
   assert.equal(res.status, 200);
   assert.match(String(res.headers['content-type']), /text\/csv/);
   assert.deepEqual(res.body.subarray(0, 3), Buffer.from([0xef, 0xbb, 0xbf]));
-  const text = Buffer.from(res.body).toString('utf8').replace('\uFEFF', '');
-  assert.match(text.split('\r\n')[0], /المهندس/);
-  assert.ok(text.split('\r\n').length >= 2);
+  const lines = csvLines(res.body);
+  assert.equal(lines[0], 'sep=,', 'Excel needs the delimiter hint as the first line');
+  assert.match(lines[1], /المهندس/);
+  assert.ok(lines.length >= 3);
+});
+
+test('the monthly export opens in Excel as real columns, in the same order as the dashboard', async () => {
+  const res = await admin.get('/api/monthly.csv').set(auth(adminToken)).buffer(true).parse(csvParser);
+  assert.equal(res.status, 200);
+  assert.match(String(res.headers['content-disposition']), /elhelb-monthly-\d{4}-\d{2}\.csv/);
+  const lines = csvLines(res.body);
+  assert.equal(lines[0], 'sep=,');
+  assert.match(lines[1], /^"المهندس","المنطقة","الشهر","عدد الزيارات"/);
+  const rows = lines.slice(2).map(line => line.split('","'));
+  for (const row of rows) {
+    assert.equal(row.length, 10, `every exported row must have 10 columns: ${row.join('|')}`);
+    assert.match(row[2].replace(/"/g, ''), /^\d{4}-\d{2}$/, 'the month column must hold the month');
+  }
+  const visits = rows.map(row => Number(row[3]));
+  assert.deepEqual(visits, [...visits].sort((a, b) => b - a), 'busiest engineer first, like the dashboard');
+});
+
+test('demo accounts are labelled as such in the exports', async () => {
+  const res = await admin.get('/api/monthly.csv').set(auth(adminToken)).buffer(true).parse(csvParser);
+  const text = csvLines(res.body).slice(2).join('\n');
+  assert.match(text, /"\(تجريبي\)|تجريبي/);
 });
 
 test('the representative stops tracking and their open shift is closed', async () => {
