@@ -14,6 +14,7 @@ import { seedDemo, startDemoSimulator, tickDemo } from './demo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { createAgentRouter } from './agent/router.js';
+import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 
 const CONSENT_VERSION = '1.0';
 const credentials = z.object({ email: z.email().max(254).transform(x => x.toLowerCase().trim()), password: z.string().min(1).max(200) });
@@ -558,21 +559,34 @@ export function createApp(overrides: Partial<Config> = {}) {
     broadcast();
     res.json({ ok: true });
   });
-  // ---- CSV helpers: Arabic Excel opens `,`-delimited files in a single column unless the
-  // first line is `sep=,` (the Arabic locale default delimiter is `;`), so every export
-  // starts with it. The BOM keeps Arabic readable.
+  // ---- CSV helpers: standard RFC-4180 CSV (UTF-8 with a BOM) for integrations and scripts.
+  // Excel users get the .xlsx endpoints instead — a CSV is interpreted with the machine's
+  // locale delimiter and encoding, which is exactly what made the register look broken.
   function csvCell(value: unknown): string {
     return `"${String(value ?? '').replace(/"/g, '""')}"`;
   }
   function csvDocument(header: string[], body: unknown[][]): string {
-    const lines = [header.map(csvCell).join(',')].concat(body.map(row => row.map(csvCell).join(',')));
-    return 'sep=,\r\n' + lines.join('\r\n');
+    return [header.map(csvCell).join(',')].concat(body.map(row => row.map(csvCell).join(','))).join('\r\n');
   }
   function sendCsv(res: { setHeader: (k: string, v: string) => void; send: (b: string) => void }, filename: string, header: string[], body: unknown[][]) {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Cache-Control', 'private, no-store');
     res.send('\uFEFF' + csvDocument(header, body));
+  }
+  // A real workbook is the reliable way to open Arabic data in Excel: the CSV delimiter and
+  // the text encoding depend on the machine locale, so the same file looks fine on one PC and
+  // like mojibake on another. .xlsx carries both inside the file.
+  function sendXlsx(
+    res: { setHeader: (k: string, v: string) => void; send: (b: Buffer) => void },
+    filename: string, sheet: string, header: string[], body: CellValue[][], widths: number[],
+  ) {
+    const workbook = buildXlsx([header, ...body], { name: sheet, widths, headerRows: 1 });
+    res.setHeader('Content-Type', XLSX_CONTENT_TYPE);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(workbook.length));
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(workbook);
   }
   // Same order the dashboard shows: busiest engineer first, so the exported file matches
   // the table the manager is looking at.
@@ -616,18 +630,30 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
     res.json({ from, to, timezone: config.timezone, rows: kpiRows(from, to) });
   });
+  const KPI_HEADER = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
+  const KPI_WIDTHS = [26, 18, 12, 14, 16, 12, 12, 14, 14];
+  function kpiExportRows(from: string, to: string): CellValue[][] {
+    return byActivity(kpiRows(from, to)).map(r => [
+      exportName(r), r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+      Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.collected, r.dailyReports,
+    ]);
+  }
   app.get('/api/kpis.csv', adminOnly, (req, res) => {
     const today = localDate(config.timezone);
     const from = typeof req.query.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : today;
     const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
-    let rows;
-    try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); rows = kpiRows(from, to); }
+    try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); }
     catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
-    const header = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
-    sendCsv(res, `elhelb-kpis-${from}_${to}.csv`, header, byActivity(rows).map(r => [
-      exportName(r), r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
-      (r.distanceMeters / 1000).toFixed(1), r.reports, r.collected, r.dailyReports,
-    ]));
+    sendCsv(res, `elhelb-kpis-${from}_${to}.csv`, KPI_HEADER, kpiExportRows(from, to));
+  });
+  app.get('/api/kpis.xlsx', adminOnly, (req, res) => {
+    const today = localDate(config.timezone);
+    const from = typeof req.query.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : today;
+    const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
+    try {
+      dayBounds(from, config.timezone); dayBounds(to, config.timezone);
+      sendXlsx(res, `elhelb-kpis-${from}_${to}.xlsx`, 'مؤشرات الأداء', KPI_HEADER, kpiExportRows(from, to), KPI_WIDTHS);
+    } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); }
   });
   // ---- Monthly register: visits + reports per month (international company requirement) ----
   function monthBounds(month: string) {
@@ -649,15 +675,26 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.json({ month, from, to, timezone: config.timezone, rows });
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
+  const MONTHLY_HEADER = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'التحصيل (ج.م)'];
+  const MONTHLY_WIDTHS = [26, 18, 10, 12, 10, 16, 12, 14, 14, 14];
+  function monthlyExportRows(month: string, from: string, to: string): CellValue[][] {
+    return byActivity(kpiRows(from, to)).map(r => [
+      exportName(r), r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+      Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.dailyReports, r.collected,
+    ]);
+  }
   app.get('/api/monthly.csv', adminOnly, (req, res) => {
     const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
     try {
       const { from, to } = monthBounds(month);
-      const header = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'التحصيل (ج.م)'];
-      sendCsv(res, `elhelb-monthly-${month}.csv`, header, byActivity(kpiRows(from, to)).map(r => [
-        exportName(r), r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
-        (r.distanceMeters / 1000).toFixed(1), r.reports, r.dailyReports, r.collected,
-      ]));
+      sendCsv(res, `elhelb-monthly-${month}.csv`, MONTHLY_HEADER, monthlyExportRows(month, from, to));
+    } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+  });
+  app.get('/api/monthly.xlsx', adminOnly, (req, res) => {
+    const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
+    try {
+      const { from, to } = monthBounds(month);
+      sendXlsx(res, `elhelb-monthly-${month}.xlsx`, `سجل ${month}`, MONTHLY_HEADER, monthlyExportRows(month, from, to), MONTHLY_WIDTHS);
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
   // ---- Reports: the second core feature of the rep app ----
