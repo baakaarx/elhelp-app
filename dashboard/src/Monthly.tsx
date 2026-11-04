@@ -32,15 +32,17 @@ export default function Monthly({ reps }: { reps: Rep[] }) {
     collected: a.collected + r.collected,
   }), { visits: 0, visitsCompleted: 0, distanceMeters: 0, reports: 0, dailyReports: 0, collected: 0 }), [rows]);
 
-  async function exportCsv() {
+  // Excel (.xlsx) is the default download: it carries the encoding and the columns inside the
+  // file, so Arabic opens correctly on any machine. CSV stays available for integrations.
+  async function exportFile(format: 'xlsx' | 'csv') {
     setExporting(true);
     try {
       const token = localStorage.getItem('mandoub.token');
-      const res = await fetch(`/api/monthly.csv?month=${month}`, { headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : {}, credentials: 'include' });
+      const res = await fetch(`/api/monthly.${format}?month=${month}`, { headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : {}, credentials: 'include' });
       if (!res.ok) throw new Error('فشل التصدير');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `elhelb-monthly-${month}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      const a = document.createElement('a'); a.href = url; a.download = `elhelb-monthly-${month}.${format}`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر التصدير.'); }
     finally { setExporting(false); }
   }
@@ -72,7 +74,8 @@ export default function Monthly({ reps }: { reps: Rep[] }) {
           </select>
         </label>
         <button className="btn primary sm" onClick={() => void load()} disabled={loading}>{loading ? 'جارٍ التحميل…' : 'تحديث'}</button>
-        <button className="btn ghost sm" onClick={exportCsv} disabled={exporting}>{exporting ? 'جارٍ التصدير…' : 'تصدير CSV الشهري (Excel)'}</button>
+        <button className="btn primary sm" onClick={() => void exportFile('xlsx')} disabled={exporting}>{exporting ? 'جارٍ التصدير…' : 'تصدير الشهر (Excel)'}</button>
+        <button className="btn ghost sm" onClick={() => void exportFile('csv')} disabled={exporting}>CSV للأنظمة</button>
         {error && <p className="error" role="alert">{error}</p>}
       </div>
 

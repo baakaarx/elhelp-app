@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { inflateRawSync } from 'node:zlib';
 import request from 'supertest';
 import { io as connectClient, type Socket } from 'socket.io-client';
 import { createApp } from '../src/app.js';
@@ -15,6 +16,24 @@ const csvParser = (r: request.Response, done: (err: Error | null, body?: Buffer)
 };
 const csvLines = (body: Buffer): string[] =>
   Buffer.from(body).toString('utf8').replace('\uFEFF', '').split('\r\n').filter(line => line.length > 0);
+
+// Read the parts of a .xlsx (a zip) without pulling in a zip library.
+const xlsxEntries = (body: Buffer): Map<string, string> => {
+  const files = new Map<string, string>();
+  let offset = 0;
+  while (offset + 30 <= body.length && body.readUInt32LE(offset) === 0x04034b50) {
+    const method = body.readUInt16LE(offset + 8);
+    const compressedSize = body.readUInt32LE(offset + 18);
+    const nameLength = body.readUInt16LE(offset + 26);
+    const extraLength = body.readUInt16LE(offset + 28);
+    const name = body.subarray(offset + 30, offset + 30 + nameLength).toString('utf8');
+    const start = offset + 30 + nameLength + extraLength;
+    const raw = body.subarray(start, start + compressedSize);
+    files.set(name, (method === 8 ? inflateRawSync(raw) : raw).toString('utf8'));
+    offset = start + compressedSize;
+  }
+  return files;
+};
 
 const config = {
   dbPath: ':memory:', demo: true, production: false, retentionDays: 30, timezone: 'Africa/Cairo',
@@ -555,9 +574,8 @@ test('the KPI export is a UTF-8 CSV with Arabic headers and a BOM', async () => 
   assert.match(String(res.headers['content-type']), /text\/csv/);
   assert.deepEqual(res.body.subarray(0, 3), Buffer.from([0xef, 0xbb, 0xbf]));
   const lines = csvLines(res.body);
-  assert.equal(lines[0], 'sep=,', 'Excel needs the delimiter hint as the first line');
-  assert.match(lines[1], /المهندس/);
-  assert.ok(lines.length >= 3);
+  assert.match(lines[0], /^"المهندس"/, 'a plain RFC-4180 header, no delimiter hint line');
+  assert.ok(lines.length >= 2);
 });
 
 test('the monthly export opens in Excel as real columns, in the same order as the dashboard', async () => {
@@ -565,9 +583,8 @@ test('the monthly export opens in Excel as real columns, in the same order as th
   assert.equal(res.status, 200);
   assert.match(String(res.headers['content-disposition']), /elhelb-monthly-\d{4}-\d{2}\.csv/);
   const lines = csvLines(res.body);
-  assert.equal(lines[0], 'sep=,');
-  assert.match(lines[1], /^"المهندس","المنطقة","الشهر","عدد الزيارات"/);
-  const rows = lines.slice(2).map(line => line.split('","'));
+  assert.match(lines[0], /^"المهندس","المنطقة","الشهر","عدد الزيارات"/);
+  const rows = lines.slice(1).map(line => line.split('","'));
   for (const row of rows) {
     assert.equal(row.length, 10, `every exported row must have 10 columns: ${row.join('|')}`);
     assert.match(row[2].replace(/"/g, ''), /^\d{4}-\d{2}$/, 'the month column must hold the month');
@@ -578,8 +595,34 @@ test('the monthly export opens in Excel as real columns, in the same order as th
 
 test('demo accounts are labelled as such in the exports', async () => {
   const res = await admin.get('/api/monthly.csv').set(auth(adminToken)).buffer(true).parse(csvParser);
-  const text = csvLines(res.body).slice(2).join('\n');
+  const text = csvLines(res.body).slice(1).join('\n');
   assert.match(text, /"\(تجريبي\)|تجريبي/);
+});
+
+test('the monthly Excel export is a real workbook with readable Arabic', async () => {
+  const res = await admin.get('/api/monthly.xlsx').set(auth(adminToken)).buffer(true).parse(csvParser);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.match(String(res.headers['content-type']), /spreadsheetml\.sheet/);
+  assert.match(String(res.headers['content-disposition']), /elhelb-monthly-\d{4}-\d{2}\.xlsx/);
+  const body = res.body as Buffer;
+  assert.deepEqual(body.subarray(0, 4), Buffer.from([0x50, 0x4b, 0x03, 0x04]), 'an xlsx must be a zip');
+  const files = xlsxEntries(body);
+  for (const part of ['[Content_Types].xml', 'xl/workbook.xml', 'xl/styles.xml', 'xl/worksheets/sheet1.xml']) {
+    assert.ok(files.has(part), `missing workbook part ${part}`);
+  }
+  const sheet = files.get('xl/worksheets/sheet1.xml')!;
+  assert.match(sheet, /المهندس/, 'the header must be stored as real UTF-8 text, not mojibake');
+  assert.match(sheet, /rightToLeft="1"/, 'the sheet opens right-to-left for Arabic');
+  assert.match(sheet, /<v>\d+<\/v>/, 'numbers are written as numbers so Excel can sum them');
+  assert.match(files.get('xl/workbook.xml')!, /سجل \d{4}-\d{2}/);
+});
+
+test('the KPI Excel export is a real workbook too', async () => {
+  const res = await admin.get('/api/kpis.xlsx').set(auth(adminToken)).buffer(true).parse(csvParser);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.match(String(res.headers['content-type']), /spreadsheetml\.sheet/);
+  const sheet = xlsxEntries(res.body as Buffer).get('xl/worksheets/sheet1.xml')!;
+  assert.match(sheet, /التحصيل/);
 });
 
 test('the representative stops tracking and their open shift is closed', async () => {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import LocationName from './LocationName';
 import { movementStatus } from './locationStatus';
-import { ago, downloadKpisCsv, durationText, formatNumber } from './session';
+import { ago, downloadKpisCsv, downloadKpisExcel, durationText, formatNumber } from './session';
 import type { KpiResponse, KpiRow, Rep } from './types';
 
 const today = () => new Date().toLocaleDateString('en-CA');
@@ -34,9 +34,9 @@ export default function Performance({ reps }: { reps: Rep[] }) {
     dailyReports: acc.dailyReports + row.dailyReports,
   }), { visits: 0, distanceMeters: 0, reports: 0, collected: 0, dailyReports: 0 }), [rows]);
 
-  async function exportCsv() {
+  async function exportFile(format: 'xlsx' | 'csv') {
     setExporting(true);
-    try { await downloadKpisCsv(from, to); }
+    try { await (format === 'xlsx' ? downloadKpisExcel(from, to) : downloadKpisCsv(from, to)); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر التصدير.'); }
     finally { setExporting(false); }
   }
@@ -58,7 +58,8 @@ export default function Performance({ reps }: { reps: Rep[] }) {
         <label className="field inline"><span>من</span><input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)} /></label>
         <label className="field inline"><span>إلى</span><input type="date" value={to} min={from} max={today()} onChange={e => setTo(e.target.value)} /></label>
         <button className="btn primary sm" onClick={() => void load()} disabled={loading}>{loading ? 'جارٍ التحميل…' : 'تحديث'}</button>
-        <button className="btn ghost sm" onClick={exportCsv} disabled={exporting}>{exporting ? 'جارٍ التصدير…' : 'تصدير CSV (Excel)'}</button>
+        <button className="btn primary sm" onClick={() => void exportFile('xlsx')} disabled={exporting}>{exporting ? 'جارٍ التصدير…' : 'تصدير Excel (.xlsx)'}</button>
+        <button className="btn ghost sm" onClick={() => void exportFile('csv')} disabled={exporting}>CSV</button>
         {error && <p className="error" role="alert">{error}</p>}
       </div>
       <div className="stats">
