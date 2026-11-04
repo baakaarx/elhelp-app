@@ -54,11 +54,9 @@ export async function downloadDailyReportPdf(id: string, fileName: string) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
-export const downloadKpisCsv = (from: string, to: string) => downloadKpis('csv', from, to);
-export const downloadKpisExcel = (from: string, to: string) => downloadKpis('xlsx', from, to);
-async function downloadKpis(format: 'xlsx' | 'csv', from: string, to: string) {
+export async function downloadKpisExcel(from: string, to: string) {
   const token = getToken();
-  const res = await fetch(`/api/kpis.${format}?from=${from}&to=${to}`, {
+  const res = await fetch(`/api/kpis.xlsx?from=${from}&to=${to}`, {
     headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : { 'X-Mandoub-Client': 'admin' },
     credentials: 'include',
   });
@@ -67,7 +65,7 @@ async function downloadKpis(format: 'xlsx' | 'csv', from: string, to: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `elhelb-kpis-${from}_${to}.${format}`;
+  a.download = `elhelb-kpis-${from}_${to}.xlsx`;
   document.body.appendChild(a);
   a.click();
   a.remove();

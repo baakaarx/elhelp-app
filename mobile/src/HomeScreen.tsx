@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle, Sheet, Stat } from './ui';
 import RouteMap from './RouteMap';
@@ -43,8 +43,10 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
             <Text style={styles.hello}>أهلاً {user.name.split(' ')[0]} 👋</Text>
             <Text style={styles.date}>{clockText(now)}</Text>
           </View>
-          <View style={[styles.avatar, { backgroundColor: user.color || colors.green700 }]}>
-            <Text style={styles.avatarText}>{user.name.trim().charAt(0)}</Text>
+          {/* Company mark instead of a bare initial: the engineer sees the ElHelp identity
+              next to their own name, and the greeting already carries their first name. */}
+          <View style={styles.avatar}>
+            <Image source={require('../assets/elhelb-logo.gif')} style={styles.avatarImage} accessibilityLabel="شعار الهلب جروب" />
           </View>
         </View>
 
@@ -295,8 +297,8 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row-reverse', alignItems: 'center', gap: space.md },
   hello: { fontFamily: fonts.bold, fontSize: 21, color: colors.green900, textAlign: 'right' },
   date: { fontFamily: fonts.regular, fontSize: 12, color: colors.muted, textAlign: 'right' },
-  avatar: { width: 44, height: 44, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { fontFamily: fonts.bold, fontSize: 19, color: '#fdf8ec' },
+  avatar: { width: 46, height: 46, borderRadius: 15, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', backgroundColor: '#fdf8ec' },
+  avatarImage: { width: 46, height: 46, resizeMode: 'cover' },
   hero: { gap: space.sm, paddingVertical: space.xl },
   heroTimer: { fontFamily: fonts.bold, fontSize: 20, color: '#fdf8ec', writingDirection: 'ltr' },
   heroHint: { fontFamily: fonts.regular, fontSize: 12, color: 'rgba(253,248,236,0.72)', textAlign: 'right', lineHeight: 20 },
