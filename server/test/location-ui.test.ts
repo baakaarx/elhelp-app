@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { movementStatus } from '../../dashboard/src/locationStatus.js';
+import { movementStatus, STALE_FIX_MS } from '../../dashboard/src/locationStatus.js';
 import type { Rep } from '../../dashboard/src/types.js';
 import { sendLocationChunks } from '../../mobile/src/locationQueue.js';
 import type { GeoPoint } from '../../mobile/src/types.js';
@@ -12,7 +12,9 @@ test('movement does not report a stale, weak or unavailable fix as moving or sto
   assert.match(movementStatus({ ...rep, location: { ...rep.location!, speed: 2 } }, now), /يتحرك تقريبًا/);
   assert.match(movementStatus({ ...rep, location: { ...rep.location!, accuracy: 212 } }, now), /ضعيفة/);
   assert.match(movementStatus({ ...rep, location: { ...rep.location!, speed: null } }, now), /غير متاحة/);
-  assert.match(movementStatus(rep, now + 91000), /قديمة/);
+  // 91 seconds used to count as stale while the app only heartbeats once a minute.
+  assert.match(movementStatus(rep, now + 91_000), /واقف تقريبًا/);
+  assert.match(movementStatus(rep, now + STALE_FIX_MS + 1000), /لا إشارة/);
 });
 
 test('a bad GPS fix does not discard valid neighbours in the same batch', async () => {

@@ -2,10 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import type { Rep, RouteResponse } from './types';
 
-// Keyless, production-grade basemaps. Esri World Imagery is the sharpest free satellite
-// layer over Egypt (the operating area) and the Light Gray canvas keeps the field data
-// readable. Both are served without an API key, so nothing can expire mid-demo.
+// Keyless basemaps (no API key, so nothing expires mid-demo).
+//
+// The street map is the default: following a field engineer means reading street names and
+// blocks, which satellite imagery does not give — imagery is kept as a second option for
+// checking a site from above. Labels come from the street tiles themselves, so no overlay.
 const BASEMAPS = {
+  street: {
+    label: 'شوارع',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    attribution: '&copy; <a href="https://www.esri.com/">Esri</a> — World Street Map',
+    maxZoom: 19,
+    maxNativeZoom: 18,
+  },
   satellite: {
     label: 'قمر صناعي',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -13,21 +22,14 @@ const BASEMAPS = {
     maxZoom: 19,
     maxNativeZoom: 19,
   },
-  light: {
-    label: 'خريطة',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-    attribution: '&copy; <a href="https://www.esri.com/">Esri</a> — Light Gray Canvas',
-    maxZoom: 19,
-    maxNativeZoom: 16,
-  },
 } as const;
 type BasemapKey = keyof typeof BASEMAPS;
 
-// Labels drawn above the imagery so street/place names stay crisp on the satellite view.
-const LABELS = {
+// Only the imagery needs a separate label layer for readable street/place names.
+const LABELS: Record<BasemapKey, string | null> = {
+  street: null,
   satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-  light: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
-} as const;
+};
 
 // The pilot runs inside Egypt only, so the map is bounded instead of drifting into empty sea.
 const EGYPT_BOUNDS = L.latLngBounds([21.9, 24.5], [31.75, 37.0]);
@@ -55,7 +57,7 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   const layer = useRef<L.LayerGroup | null>(null);
   const baseLayer = useRef<L.TileLayer | null>(null);
   const labelLayer = useRef<L.TileLayer | null>(null);
-  const [basemap, setBasemap] = useState<BasemapKey>('satellite');
+  const [basemap, setBasemap] = useState<BasemapKey>('street');
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(1);
   const [speed, setSpeed] = useState(120);
@@ -74,7 +76,8 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
     }).setView(EGYPT_CENTER, 6);
     const config = BASEMAPS[basemap];
     baseLayer.current = L.tileLayer(config.url, { attribution: config.attribution, maxZoom: config.maxZoom, maxNativeZoom: config.maxNativeZoom }).addTo(instance);
-    labelLayer.current = L.tileLayer(LABELS[basemap], { maxZoom: 19, maxNativeZoom: 16, opacity: 0.9 }).addTo(instance);
+    const labelUrl = LABELS[basemap];
+    labelLayer.current = labelUrl ? L.tileLayer(labelUrl, { maxZoom: 19, maxNativeZoom: 16, opacity: 0.9 }).addTo(instance) : null;
     L.control.zoom({ position: 'bottomleft' }).addTo(instance);
     L.control.scale({ position: 'bottomleft', metric: true, imperial: false }).addTo(instance);
     layer.current = L.layerGroup().addTo(instance);
@@ -93,12 +96,15 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   // Swap the basemap in place; the map, the route and the zoom level stay untouched.
   useEffect(() => {
     const instance = map.current;
-    if (!instance || !baseLayer.current || !labelLayer.current) return;
+    if (!instance || !baseLayer.current) return;
     const config = BASEMAPS[basemap];
     baseLayer.current.setUrl(config.url);
     baseLayer.current.options.attribution = config.attribution;
     baseLayer.current.options.maxNativeZoom = config.maxNativeZoom;
-    labelLayer.current.setUrl(LABELS[basemap]);
+    const labelUrl = LABELS[basemap];
+    if (labelUrl && !labelLayer.current) labelLayer.current = L.tileLayer(labelUrl, { maxZoom: 19, maxNativeZoom: 16, opacity: 0.9 }).addTo(instance);
+    else if (labelUrl && labelLayer.current) labelLayer.current.setUrl(labelUrl);
+    else if (!labelUrl && labelLayer.current) { instance.removeLayer(labelLayer.current); labelLayer.current = null; }
     instance.attributionControl.setPrefix('<a href="https://leafletjs.com/">Leaflet</a>');
   }, [basemap]);
 
@@ -160,9 +166,21 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
         html: `<span style="--pin:${rep.color}">${escapeHtml(initials(rep.name))}</span>`,
         iconSize: [38, 38], iconAnchor: [19, 19],
       });
+      // How sure we are about the fix, drawn to scale: a wide circle means "the engineer is
+      // somewhere in here", which stops a weak reading from looking like a precise position.
+      const accuracy = rep.location?.accuracy;
+      if (typeof accuracy === 'number' && accuracy >= 8) {
+        L.circle([lat, lng], {
+          radius: accuracy, color: rep.color, weight: 1, opacity: 0.5,
+          fillColor: rep.color, fillOpacity: rep.isDemo ? 0.05 : 0.1,
+        }).addTo(group);
+      }
       const marker = L.marker([lat, lng], { icon }).addTo(group);
+      const state = rep.tracking ? (rep.online ? 'في وردية · متصل' : 'في وردية · غير متصل') : 'خارج الوردية';
+      const demo = rep.isDemo ? '<br/><i>حساب محاكاة — ليست بيانات ميدانية</i>' : '';
+      const accuracyText = typeof accuracy === 'number' ? `<br/>دقة الإشارة ±${Math.round(accuracy)} م` : '';
       marker.bindTooltip(
-        `<b>${escapeHtml(rep.name)}</b><br/>${rep.online ? 'متصل الآن' : 'غير متصل'} · ${rep.tracking ? 'في وردية' : 'لا يتتبع'}${rep.openVisit ? `<br/>زيارة مفتوحة: ${escapeHtml(rep.openVisit.customerName)}` : ''}`,
+        `<b>${escapeHtml(rep.name)}</b><br/>${state}${rep.openVisit ? `<br/>زيارة مفتوحة: ${escapeHtml(rep.openVisit.customerName)}` : ''}${accuracyText}${demo}`,
         { direction: 'top', offset: [0, -20] },
       );
       bounds.push([lat, lng]);
