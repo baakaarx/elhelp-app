@@ -558,6 +558,32 @@ export function createApp(overrides: Partial<Config> = {}) {
     broadcast();
     res.json({ ok: true });
   });
+  // ---- CSV helpers: Arabic Excel opens `,`-delimited files in a single column unless the
+  // first line is `sep=,` (the Arabic locale default delimiter is `;`), so every export
+  // starts with it. The BOM keeps Arabic readable.
+  function csvCell(value: unknown): string {
+    return `"${String(value ?? '').replace(/"/g, '""')}"`;
+  }
+  function csvDocument(header: string[], body: unknown[][]): string {
+    const lines = [header.map(csvCell).join(',')].concat(body.map(row => row.map(csvCell).join(',')));
+    return 'sep=,\r\n' + lines.join('\r\n');
+  }
+  function sendCsv(res: { setHeader: (k: string, v: string) => void; send: (b: string) => void }, filename: string, header: string[], body: unknown[][]) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send('\uFEFF' + csvDocument(header, body));
+  }
+  // Same order the dashboard shows: busiest engineer first, so the exported file matches
+  // the table the manager is looking at.
+  function byActivity<T extends { visits: number; dailyReports: number; reports: number; name: string }>(rows: T[]): T[] {
+    return [...rows].sort((a, b) =>
+      b.visits - a.visits || b.dailyReports - a.dailyReports || b.reports - a.reports || a.name.localeCompare(b.name, 'ar'));
+  }
+  // Demo accounts are labelled in the exports exactly like the dashboard labels them.
+  function exportName(row: { name: string; isDemo: boolean }): string {
+    return row.isDemo ? `${row.name} (تجريبي)` : row.name;
+  }
   function kpiRows(from: string, to: string) {
     const start = dayBounds(from, config.timezone).start;
     const end = dayBounds(to, config.timezone).end;
@@ -598,14 +624,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); rows = kpiRows(from, to); }
     catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
     const header = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
-    const csv = [header.join(',')].concat(rows.map(r => [
-      r.name, r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+    sendCsv(res, `elhelb-kpis-${from}_${to}.csv`, header, byActivity(rows).map(r => [
+      exportName(r), r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
       (r.distanceMeters / 1000).toFixed(1), r.reports, r.collected, r.dailyReports,
-    ].map(value => `"${String(value).replace(/"/g, '""')}"`).join(','))).join('\r\n');
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="elhelb-kpis-${from}_${to}.csv"`);
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.send('\uFEFF' + csv);
+    ]));
   });
   // ---- Monthly register: visits + reports per month (international company requirement) ----
   function monthBounds(month: string) {
@@ -623,7 +645,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
     try {
       const { from, to } = monthBounds(month);
-      const rows = kpiRows(from, to);
+      const rows = byActivity(kpiRows(from, to));
       res.json({ month, from, to, timezone: config.timezone, rows });
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
@@ -631,16 +653,11 @@ export function createApp(overrides: Partial<Config> = {}) {
     const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
     try {
       const { from, to } = monthBounds(month);
-      const rows = kpiRows(from, to);
       const header = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'التحصيل (ج.م)'];
-      const csv = [header.join(',')].concat(rows.map(r => [
-        r.name, r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+      sendCsv(res, `elhelb-monthly-${month}.csv`, header, byActivity(kpiRows(from, to)).map(r => [
+        exportName(r), r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
         (r.distanceMeters / 1000).toFixed(1), r.reports, r.dailyReports, r.collected,
-      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))).join('\r\n');
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="elhelb-monthly-${month}.csv"`);
-      res.setHeader('Cache-Control', 'private, no-store');
-      res.send('\uFEFF' + csv);
+      ]));
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
   // ---- Reports: the second core feature of the rep app ----
