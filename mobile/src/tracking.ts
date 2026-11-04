@@ -11,8 +11,10 @@ export const CONSENT_VERSION = '1.0';
 const CHUNK_MS = 1000;
 // A fix this loose is a cell-tower guess; queueing it teleports the map and inflates distance.
 const MAX_POINT_ACCURACY_M = MAX_ACCURACY_M;
-// While standing still the GPS jitters by a few meters; one heartbeat a minute is enough.
-const STANDSTILL_MS = 60000;
+// While standing still the GPS jitters by a few meters, so we do not queue every fix — but a
+// heartbeat still has to arrive well inside the dashboard's staleness window (3 minutes),
+// otherwise a stationary engineer looks like "no signal".
+const STANDSTILL_MS = 30000;
 const STANDSTILL_METERS = 5;
 
 type Listener = (point: GeoPoint) => void;
