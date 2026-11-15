@@ -22,7 +22,9 @@
     "preview": "node scripts/preview.mjs",
     "agent": "npm run agent -w @mandoub/server",
     "agent:skills": "npm run agent -w @mandoub/server -- skills",
-    "build:apk": "node scripts/build-apk.mjs"
+    "build:apk": "node scripts/build-apk.mjs",
+    "build:aab": "node scripts/build-apk.mjs --aab",
+    "keystore": "node scripts/create-keystore.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

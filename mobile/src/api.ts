@@ -38,6 +38,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 export const post = <T>(path: string, data: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(data) });
 export const get = <T>(path: string) => request<T>(path, { method: 'GET' });
+/**
+ * Erases the signed-in account on the server. The email acts as the confirmation step the
+ * stores expect, exactly like the dashboard form.
+ */
+export const deleteMyAccount = (email: string) =>
+  request<{ ok: true }>('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: true, email }) });
 
 export async function login(email: string, password: string) {
   const res = await post<{ token: string; user: User }>('/api/auth/login', { email: email.trim().toLowerCase(), password });

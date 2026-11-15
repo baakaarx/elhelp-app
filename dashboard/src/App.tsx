@@ -217,7 +217,7 @@ export default function App() {
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
         {tab === 'agent' && <AgentPanel reps={reps} />}
-        {tab === 'account' && <Account user={user} overview={overview} />}
+        {tab === 'account' && <Account user={user} overview={overview} onDeleted={() => setUser(null)} />}
       </main>
     </div>
   );
@@ -382,7 +382,46 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
   );
 }
 
-function Account({ user, overview }: { user: User; overview: Overview | null }) {
+function DeleteAccountPanel({ user, onDeleted }: { user: User; onDeleted: () => void }) {
+  const [email, setEmail] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ready = !busy && email.trim().toLowerCase() === user.email.toLowerCase();
+
+  async function remove() {
+    if (!window.confirm('حذف الحساب نهائيًا؟ سيُحذف حسابك وكل بياناتك (الموقع، الورديات، التقارير) ولا يمكن التراجع.')) return;
+    setBusy(true); setError(null);
+    try {
+      await api('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: true, email: user.email }) });
+      setToken(null);
+      onDeleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'تعذر حذف الحساب.');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="panel">
+      <h3 className="panel-title">حذف الحساب نهائيًا</h3>
+      <p className="muted small">
+        حق الحذف متاح من داخل التطبيق نفسه (وللطلبات من المتاجر): يُحذف الحساب مع الموقع والورديات
+        والزيارات والتقارير فورًا، وتُلغى كل جلساته. اكتب بريد الحساب للتأكيد.
+      </p>
+      <div className="filters">
+        <label className="field inline">
+          <span>تأكيد البريد</span>
+          <input dir="ltr" value={email} onChange={event => setEmail(event.target.value)} placeholder={user.email} />
+        </label>
+        <button className="btn danger sm" disabled={!ready} onClick={() => void remove()}>
+          {busy ? 'جارٍ الحذف…' : 'حذف الحساب نهائيًا'}
+        </button>
+      </div>
+      {error && <p className="error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
+function Account({ user, overview, onDeleted }: { user: User; overview: Overview | null; onDeleted: () => void }) {
   return (
     <section className="page">
       <header className="page-head"><div><h2>الحساب والخصوصية</h2><p className="muted">بياناتك وسياسة جمع الموقع.</p></div></header>
@@ -406,8 +445,10 @@ function Account({ user, overview }: { user: User; overview: Overview | null }) 
             <li>كل عملية حساسة (بدء وردية، إنهاء زيارة، إيقاف حساب، تنزيل تقرير) تُسجل في سجل تدقيق.</li>
           </ul>
           <p className="muted small">المنطقة الزمنية: {overview?.timezone ?? 'Africa/Cairo'} · إصدار الموافقة: 1.0</p>
+          <p><a className="btn ghost sm" href="/privacy" target="_blank" rel="noreferrer">سياسة الخصوصية المنشورة (رابط عام)</a></p>
         </div>
       </div>
+      <DeleteAccountPanel user={user} onDeleted={onDeleted} />
     </section>
   );
 }

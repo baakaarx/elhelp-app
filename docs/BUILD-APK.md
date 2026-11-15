@@ -99,46 +99,49 @@ npm run build:apk                                            # يستخدم ال
 
 ---
 
-## ٥) التوقيع الرسمي (لـ Google Play فقط)
+## ٥) التوقيع الرسمي و AAB للنشر على Google Play
 
-نسخة release الافتراضية بتتوقّع بكيستور الـdebug، وده كافي للتركيب المباشر على موبايلات الشركة.
-للنشر على Play محتاج مفتاحك الخاص:
+نسخة release الافتراضية بتتوقّع بكيستور الـdebug — كافي للتركيب المباشر على موبايلات الشركة،
+ومرفوض في Google Play. لما تحتاج تنشر:
 
 ```powershell
-cd mobile
-keytool -genkeypair -v -keystore elhelp-release.keystore -alias elhelp `
-  -keyalg RSA -keysize 2048 -validity 10000
+cd C:\Users\mo.ai\projects\elhelp-app
+$env:KEYSTORE_PASSWORD="كلمة-سر-طويلة"
+npm run keystore
 ```
 
-بعدها في `mobile\android\app\build.gradle`:
+السكربت بينشئ `mobile\elhelp-release.keystore` و`mobile\keystore.properties` (الاتنين مستثنيين من Git)،
+ويطبع بصمة المفتاح. **خد نسخة احتياطية منهم فورًا** — من غيرهم مش هتقدر تنزّل تحديثات لنفس التطبيق على Play.
 
-```gradle
-android {
-    signingConfigs {
-        release {
-            storeFile file('../../elhelp-release.keystore')
-            storePassword System.getenv('ELHELP_STORE_PASSWORD')
-            keyAlias 'elhelp'
-            keyPassword System.getenv('ELHELP_KEY_PASSWORD')
-        }
-    }
-    buildTypes {
-        release { signingConfig signingConfigs.release }
-    }
-}
+بعدها:
+
+```powershell
+npm run build:aab -- https://tracking.your-company.com
+# الناتج: mobile\dist-android\elhelp-engineer-1.0.0-release.aab
 ```
 
-- **لا تحط** كلمات السر ولا الملف نفسه في Git (`*.keystore` و`*.jks` مستثناة في `.gitignore`).
-- `mobile\android` مُولَّد ومستثنى، فأي تعديل فيه بيضيع مع `prebuild --clean`. لو محتاج التوقيع
-  يتكرر بشكل دائم، خزّنه في `keystore.properties` + خد نسخة من `build.gradle`، أو استخدم EAS:
-  `npx eas build -p android --profile production` (بيطلّع AAB لـPlay).
-- للنشر على Play لازم **AAB** مش APK:
-  ```powershell
-  cd mobile\android && .\gradlew bundleRelease
-  # app\build\outputs\bundle\release\app-release.aab
-  ```
+- المعمارية: `mobile/plugins/withReleaseSigning.js` بيقرا `keystore.properties` ويحقن
+  `signingConfigs.release` في `app/build.gradle` وقت كل `expo prebuild`، فالتوقيع مش بيضيع.
+- بدون `keystore.properties` السلوك القديم كما هو (توقيع debug) — عشان البناء المحلي ما يتعطّلش.
+- للنشر على Play: **AAB** مش APK. للاختبار الداخلي (Internal testing) ارفع الـAAB، وللتوزيع
+  المباشر على الفريق استخدم الـAPK.
 
----
+### بناء تلقائي بالـ tag
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+الـworkflow `.github/workflows/release.yml` بيبني APK (وAAB لو المفتاح متسجّل) وينشئ
+**GitHub Release** فيه الملفات جاهزة للتحميل. المطلوب مرة واحدة في إعدادات المستودع:
+
+| النوع | الاسم | القيمة |
+| --- | --- | --- |
+| Variable | `ELHELP_API_URL` | عنوان السيرفر النهائي |
+| Secret | `ANDROID_KEYSTORE_BASE64` | `base64 elhelp-release.keystore` |
+| Secret | `ANDROID_KEYSTORE_PASSWORD` | كلمة سر الكيستور |
+| Secret | `ANDROID_KEY_ALIAS` | `elhelp` |
+| Secret | `ANDROID_KEY_PASSWORD` | كلمة سر المفتاح |
 
 ## ٦) بعد التثبيت على موبايل المهندس
 

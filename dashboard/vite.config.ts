@@ -8,6 +8,9 @@ export default defineConfig(({ mode }) => {
   const proxy = {
     '/api': { target, changeOrigin: true },
     '/socket.io': { target, changeOrigin: true, ws: true },
+    // The public privacy policy is server-rendered; without this the SPA shell answers instead
+    // and the store-facing URL would look broken in development.
+    '/privacy': { target, changeOrigin: true },
   };
   return {
     plugins: [react()],

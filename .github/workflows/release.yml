@@ -1,0 +1,83 @@
+name: Release build
+
+# Push a version tag (git tag v1.2.0 && git push origin v1.2.0) and get a GitHub Release with
+# the installable APK attached — plus a Play-ready AAB when the upload key is configured.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: apk + aab
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      API_URL: ${{ vars.ELHELP_API_URL }}
+      KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: npm ci
+
+      - name: Check the API address
+        run: |
+          set -euo pipefail
+          if [ -z "${API_URL:-}" ]; then
+            echo "::error title=API URL missing::Set the repository variable ELHELP_API_URL (Settings > Secrets and variables > Actions > Variables) — every release bakes that address in."
+            exit 1
+          fi
+          echo "building against ${API_URL%/}"
+
+      # The upload key never lives in the repository: it is restored from a secret for the run,
+      # and the generated keystore/properties files disappear with the runner.
+      - name: Restore the upload key
+        id: signing
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > mobile/elhelp-release.keystore
+            {
+              echo "storeFile=${PWD}/mobile/elhelp-release.keystore"
+              echo "storePassword=${KEYSTORE_PASSWORD}"
+              echo "keyAlias=${KEY_ALIAS}"
+              echo "keyPassword=${KEY_PASSWORD}"
+            } > mobile/keystore.properties
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Unsigned release::ANDROID_KEYSTORE_BASE64 is not set, so only the sideload APK is built."
+          fi
+
+      - name: Build the APK
+        run: npm run build:apk -- "${API_URL%/}"
+
+      - name: Build the Play bundle
+        if: steps.signing.outputs.enabled == 'true'
+        run: npm run build:aab -- "${API_URL%/}"
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          assets=$(ls mobile/dist-android/*.apk mobile/dist-android/*.aab 2>/dev/null || ls mobile/dist-android/*.apk)
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "الهلب · مهندس الميدان ${GITHUB_REF_NAME}" \
+            --notes "بناء آلي من ${GITHUB_SHA:0:7} — عنوان السيرفر: ${API_URL%/}" \
+            $assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

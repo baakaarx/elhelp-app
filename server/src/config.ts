@@ -31,6 +31,8 @@ export interface Config {
   allowedOrigins: string[];
   /** Minutes without a GPS point before the field is flagged as losing signal. */
   staleGpsMinutes: number;
+  /** Public contact address printed on the privacy policy page the stores link to. */
+  privacyContact: string;
 }
 
 export function readConfig(): Config {
@@ -68,5 +70,8 @@ export function readConfig(): Config {
     adminPassword: process.env.ADMIN_PASSWORD || '',
     allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map(x => x.trim()).filter(Boolean),
     staleGpsMinutes,
+    // A privacy contact is required by both stores. It defaults to privacy@<domain of the
+    // manager address> so an installation never publishes the manager's own login address.
+    privacyContact: (process.env.PRIVACY_CONTACT || '').trim() || `privacy@${adminEmail.split('@')[1] || 'example.com'}`,
   };
 }

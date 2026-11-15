@@ -196,6 +196,8 @@ input:focus, select:focus, textarea:focus {
 }
 .btn.primary:hover { background: linear-gradient(135deg, #16405f, var(--navy-800)); }
 .btn.gold { background: linear-gradient(135deg, var(--gold-500), var(--gold-600)); color: #241c00; box-shadow: 0 12px 24px -16px rgba(201, 162, 39, 0.9); }
+.btn.danger { background: #b42318; border-color: #b42318; color: #fff; }
+.btn.danger:hover { background: #912018; }
 .btn.ghost { background: transparent; border-color: var(--line); color: var(--navy-800); }
 .btn.ghost:hover { background: #f1f5f9; }
 .btn.sm { padding: 6px 12px; font-size: 0.84rem; border-radius: 10px; }
