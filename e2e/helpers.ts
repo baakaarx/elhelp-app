@@ -14,10 +14,9 @@ export const MANAGER_COOKIE = 'mandoub_admin_session';
 export async function signInAsManager(page: Page) {
   const token = process.env.E2E_ADMIN_TOKEN;
   if (token) {
-    await page.context().addCookies([{
-      name: MANAGER_COOKIE, value: token, domain: '127.0.0.1', path: '/',
-      expires: -1, httpOnly: true, secure: false, sameSite: 'Lax',
-    }]);
+    // `url` keeps it a host-only cookie, exactly like the API's own Set-Cookie; an explicit
+    // IP `domain` is not matched back by the browser.
+    await page.context().addCookies([{ name: MANAGER_COOKIE, value: token, url: 'http://127.0.0.1:5174' }]);
   }
   await page.goto('/');
   try {
@@ -27,8 +26,10 @@ export async function signInAsManager(page: Page) {
     let state = 'missing';
     try { state = fs.readFileSync(MANAGER_STATE, 'utf8').slice(0, 400); } catch {}
     const cookies = await page.context().cookies();
-    const text = (await page.locator('body').innerText()).slice(0, 200);
-    throw new Error(`diag ${JSON.stringify({ hasToken: !!token, cookies, state, url: page.url(), text })}`);
+    const text = (await page.locator('body').innerText()).slice(0, 120);
+    const me = await page.request.get('/api/auth/me', { failOnStatusCode: false });
+    const meBody = (await me.text()).slice(0, 120);
+    throw new Error(`diag ${JSON.stringify({ hasToken: !!token, cookies, meStatus: me.status(), meBody, state, url: page.url(), text })}`);
   }
   await expect(page.getByRole('heading', { level: 1, name: 'مركز العمليات' })).toBeVisible();
 }
