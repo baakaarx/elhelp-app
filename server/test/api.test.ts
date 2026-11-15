@@ -978,3 +978,93 @@ test('a forged token does not buy a fresh rate-limit bucket', async () => {
     assert.equal(statuses[5], 429);
   } finally { await isolated.close(); }
 });
+
+// ---- Distance filter: the rewrite must be bit-for-bit the same numbers ---------------------
+
+import { distanceMeters, haversine, type GeoPoint } from '../src/geo.js';
+
+/** The original implementation, kept here as the reference the optimised one is checked against. */
+function referenceDistance(points: GeoPoint[]): number {
+  const usable = points.filter(p => p.accuracy === null || (p.accuracy > 0 && p.accuracy <= 100));
+  if (usable.length < 2) return 0;
+  const steps: Array<{ dLat: number; dLng: number; seconds: number }> = [];
+  let total = 0;
+  const median = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const middle = sorted.length >> 1;
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  };
+  for (let index = 1; index < usable.length; index++) {
+    const previous = usable[index - 1];
+    const current = usable[index];
+    const seconds = (current.recordedAt - previous.recordedAt) / 1000;
+    if (seconds <= 0 || seconds > 600) { steps.length = 0; continue; }
+    steps.push({ dLat: current.lat - previous.lat, dLng: current.lng - previous.lng, seconds });
+    if (steps.length > 5) steps.shift();
+    const dLat = median(steps.map(step => step.dLat));
+    const dLng = median(steps.map(step => step.dLng));
+    const stepSeconds = median(steps.map(step => step.seconds));
+    if (stepSeconds <= 0) continue;
+    const meters = haversine(current, { lat: current.lat + dLat, lng: current.lng + dLng });
+    if (meters / stepSeconds > 55) continue;
+    const accuracy = ((previous.accuracy ?? 0) + (current.accuracy ?? 0)) / 2;
+    if (meters < Math.max(10, accuracy)) continue;
+    total += meters;
+  }
+  return total;
+}
+
+test('the optimised distance filter returns exactly the old numbers', () => {
+  // A deterministic pseudo-random track: driving, GPS jitter, a long gap, a teleport, a
+  // low-accuracy stretch and repeated timestamps.
+  let seed = 42;
+  const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const tracks: GeoPoint[][] = [];
+  for (const day of [0, 1, 2]) {
+    const points: GeoPoint[] = [];
+    let lat = 31.2, lng = 29.9;
+    let at = 1_700_000_000_000 + day * 86_400_000;
+    for (let index = 0; index < 400; index++) {
+      lat += (random() - 0.45) * 0.0004;
+      lng += (random() - 0.45) * 0.0004;
+      at += index === 120 ? 900_000 : 1000 + Math.round(random() * 900);
+      if (index === 200) { lat += 0.5; lng += 0.5; }              // teleport
+      const accuracy = index > 300 ? 150 : 5 + Math.round(random() * 20); // last stretch unusable
+      points.push({ lat, lng, accuracy, speed: null, recordedAt: at });
+    }
+    points.push({ ...points[points.length - 1] });                 // duplicate timestamp
+    tracks.push(points);
+  }
+  for (const track of tracks) {
+    assert.equal(distanceMeters(track), referenceDistance(track));
+    assert.equal(distanceMeters(track.slice(0, 1)), 0);
+    assert.equal(distanceMeters([]), 0);
+  }
+});
+
+test('the day summary reports the requested day, not today', async () => {
+  const engineer = await freshRep('summary-day');
+  const started = await request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId: 'summary-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const shiftId = started.body.shift.id as string;
+  assert.equal((await request(app).get('/api/me/shift?snapshot=0').set(auth(engineer.token))).body.snapshot, undefined);
+
+  const yesterday = localDate(config.timezone, Date.now() - 86400000);
+  const bounds = dayBounds(yesterday, config.timezone);
+  store.run('UPDATE shifts SET started_at=? WHERE id=?', bounds.start - 3600000, shiftId);
+  // Twenty fixes 22 m apart, so the distance filter has real movement to count.
+  const points = Array.from({ length: 20 }, (_, index) => ({
+    id: crypto.randomUUID(), shiftId, lat: 31.2 + index * 0.0002, lng: 29.9, accuracy: 6,
+    speed: 3, heading: 90, battery: 80, recordedAt: bounds.start + 7200000 + index * 10000,
+  }));
+  assert.equal((await request(app).post('/api/locations').set(auth(engineer.token)).send({ points })).status, 200);
+
+  const past = await request(app).get(`/api/me/summary?date=${yesterday}`).set(auth(engineer.token));
+  assert.equal(past.status, 200, JSON.stringify(past.body));
+  assert.ok(past.body.distanceMeters > 300, `yesterday must carry its own distance, got ${past.body.distanceMeters}`);
+
+  const today = await request(app).get('/api/me/summary').set(auth(engineer.token));
+  assert.equal(today.status, 200);
+  assert.equal(today.body.distanceMeters, 0, 'today has no fixes of its own');
+});

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { parseNumberText } from './format';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { captureOnce, type Fix } from './location';
@@ -102,8 +103,8 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
     setSaving(true); setError('');
     try {
       const location = await captureOnce();
-      const parsedAmount = amount.trim() === '' ? null : Number(amount);
-      if (parsedAmount !== null && (!Number.isFinite(parsedAmount) || parsedAmount < 0)) throw new Error('المبلغ غير صحيح.');
+      const parsedAmount = parseNumberText(amount);
+      if (amount.trim() !== '' && (parsedAmount === null || parsedAmount < 0)) throw new Error('المبلغ غير صحيح — اكتب رقمًا (مثال: ٥٠٠ أو 500).');
       await field.checkOut(visit!.id, {
         outcome: outcome.trim(), notes: notes.trim(), amount: parsedAmount,
         location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy } : null,

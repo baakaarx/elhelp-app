@@ -57,7 +57,7 @@ export const me = () => get<{ user: User }>('/api/auth/me').then(r => r.user);
 export async function logout() {
   try { await post('/api/auth/logout', {}); } finally { await setToken(null); }
 }
-export const shiftState = () => get<ShiftResponse>('/api/me/shift');
+export const shiftState = () => get<ShiftResponse>('/api/me/shift?snapshot=0');
 export async function startShift(consentVersion: string, location: { lat: number; lng: number; accuracy: number | null }, deviceId: string, deviceName?: string) {
   return post<{ shift: Shift }>('/api/shifts/start', { consentVersion, location, deviceId, deviceName });
 }

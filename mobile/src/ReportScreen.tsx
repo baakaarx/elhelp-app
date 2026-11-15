@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { get, sendReport } from './api';
 import { captureOnce } from './location';
+import { parseNumberText } from './format';
 import { enqueueReport, flushOutbox } from './reports';
 import { randomUUID } from './tracking';
 import { colors, fonts, radius, space } from './theme';
@@ -43,10 +44,14 @@ export default function ReportScreen({ onPending }: { onPending?: (value: number
   async function submit() {
     if (title.trim().length < 2) { setError('اكتب عنوانًا قصيرًا للتقرير.'); return; }
     setBusy(true); setError(''); setMessage('');
+    const parsedAmount = parseNumberText(amount);
+    if (amount.trim() !== '' && (parsedAmount === null || parsedAmount < 0)) {
+      setError('المبلغ غير صحيح — اكتب رقمًا (مثال: ٥٠٠ أو 500).'); setBusy(false); return;
+    }
     const fix = withLocation ? await captureOnce() : null;
     const payload: ReportInput = {
       id: randomUUID(), type, title: title.trim(), body: body.trim(), customer: customer.trim(),
-      amount: amount.trim() === '' ? null : Number(amount) || 0,
+      amount: parsedAmount,
       location: fix ? { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy } : null,
     };
     try {
