@@ -1,36 +1,21 @@
 import { expect, type Page } from '@playwright/test';
 
-/** Where global-setup stores the manager session every test starts from. */
-export const MANAGER_STATE = 'e2e/.auth/manager.json';
-/** The manager session token global-setup hands to the browser tests. */
-export const MANAGER_COOKIE = 'mandoub_admin_session';
-
 /**
- * Open the dashboard already signed in as the manager.
+ * Install the manager session global setup obtained, then open the dashboard.
  *
- * The session token comes from global setup (one login per run, so the 15-attempts-per-15-minutes
- * limit never affects the suite) and is installed as the same HttpOnly cookie the API sets.
+ * The dashboard keeps its session token in `localStorage` (sent as `X-Mandoub-Token`) on top of
+ * the HttpOnly cookie, so both have to be in place before the first render. Reusing one token
+ * keeps the suite at a single login per run, well under the 15-attempts-per-15-minutes limit.
  */
 export async function signInAsManager(page: Page) {
   const token = process.env.E2E_ADMIN_TOKEN;
   if (token) {
-    // `url` keeps it a host-only cookie, exactly like the API's own Set-Cookie; an explicit
-    // IP `domain` is not matched back by the browser.
-    await page.context().addCookies([{ name: MANAGER_COOKIE, value: token, url: 'http://127.0.0.1:5174' }]);
+    await page.addInitScript(value => window.localStorage.setItem('mandoub.token', value), token);
+    await page.context().addCookies([{ name: 'mandoub_admin_session', value: token, url: 'http://127.0.0.1:5174' }]);
   }
   await page.goto('/');
-  try {
-    await expect(page.getByRole('button', { name: 'خروج' })).toBeVisible({ timeout: 3000 });
-  } catch (error) {
-    const fs = await import('node:fs');
-    let state = 'missing';
-    try { state = fs.readFileSync(MANAGER_STATE, 'utf8').slice(0, 400); } catch {}
-    const cookies = await page.context().cookies();
-    const text = (await page.locator('body').innerText()).slice(0, 120);
-    const me = await page.request.get('/api/auth/me', { failOnStatusCode: false });
-    const meBody = (await me.text()).slice(0, 120);
-    throw new Error(`diag ${JSON.stringify({ hasToken: !!token, cookies, meStatus: me.status(), meBody, state, url: page.url(), text })}`);
-  }
+  // The sign-in screen carries the same page title, so only the shell proves the session.
+  await expect(page.getByRole('button', { name: 'خروج' })).toBeVisible();
   await expect(page.getByRole('heading', { level: 1, name: 'مركز العمليات' })).toBeVisible();
 }
 

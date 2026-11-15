@@ -1,8 +1,6 @@
 import { request } from '@playwright/test';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { MANAGER_STATE } from './helpers';
 import { E2E_ADMIN, E2E_API, E2E_DB_PATH, E2E_REPS, E2E_REP_PASSWORD } from './fixtures';
 
 /**
@@ -20,10 +18,9 @@ export default async function globalSetup() {
   // Playwright forwards environment changes made here to the test workers, which install this
   // token as the session cookie instead of signing in again for every test.
   process.env.E2E_ADMIN_TOKEN = token;
-  // The manager session is saved once and reused by every browser test, so the suite never
-  // exhausts the login rate limit (15 attempts per 15 minutes) while it runs.
-  mkdirSync('e2e/.auth', { recursive: true });
-  await api.storageState({ path: MANAGER_STATE });
+  // The manager session is handed to the browser tests, so the suite never exhausts the
+  // login rate limit (15 attempts per 15 minutes) while it runs.
+
 
   // The daily report is filed against the operator's local day, not the server's UTC date.
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(new Date());

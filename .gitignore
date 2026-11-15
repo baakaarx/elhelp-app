@@ -22,4 +22,3 @@ mobile/dist-android/
 mobile/android/
 mobile/ios/
 .DS_Store
-e2e/.auth/
