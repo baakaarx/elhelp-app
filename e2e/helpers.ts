@@ -20,8 +20,16 @@ export async function signInAsManager(page: Page) {
     }]);
   }
   await page.goto('/');
-  // The sign-in screen carries the same page title, so only the shell proves the session.
-  await expect(page.getByRole('button', { name: 'خروج' })).toBeVisible();
+  try {
+    await expect(page.getByRole('button', { name: 'خروج' })).toBeVisible({ timeout: 3000 });
+  } catch (error) {
+    const fs = await import('node:fs');
+    let state = 'missing';
+    try { state = fs.readFileSync(MANAGER_STATE, 'utf8').slice(0, 400); } catch {}
+    const cookies = await page.context().cookies();
+    const text = (await page.locator('body').innerText()).slice(0, 200);
+    throw new Error(`diag ${JSON.stringify({ hasToken: !!token, cookies, state, url: page.url(), text })}`);
+  }
   await expect(page.getByRole('heading', { level: 1, name: 'مركز العمليات' })).toBeVisible();
 }
 
