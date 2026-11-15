@@ -34,7 +34,7 @@ test.describe('المتابعة الحية والفريق', () => {
     await signInAsManager(page);
     await page.getByRole('button', { name: /نخبة الفريق/ }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'نخبة الفريق' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'الفريق' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 2, name: 'الفريق' })).toBeVisible();
     await page.getByRole('button', { name: /إنجازات وتقارير/ }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'إنجازات وتقارير' })).toBeVisible();
     await page.getByRole('button', { name: /هويتي/ }).click();
