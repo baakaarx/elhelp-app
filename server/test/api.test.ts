@@ -36,7 +36,7 @@ const xlsxEntries = (body: Buffer): Map<string, string> => {
 };
 
 const config = {
-  dbPath: ':memory:', demo: true, production: false, retentionDays: 30, timezone: 'Africa/Cairo',
+  dbPath: ':memory:', production: false, retentionDays: 30, timezone: 'Africa/Cairo',
   adminEmail: 'admin@mandoub.test', adminPassword: 'TestPassword123!', allowedOrigins: [], port: 0,
 };
 const instance = createApp(config);
@@ -52,10 +52,12 @@ test.after(async () => { await instance.close(); });
 let adminToken = '';
 let repToken = '';
 let repId = '';
+let otherRepId = '';
 let shiftId = '';
 let reportId = '';
 let dailyId = '';
 const repEmail = `rep.${Date.now()}@mandoub.test`;
+const otherRepEmail = `other.${Date.now()}@mandoub.test`;
 const pointId = () => crypto.randomUUID();
 const now = () => Date.now();
 const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -66,12 +68,12 @@ async function login(client: request.Agent, email: string, password: string) {
   return res;
 }
 
-test('health endpoint reports demo mode and consent version', async () => {
+test('health endpoint reports the retention window and consent version', async () => {
   const res = await admin.get('/api/health');
   assert.equal(res.status, 200);
   assert.equal(res.body.ok, true);
-  assert.equal(res.body.demo, true);
   assert.equal(res.body.timezone, 'Africa/Cairo');
+  assert.equal(res.body.staleGpsMinutes, 10);
   assert.equal(res.body.consentVersion, '1.0');
   assert.equal(res.body.retentionDays, 30);
 });
@@ -149,7 +151,7 @@ test('a representative cannot read the admin overview', async () => {
 test('admin overview lists the live representative and pending report counters', async () => {
   const res = await admin.get('/api/overview').set(auth(adminToken));
   assert.equal(res.status, 200);
-  assert.equal(res.body.demo, true);
+  assert.equal(res.body.staleGpsMinutes, 10);
   assert.ok(Array.isArray(res.body.reps));
   assert.ok(res.body.reps.some((r: any) => r.id === repId));
   assert.equal(typeof res.body.newReports, 'number');
@@ -200,13 +202,19 @@ test('/me/shift exposes the open shift and snapshot', async () => {
   assert.equal(res.body.snapshot.tracking, true);
 });
 
-test('a simulated demo account cannot start real GPS tracking', async () => {
-  const demoUser = store.get("SELECT * FROM users WHERE is_demo=1 ORDER BY email LIMIT 1")!;
-  const demoRep = request(app);
-  const res = await demoRep.post('/api/auth/login').send({ email: demoUser.email, password: 'Demo1234!' });
-  assert.equal(res.status, 200);
-  const start = await request(app).post('/api/shifts/start').set(auth(res.body.token)).send({ consentVersion: '1.0', location: { lat: 31.2, lng: 29.9, accuracy: 10 }, deviceId: 'demo-device-001' });
-  assert.equal(start.status, 403);
+test('a second representative is a real account, not a simulation', async () => {
+  const other = await admin.post('/api/reps').set(auth(adminToken)).send({
+    name: 'مهندس ثانٍ', email: otherRepEmail, password: 'RepPassword123!', region: 'البحيرة',
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  otherRepId = other.body.user.id;
+  const otherRep = request(app);
+  const loginRes = await otherRep.post('/api/auth/login').send({ email: otherRepEmail, password: 'RepPassword123!' });
+  assert.equal(loginRes.status, 200);
+  const start = await otherRep.post('/api/shifts/start').set(auth(loginRes.body.token)).send({
+    consentVersion: '1.0', location: { lat: 31.2, lng: 29.9, accuracy: 10 }, deviceId: 'other-device-001',
+  });
+  assert.equal(start.status, 200, 'every representative can start a real shift');
 });
 
 test('a location batch is accepted for the open shift', async () => {
@@ -261,14 +269,13 @@ test('the representative can read today\'s own route', async () => {
   assert.equal(res.body.points[0].source, 'gps');
 });
 
-test('the assistant can summarise a demo engineer (demo ids are valid UUIDs)', async () => {
-  const demoRep = store.get("SELECT id, name FROM users WHERE is_demo=1 ORDER BY email LIMIT 1")!;
+test('the assistant can summarise a real representative', async () => {
   const res = await admin.post('/api/agent/run').set(auth(adminToken)).send({
-    task: 'summarize-day', repId: demoRep.id, date: localDate('Africa/Cairo'),
+    task: 'summarize-day', repId, date: localDate('Africa/Cairo'),
   });
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.result.task, 'summarize-day');
-  assert.match(res.body.result.summary, new RegExp(String(demoRep.name)));
+  assert.match(res.body.result.summary, /مهندس اختبار/);
 });
 
 test('an unknown engineer id gives a clear message, not a schema error', async () => {
@@ -322,8 +329,7 @@ test('collections made while checking out are counted in the KPI report', async 
 });
 
 test('the representative cannot read another representative\'s route', async () => {
-  const other = store.get("SELECT id FROM users WHERE is_demo=1 ORDER BY email LIMIT 1")!.id;
-  const res = await rep.get(`/api/reps/${other}/route`).set(auth(repToken));
+  const res = await rep.get(`/api/reps/${otherRepId}/route`).set(auth(repToken));
   assert.equal(res.status, 403);
 });
 
@@ -366,8 +372,8 @@ test('a representative only sees their own reports', async () => {
 test('admin sees all reports and can mark one reviewed', async () => {
   const list = await admin.get('/api/reports').set(auth(adminToken));
   assert.equal(list.status, 200);
-  assert.ok(list.body.reports.length > 1);
-  assert.ok(list.body.reports.some((r: any) => r.repIsDemo === 1));
+  assert.ok(list.body.reports.length >= 1);
+  assert.ok(list.body.reports.every((r: any) => !('repIsDemo' in r)));
   const res = await admin.patch(`/api/reports/${reportId}`).set(auth(adminToken)).send({ status: 'reviewed' });
   assert.equal(res.status, 200);
   assert.equal(res.body.report.status, 'reviewed');
@@ -438,8 +444,7 @@ test('admin lists daily reports and marks one reviewed', async () => {
 });
 
 test('another representative cannot read someone else\'s daily report', async () => {
-  const demoUser = store.get("SELECT * FROM users WHERE is_demo=1 ORDER BY email LIMIT 1")!;
-  const loginRes = await request(app).post('/api/auth/login').send({ email: demoUser.email, password: 'Demo1234!' });
+  const loginRes = await request(app).post('/api/auth/login').send({ email: otherRepEmail, password: 'RepPassword123!' });
   const res = await request(app).get(`/api/daily-reports/${dailyId}`).set(auth(loginRes.body.token));
   assert.equal(res.status, 403);
 });
@@ -591,12 +596,6 @@ test('the monthly export opens in Excel as real columns, in the same order as th
   }
   const visits = rows.map(row => Number(row[3]));
   assert.deepEqual(visits, [...visits].sort((a, b) => b - a), 'busiest engineer first, like the dashboard');
-});
-
-test('demo accounts are labelled as such in the exports', async () => {
-  const res = await admin.get('/api/monthly.csv').set(auth(adminToken)).buffer(true).parse(csvParser);
-  const text = csvLines(res.body).slice(1).join('\n');
-  assert.match(text, /"\(تجريبي\)|تجريبي/);
 });
 
 test('the monthly Excel export is a real workbook with readable Arabic', async () => {

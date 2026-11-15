@@ -104,7 +104,7 @@ function KpiTableRow({ row, rep, staleMinutes }: { row: KpiRow; rep?: Rep; stale
   const bar = Math.min(100, row.visits * 12);
   return (
     <tr>
-      <td><span className="dot" style={{ background: row.color }} aria-hidden="true" /> {row.name}{row.isDemo ? <em className="muted small"> (تجريبي)</em> : null}{row.active ? null : <em className="muted small"> · موقوف</em>}</td>
+      <td><span className="dot" style={{ background: row.color }} aria-hidden="true" /> {row.name}{row.active ? null : <em className="muted small"> · موقوف</em>}</td>
       <td>{row.region && row.region !== 'موقعك الحقيقي' ? <div>{row.region} <small className="muted">(مسجلة)</small></div> : null}{rep ? <div>{movementStatus(rep, Date.now(), staleMinutes * 60000)}</div> : null}<LocationName location={rep?.location ?? null} /></td>
       <td className="mono">{formatNumber(row.daysWithData)}</td>
       <td>

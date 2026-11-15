@@ -1,0 +1,28 @@
+# /etc/systemd/system/elhelp.service
+# Long-lived single process: Express + Socket.IO + one SQLite file on a persistent disk.
+[Unit]
+Description=Elhelb field tracking (API + dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=elhelp
+Group=elhelp
+WorkingDirectory=/opt/elhelp-app
+EnvironmentFile=/opt/elhelp-app/server/.env
+# npm run build writes server/dist/index.js
+ExecStart=/usr/bin/node server/dist/index.js
+Restart=always
+RestartSec=3
+# A hard stop after 10s, then SIGKILL: the process closes SQLite and the socket cleanly on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/elhelp
+
+[Install]
+WantedBy=multi-user.target

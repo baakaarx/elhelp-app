@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 20
     env:
       NODE_ENV: development
-      DEMO_MODE: 'true'
+      ADMIN_EMAIL: 'ci@elhelp.test'
       ADMIN_PASSWORD: 'CiPassword123!'
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +75,13 @@ jobs:
             const clean = excerpt.replace(/%/g, '%25').replace(/\r?\n/g, '%0A').slice(0, 4000);
             console.log('::error title=Playwright failure::' + clean);
           "
+      - name: Upload Playwright log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-log
+          path: playwright.log
+          retention-days: 5
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

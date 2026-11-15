@@ -8,9 +8,8 @@ import { Server } from 'socket.io';
 import { z } from 'zod';
 import { Store } from './db.js';
 import { readConfig, type Config } from './config.js';
-import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS, statelessShiftClaims, statelessShiftToken, statelessSessions } from './auth.js';
+import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
-import { seedDemo, startDemoSimulator, tickDemo } from './demo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { createAgentRouter } from './agent/router.js';
@@ -81,7 +80,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.use(helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
-    // The hosted demo is embedded in the Arena preview iframe; production keeps SAMEORIGIN.
+    // The engineer app is served from the same origin; production keeps SAMEORIGIN framing.
     frameguard: config.production ? { action: 'sameorigin' } : false,
     crossOriginResourcePolicy: config.production ? { policy: 'same-origin' } : false,
   }));
@@ -95,33 +94,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!config.adminPassword) throw new Error('ADMIN_PASSWORD is required to initialize the first administrator.');
     store.run('INSERT INTO users(id,name,email,password_hash,role,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), 'متابعة الهلب', config.adminEmail, hashPassword(config.adminPassword), 'admin', Date.now());
   }
-  if (config.demo) seedDemo(store, config.timezone);
-  /**
-   * Rebuild a signed shift on whichever instance handled this request.
-   *
-   * Only relevant for stateless (hosted demo) sessions: the shift token is signed by the
-   * server, so an instance with an empty database can recreate the same row instead of
-   * answering "you are outside the shift" and dropping the engineer out mid-workday.
-   */
-  function adoptSignedShift(req: express.Request, user: Record<string, any>) {
-    try {
-      const claims = statelessShiftClaims(req.headers['x-mandoub-shift']);
-      if (!claims || claims.email !== String(user.email)) return;
-      const existing = store.get('SELECT id,user_id,ended_at FROM shifts WHERE id=?', claims.shiftId);
-      if (existing) {
-        if (String(existing.user_id) !== String(user.id)) return;
-        if (existing.ended_at) return; // an explicit stop on this instance wins
-        return;
-      }
-      store.run(`INSERT OR IGNORE INTO shifts(id,user_id,started_at,consent_version,consent_at,device_id,device_name,start_lat,start_lng,start_accuracy)
-        VALUES (?,?,?,?,?,'','',NULL,NULL,NULL)`, claims.shiftId, user.id, claims.startedAt, CONSENT_VERSION, claims.startedAt);
-    } catch { /* never let demo bookkeeping break an authenticated request */ }
-  }
-  const withSignedShift = (guard: ReturnType<typeof requireAuth>): express.RequestHandler =>
-    (req, res, next) => guard(req, res, () => { adoptSignedShift(req, res.locals.user); next(); });
-  const auth = withSignedShift(requireAuth(store));
-  const adminOnly = withSignedShift(requireAuth(store, 'admin'));
-  const repOnly = withSignedShift(requireAuth(store, 'rep'));
+  const auth = requireAuth(store);
+  const adminOnly = requireAuth(store, 'admin');
+  const repOnly = requireAuth(store, 'rep');
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
   const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
 
@@ -154,21 +129,18 @@ export function createApp(overrides: Partial<Config> = {}) {
       visitsToday: Number(visitStats?.total || 0), openVisit: openVisit || null,
     };
   }
-  // The hosted demo has no background process, so the map is advanced by demand instead.
-  const requestDrivenDemo = config.demo && process.env.DEMO_SIMULATE === 'true';
   function overview() {
-    if (requestDrivenDemo) tickDemo(store);
-    const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY is_demo DESC, created_at, name").map(repSnapshot);
+    const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY created_at, name").map(repSnapshot);
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
     // The dashboard needs the same staleness threshold the alerts use, otherwise the map and
     // the alert list disagree about who lost their signal.
-    return { reps, serverTime: Date.now(), demo: config.demo, timezone: config.timezone, retentionDays: config.retentionDays, newReports, staleGpsMinutes: config.staleGpsMinutes };
+    return { reps, serverTime: Date.now(), timezone: config.timezone, retentionDays: config.retentionDays, newReports, staleGpsMinutes: config.staleGpsMinutes };
   }
   function reportRow(id: string) {
     return store.get(`SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
       r.lat, r.lng, r.accuracy, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt,
-      u.name AS repName, u.color AS repColor, u.is_demo AS repIsDemo
+      u.name AS repName, u.color AS repColor
       FROM reports r JOIN users u ON u.id=r.user_id WHERE r.id=?`, id);
   }
   const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
@@ -176,7 +148,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     v.checked_out_at AS checkedOutAt, v.duration_seconds AS durationSeconds,
     v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
     v.out_lat AS outLat, v.out_lng AS outLng,
-    u.name AS repName, u.color AS repColor, u.is_demo AS repIsDemo
+    u.name AS repName, u.color AS repColor
     FROM visits v JOIN users u ON u.id = v.user_id`;
   function visitRow(id: string) { return store.get(`${VISIT_SELECT} WHERE v.id=?`, id); }
   function listVisits(filter: { userId?: string; repId?: string; date?: string; status?: string }) {
@@ -203,7 +175,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (filter.status) { where.push('r.status=?'); params.push(filter.status); }
     const sql = `SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
       r.lat, r.lng, r.accuracy, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt,
-      u.name AS repName, u.color AS repColor, u.is_demo AS repIsDemo
+      u.name AS repName, u.color AS repColor
       FROM reports r JOIN users u ON u.id=r.user_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY r.created_at DESC LIMIT 300`;
     return store.all(sql, ...params);
@@ -235,8 +207,8 @@ export function createApp(overrides: Partial<Config> = {}) {
     socket.on('disconnect', broadcast);
   });
 
-  app.get('/api/health', (_req, res) => { res.json({ ok: true, demo: config.demo, timezone: config.timezone, retentionDays: config.retentionDays, consentVersion: CONSENT_VERSION }); });
-  app.post('/api/auth/login', rateLimit({ windowMs: 15 * 60000, limit: config.demo ? 60 : 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ١٥ دقيقة.' } }), (req, res) => {
+  app.get('/api/health', (_req, res) => { res.json({ ok: true, timezone: config.timezone, retentionDays: config.retentionDays, consentVersion: CONSENT_VERSION, staleGpsMinutes: config.staleGpsMinutes }); });
+  app.post('/api/auth/login', rateLimit({ windowMs: 15 * 60000, limit: 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ١٥ دقيقة.' } }), (req, res) => {
     const parsed = credentials.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'أدخل بريدًا إلكترونيًا صحيحًا وكلمة مرور.' }); return; }
     const user = store.get('SELECT * FROM users WHERE email=? AND active=1', parsed.data.email);
@@ -317,14 +289,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.json({ date, timezone: config.timezone, points, truncated, distanceMeters: Math.round(distanceMeters(points)) });
   });
   app.get('/api/me/shift', repOnly, (req, res) => {
-    // With stateless sessions the signed shift token is the authority: another instance of
-    // the hosted demo has its own database and cannot know about this shift any other way.
-    const claims = statelessShiftClaims(req.headers['x-mandoub-shift']);
-    const shift = statelessSessions()
-      ? (claims && claims.email === String(res.locals.user.email)
-        ? store.get('SELECT * FROM shifts WHERE id=? AND user_id=? AND ended_at IS NULL', claims.shiftId, res.locals.user.id)
-        : undefined)
-      : store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+    const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     res.json({ shift: shift || null, snapshot: repSnapshot(res.locals.user), consentVersion: CONSENT_VERSION });
   });
   const bindDevice = (user: any, deviceId: string): string | null => {
@@ -342,7 +307,6 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (!hasDevice) { res.status(422).json({ error: 'الجهاز غير موثّق — أرسل معرّف الهاتف.', code: 'DEVICE_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
       res.status(400).json({ error: 'بيانات بدء الوردية غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
     }
-    if (res.locals.user.is_demo) { res.status(403).json({ error: 'هذا حساب عرض تجريبي فقط. استخدم rep@mandoub.test لاختبار GPS الحقيقي.' }); return; }
     const deviceErr = bindDevice(res.locals.user, parsed.data.deviceId);
     if (deviceErr) { res.status(403).json({ error: deviceErr, code: 'DEVICE_MISMATCH' }); return; }
     let shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
@@ -359,12 +323,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       shift = store.get('SELECT * FROM shifts WHERE id=?', id);
     }
     broadcast();
-    // Hosted-demo sessions carry a signed copy of the shift so the next request can land on
-    // a different instance without the app thinking the shift was closed.
-    const shiftToken = shift
-      ? statelessShiftToken(String(res.locals.user.email), String(shift.id), Number(shift.started_at))
-      : null;
-    res.json({ shift, shiftToken });
+    res.json({ shift });
   });
   const idleSchema = z.object({ reason: z.string().trim().min(5).max(1000), location: reportLocation, deviceId: z.string().trim().min(3).max(120) }).strict();
   app.post('/api/shifts/idle', repOnly, (req, res) => {
@@ -392,7 +351,6 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.post('/api/locations', repOnly, locationLimiter, (req, res) => {
     const parsed = batchSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'بيانات الموقع غير صالحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
-    if (res.locals.user.is_demo) { res.status(403).json({ error: 'حسابات المحاكاة لا تقبل مواقع حقيقية.' }); return; }
     const now = Date.now(), cutoff = now - config.retentionDays * 86400000;
     const shiftCache = new Map<string, Record<string, any> | undefined>();
     for (const point of parsed.data.points) {
@@ -422,7 +380,6 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (!hasLoc) { res.status(422).json({ error: 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.', code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
       res.status(400).json({ error: 'راجع بيانات الزيارة: اسم العميل مطلوب.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
     }
-    if (res.locals.user.is_demo) { res.status(403).json({ error: 'حسابات المحاكاة لا تسجل زيارات. استخدم rep@mandoub.test للتجربة.' }); return; }
     if (req.body && typeof req.body.deviceId === 'string' && req.body.deviceId.trim().length >= 3) {
       const de = bindDevice(res.locals.user, String(req.body.deviceId).trim());
       if (de) { res.status(403).json({ error: de, code: 'DEVICE_MISMATCH' }); return; }
@@ -630,14 +587,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     return [...rows].sort((a, b) =>
       b.visits - a.visits || b.dailyReports - a.dailyReports || b.reports - a.reports || a.name.localeCompare(b.name, 'ar'));
   }
-  // Demo accounts are labelled in the exports exactly like the dashboard labels them.
-  function exportName(row: { name: string; isDemo: boolean }): string {
-    return row.isDemo ? `${row.name} (تجريبي)` : row.name;
-  }
   function kpiRows(from: string, to: string) {
     const start = dayBounds(from, config.timezone).start;
     const end = dayBounds(to, config.timezone).end;
-    return store.all("SELECT * FROM users WHERE role='rep' ORDER BY is_demo, name").map(rep => {
+    return store.all("SELECT * FROM users WHERE role='rep' ORDER BY name").map(rep => {
       const distance = dayDistance(rep.id, start, end);
       const visits = store.get(`SELECT COUNT(*) AS total,
         SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed,
@@ -648,7 +601,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       const daysRow = store.get("SELECT COUNT(DISTINCT date(recorded_at/1000,'unixepoch')) AS c FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<?", rep.id, start, end)!;
       const lastRow = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id)!;
       return {
-        repId: rep.id, name: rep.name, color: rep.color, region: rep.region, isDemo: !!rep.is_demo, active: !!rep.active,
+        repId: rep.id, name: rep.name, color: rep.color, region: rep.region, active: !!rep.active,
         distanceMeters: distance.meters, pointCount: distance.points,
         visits: Number(visits.total || 0), visitsCompleted: Number(visits.closed || 0),
         avgVisitSeconds: visits.avgDuration ? Math.round(Number(visits.avgDuration)) : null,
@@ -670,7 +623,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const KPI_WIDTHS = [26, 18, 12, 14, 16, 12, 12, 14, 14];
   function kpiExportRows(from: string, to: string): CellValue[][] {
     return byActivity(kpiRows(from, to)).map(r => [
-      exportName(r), r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+      r.name, r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
       Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.collected, r.dailyReports,
     ]);
   }
@@ -715,7 +668,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const MONTHLY_WIDTHS = [26, 18, 10, 12, 10, 16, 12, 14, 14, 14];
   function monthlyExportRows(month: string, from: string, to: string): CellValue[][] {
     return byActivity(kpiRows(from, to)).map(r => [
-      exportName(r), r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+      r.name, r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
       Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.dailyReports, r.collected,
     ]);
   }
@@ -737,7 +690,6 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.post('/api/reports', repOnly, (req, res) => {
     const parsed = newReport.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'راجع بيانات التقرير: النوع والعنوان مطلوبان.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
-    if (res.locals.user.is_demo) { res.status(403).json({ error: 'حسابات المحاكاة لا ترسل تقارير. استخدم rep@mandoub.test للتجربة.' }); return; }
     const data = parsed.data;
     const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     const now = Date.now();
@@ -781,7 +733,6 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.post('/api/daily-reports', repOnly, (req, res) => {
     const parsed = newDailyReportSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'راجع بيانات التقرير اليومي: الاسم والتاريخ وزيارة واحدة على الأقل والتوقيع مطلوبة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
-    if (res.locals.user.is_demo) { res.status(403).json({ error: 'حسابات المحاكاة لا ترسل تقارير. استخدم rep@mandoub.test للتجربة.' }); return; }
     const data = parsed.data;
     try { validateReportDate(data.reportDate, config.timezone, config.retentionDays); }
     catch (e) { res.status(422).json({ error: (e as Error).message }); return; }
@@ -851,13 +802,11 @@ export function createApp(overrides: Partial<Config> = {}) {
     console.error(error);
     res.status(500).json({ error: 'حدث خطأ في الخادم. حاول مرة أخرى.' });
   });
-  const stopSimulator = config.demo && !requestDrivenDemo ? startDemoSimulator(store, broadcast) : () => {};
   store.cleanup(config.retentionDays);
   const cleanupTimer = setInterval(() => { store.cleanup(config.retentionDays); dayStatsCache.clear(); }, 3600000);
   cleanupTimer.unref();
   async function close() {
     closing = true;
-    stopSimulator();
     clearInterval(cleanupTimer);
     if (broadcastTimer) clearTimeout(broadcastTimer);
     await new Promise<void>(resolve => io.close(() => resolve()));

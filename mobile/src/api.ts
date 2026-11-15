@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import { getShiftToken, getToken, setShiftToken, setToken } from './storage';
+import { getToken, setToken } from './storage';
 import type { DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
@@ -21,10 +21,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = await getToken();
   const headers: Record<string, string> = { Accept: 'application/json', 'X-Mandoub-Client': 'rep', ...(init.headers as Record<string, string> | undefined) };
   if (token) headers['X-Mandoub-Token'] = token;
-  // Hosted demo: the signed shift lets a fresh instance keep the same shift instead of
-  // answering "you are outside the shift" every time the request lands elsewhere.
-  const shiftToken = await getShiftToken();
-  if (shiftToken) headers['X-Mandoub-Shift'] = shiftToken;
   if (init.body) headers['Content-Type'] = 'application/json';
   let res: Response;
   try {
@@ -50,18 +46,14 @@ export async function login(email: string, password: string) {
 }
 export const me = () => get<{ user: User }>('/api/auth/me').then(r => r.user);
 export async function logout() {
-  try { await post('/api/auth/logout', {}); } finally { await setToken(null); await setShiftToken(null); }
+  try { await post('/api/auth/logout', {}); } finally { await setToken(null); }
 }
 export const shiftState = () => get<ShiftResponse>('/api/me/shift');
 export async function startShift(consentVersion: string, location: { lat: number; lng: number; accuracy: number | null }, deviceId: string, deviceName?: string) {
-  const res = await post<{ shift: Shift; shiftToken?: string | null }>('/api/shifts/start', { consentVersion, location, deviceId, deviceName });
-  await setShiftToken(res.shiftToken || null);
-  return res;
+  return post<{ shift: Shift }>('/api/shifts/start', { consentVersion, location, deviceId, deviceName });
 }
 export async function stopShift() {
-  const res = await post<{ ok: true }>('/api/shifts/stop', {});
-  await setShiftToken(null);
-  return res;
+  return post<{ ok: true }>('/api/shifts/stop', {});
 }
 export const reportIdle = (reason: string, location: { lat: number; lng: number; accuracy: number | null }, deviceId: string) =>
   post<{ id: string; idleMinutes: number }>('/api/shifts/idle', { reason, location, deviceId });

@@ -7,7 +7,7 @@ const NOW = Date.UTC(2026, 10, 4, 12, 0, 0);
 
 function rep(overrides: Partial<Rep> = {}, fix: Partial<NonNullable<Rep['location']>> = {}): Rep {
   return {
-    id: 'r1', name: 'أحمد حسن', color: '#27745a', region: 'مدينة نصر', isDemo: false, active: true,
+    id: 'r1', name: 'أحمد حسن', color: '#27745a', region: 'مدينة نصر', active: true,
     tracking: true, online: true, visitsToday: 0, openVisit: null, location: null,
     ...overrides,
     ...(overrides.location === null ? {} : {

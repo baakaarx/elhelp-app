@@ -6,8 +6,8 @@ export const ENGINEER_APP_PATH = '/app';
 
 /**
  * Surface the reason the server actually gave instead of a blanket "try again" message.
- * A 404 on a hosted demo almost always means the request landed on another serverless
- * instance, and the status code is the only clue the operator can act on.
+ * A bare status code with no explanation is the only clue an operator can act on, so the
+ * server's own message always wins over the generic fallback.
  */
 async function failureText(res: Response, fallback: string): Promise<string> {
   try {

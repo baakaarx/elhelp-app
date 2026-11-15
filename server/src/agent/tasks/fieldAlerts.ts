@@ -6,7 +6,7 @@ export function fieldAlerts(store: Store, opts: { timezone: string }) {
   const today = localDate(opts.timezone, now);
 
   // Reuse logic similar to app.ts alerts but as agent task
-  const reps = store.all("SELECT id, name, color, last_seen FROM users WHERE role='rep' AND active=1 AND is_demo=0");
+  const reps = store.all("SELECT id, name, color, last_seen FROM users WHERE role='rep' AND active=1");
 
   const alerts: Array<{ repId: string; repName: string; code: string; level: 'warn' | 'info'; title: string; detail: string }> = [];
 

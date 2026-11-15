@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import type { Rep, RouteResponse } from './types';
 
-// Keyless basemaps (no API key, so nothing expires mid-demo).
+// Keyless basemaps: no API key, so no token can expire or leak in the client bundle.
 //
 // The street map is the default: following a field engineer means reading street names and
 // blocks, which satellite imagery does not give — imagery is kept as a second option for
@@ -172,15 +172,14 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
       if (typeof accuracy === 'number' && accuracy >= 8) {
         L.circle([lat, lng], {
           radius: accuracy, color: rep.color, weight: 1, opacity: 0.5,
-          fillColor: rep.color, fillOpacity: rep.isDemo ? 0.05 : 0.1,
+          fillColor: rep.color, fillOpacity: 0.1,
         }).addTo(group);
       }
       const marker = L.marker([lat, lng], { icon }).addTo(group);
       const state = rep.tracking ? (rep.online ? 'في وردية · متصل' : 'في وردية · غير متصل') : 'خارج الوردية';
-      const demo = rep.isDemo ? '<br/><i>حساب محاكاة — ليست بيانات ميدانية</i>' : '';
       const accuracyText = typeof accuracy === 'number' ? `<br/>دقة الإشارة ±${Math.round(accuracy)} م` : '';
       marker.bindTooltip(
-        `<b>${escapeHtml(rep.name)}</b><br/>${state}${rep.openVisit ? `<br/>زيارة مفتوحة: ${escapeHtml(rep.openVisit.customerName)}` : ''}${accuracyText}${demo}`,
+        `<b>${escapeHtml(rep.name)}</b><br/>${state}${rep.openVisit ? `<br/>زيارة مفتوحة: ${escapeHtml(rep.openVisit.customerName)}` : ''}${accuracyText}`,
         { direction: 'top', offset: [0, -20] },
       );
       bounds.push([lat, lng]);

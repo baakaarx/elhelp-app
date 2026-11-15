@@ -1,0 +1,16 @@
+# /etc/caddy/Caddyfile — automatic HTTPS (Let's Encrypt).
+# Replace the domain with the one that points at this server's IP.
+tracking.example.com {
+	encode zstd gzip
+	# Socket.IO needs the upgrade headers to pass through untouched.
+	reverse_proxy 127.0.0.1:3000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up Host {host}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

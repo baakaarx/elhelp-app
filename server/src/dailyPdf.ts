@@ -101,7 +101,7 @@ export function dailyReportPdf(report: DailyReport, timezone: string): Promise<B
           cell('توقيع إلكتروني بتاريخ', 240, { alignment: 'left', fontSize: 8, color: '#5c6f63' }),
         ]] }, layout: 'noBorders', margin: [0, 12, 0, 0],
       },
-      { text: wrapText(`أُرسل عبر مهندس مبيعات الهلب بواسطة ${report.repName}${report.repIsDemo ? ' (حساب تجريبي)' : ''}`, 780, 8), fontSize: 8, color: '#7a897d', margin: [0, 6, 0, 0] },
+      { text: wrapText(`أُرسل عبر مهندس مبيعات الهلب بواسطة ${report.repName}`, 780, 8), fontSize: 8, color: '#7a897d', margin: [0, 6, 0, 0] },
       { text: created, fontSize: 8, color: '#7a897d', alignment: 'left', margin: [0, 2, 0, 0] },
     ],
   };

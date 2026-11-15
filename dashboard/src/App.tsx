@@ -110,7 +110,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-img" src="/elhelb-mark.png" alt="الهلب جروب" width={44} height={44} />
-          <div><strong>ELHELB GROUP</strong><small>Elite Field Network · منذ 1993</small></div>
+          <div><strong>ELHELB GROUP</strong><small>شبكة الميدان · منذ 1993</small></div>
         </div>
 
         <nav>
@@ -124,7 +124,6 @@ export default function App() {
         </nav>
         <div className="sidebar-foot">
           <p className="small"><span className={connected ? 'status ok' : 'status'} /> {connected ? 'متصل بالبث الحي' : 'وضع التحديث الدوري'}</p>
-          {overview?.demo && <p className="pill demo">وضع تجريبي</p>}
           <p className="muted small">مدة الاحتفاظ: {formatNumber(overview?.retentionDays ?? 30)} يوم · {overview?.timezone ?? 'Africa/Cairo'}</p>
         </div>
       </aside>
@@ -405,7 +404,6 @@ function Account({ user, overview }: { user: User; overview: Overview | null }) 
             <li>تُرسل النقاط في دفعات كل ثانية تقريبًا، وتُحذف تلقائيًا بعد <b>{formatNumber(overview?.retentionDays ?? 30)}</b> يومًا.</li>
             <li>المسافات تقديرية لأغراض المتابعة، ولا تُستخدم كأساس وحيد للرواتب أو البدلات.</li>
             <li>كل عملية حساسة (بدء وردية، إنهاء زيارة، إيقاف حساب، تنزيل تقرير) تُسجل في سجل تدقيق.</li>
-            <li>الملفات المرفوعة أو الحسابات التجريبية لا تتضمن بيانات عملاء حقيقية.</li>
           </ul>
           <p className="muted small">المنطقة الزمنية: {overview?.timezone ?? 'Africa/Cairo'} · إصدار الموافقة: 1.0</p>
         </div>
