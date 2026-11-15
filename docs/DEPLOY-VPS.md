@@ -61,6 +61,9 @@ RETENTION_DAYS=30
 STALE_GPS_MINUTES=10
 TIMEZONE=Africa/Cairo
 ALLOWED_ORIGINS=https://tracking.your-company.com
+PRIVACY_CONTACT=privacy@your-company.com
+# Caddy على نفس الجهاز: البورت المحلي بس هو اللي يحدّد IP الزائر الحقيقي.
+TRUST_PROXY=loopback
 ```
 
 ```bash
@@ -68,8 +71,11 @@ sudo chmod 600 /opt/elhelp-app/server/.env
 ```
 
 - أول تشغيل يُنشئ حساب المدير من `ADMIN_EMAIL` + `ADMIN_PASSWORD`. بعد ذلك لا يُعاد إنشاؤه،
-  وتغيير كلمة المرور يتم من قاعدة البيانات مباشرة (أو بحذف الحساب وإعادة الإقلاع).
+  وتغيير كلمة المرور من داخل اللوحة (**هويتي ← كلمة المرور**) أو شاشة «حسابي» في التطبيق.
 - `ALLOWED_ORIGINS` لا بد أن يطابق الدومين الفعلي، وإلا رُفضت طلبات المتصفح.
+- `TRUST_PROXY`: اتركه `loopback` مع Caddy على نفس الجهاز. لو السيرفر خلف Docker أو Proxy آخر
+  اضبطه على `1` أو نطاق الشبكة — بدونه كل الطلبات تظهر من `127.0.0.1` فيصطدم الفريق كله بحد
+  محاولات الدخول معًا. راجع [`docs/SECURITY.md`](SECURITY.md).
 
 ## ٥) الخدمة (systemd)
 

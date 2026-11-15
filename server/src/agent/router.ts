@@ -10,13 +10,22 @@ export function createAgentRouter(store: Store, config: Config) {
 
   // All agent routes require auth (mounted with auth middleware in app.ts)
   const adminTasks = new Set(['review-daily-reports', 'field-alerts']);
+  const isAdmin = (res: any) => res.locals?.user?.role === 'admin';
+  /**
+   * Skill files describe internal rules and live on the server's filesystem. A representative
+   * has no use for them, and the full records carry the Markdown body plus the absolute path.
+   */
+  const skillList = () => agent.skills.map(skill => ({ id: skill.id, name: skill.name, description: skill.description }));
 
   router.get('/status', (_req, res) => {
-    res.json(agent.getStatus());
+    if (!isAdmin(res)) { res.status(403).json({ error: 'للمدير فقط.' }); return; }
+    const status = agent.getStatus();
+    res.json({ ...status, skills: skillList() });
   });
 
   router.get('/skills', (_req, res) => {
-    res.json({ skills: agent.skills, count: agent.skills.length });
+    if (!isAdmin(res)) { res.status(403).json({ error: 'للمدير فقط.' }); return; }
+    res.json({ skills: skillList(), count: agent.skills.length });
   });
 
   router.post('/refresh', (_req, res) => {
@@ -54,11 +63,15 @@ export function createAgentRouter(store: Store, config: Config) {
     if (adminTasks.has(parsed.data.task) && (res.locals as any).user?.role !== 'admin') {
       res.status(403).json({ error: 'هذه المهمة للمدير فقط.' }); return;
     }
-    // Reps can only query their own data for summarize/route
-    if ((parsed.data.task === 'summarize-day' || parsed.data.task === 'analyze-route') && parsed.data.repId) {
+    // Reps can only query their own data. A missing repId means the whole team, so it is
+    // filled in with the caller's own id instead of silently aggregating everyone.
+    if (parsed.data.task === 'summarize-day' || parsed.data.task === 'analyze-route') {
       const role = (res.locals as any).user?.role;
       const uid = (res.locals as any).user?.id;
-      if (role === 'rep' && uid !== parsed.data.repId) { res.status(403).json({ error: 'يمكنك عرض بياناتك فقط.' }); return; }
+      if (role === 'rep') {
+        if (parsed.data.repId && parsed.data.repId !== uid) { res.status(403).json({ error: 'يمكنك عرض بياناتك فقط.' }); return; }
+        parsed.data.repId = uid;
+      }
     }
     try {
       const result = await agent.run(parsed.data as any);

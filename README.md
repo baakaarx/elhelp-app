@@ -154,7 +154,8 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 ### النشر على VPS
 
 النسخة النهائية تعمل كعملية واحدة دائمة (Express + Socket.IO + ملف SQLite على قرص ثابت).
-الدليل الكامل خطوة بخطوة في [`docs/DEPLOY-VPS.md`](docs/DEPLOY-VPS.md)، وملفاته الجاهزة في:
+الدليل الكامل خطوة بخطوة في [`docs/DEPLOY-VPS.md`](docs/DEPLOY-VPS.md)، ومراجعة الأمان الأخيرة قبل
+النشر (ما تم إصلاحه وإعدادات السيرفر المطلوبة) في [`docs/SECURITY.md`](docs/SECURITY.md)، وملفاته الجاهزة في:
 
 - `deploy/elhelp.service` — خدمة systemd (إعادة تشغيل تلقائي بعد إعادة الإقلاع).
 - `deploy/Caddyfile` — HTTPS تلقائي عبر Let's Encrypt.

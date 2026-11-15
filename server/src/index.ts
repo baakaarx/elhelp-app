@@ -3,11 +3,27 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createApp } from './app.js';
 
+// One policy, two script rules. The manager dashboard is a plain ESM bundle and needs no
+// `eval`; the Expo web build under /app still contains Metro's lazy-require helper
+// (`eval(body)`) and a `eval('require')` guard, so that prefix keeps `unsafe-eval` until the
+// engineer app is rebuilt without it. Everything else in the policy stays identical.
+const SCRIPT_SOURCES = "script-src 'self' 'unsafe-inline' https://accounts.google.com https://appleid.cdn-apple.com https://www.gstatic.com https://apis.google.com";
+const csp = (scriptSources: string) => [
+  "default-src 'self'",
+  scriptSources,
+  "style-src 'self' 'unsafe-inline' https://accounts.google.com https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  "connect-src 'self' wss: https://geocode.arcgis.com https://accounts.google.com https://appleid.apple.com https://www.googleapis.com https://server.arcgisonline.com https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org",
+  "frame-src https://accounts.google.com https://appleid.apple.com",
+  "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'self'",
+].join('; ');
 const instance = createApp();
 if (instance.config.production) {
   instance.app.use((req, res, next) => {
     if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://accounts.google.com https://appleid.cdn-apple.com https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' wss: https://geocode.arcgis.com https://accounts.google.com https://appleid.apple.com https://www.googleapis.com https://server.arcgisonline.com https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; frame-src https://accounts.google.com https://appleid.apple.com; object-src 'none'; base-uri 'self'");
+    const engineerApp = req.path === '/app' || req.path.startsWith('/app/');
+    res.setHeader('Content-Security-Policy', csp(engineerApp ? `${SCRIPT_SOURCES} 'unsafe-eval'` : SCRIPT_SOURCES));
     next();
   });
 }

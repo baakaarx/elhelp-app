@@ -7,9 +7,18 @@ import type { Config } from './config.js';
  * matching, always-current policy at https://<its-domain>/privacy — no external site to keep
  * in sync, and no risk of describing behaviour the deployed server does not have.
  */
+/** Config values land in HTML, so they are escaped even though an operator writes them. */
+function escapeHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>"']/g, char =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char] as string));
+}
+
 export function privacyPage(config: Config): string {
   const retention = config.retentionDays;
   const updated = new Intl.DateTimeFormat('ar-EG', { dateStyle: 'long', timeZone: config.timezone }).format(new Date());
+  const contact = escapeHtml(config.privacyContact);
+  const timezone = escapeHtml(config.timezone);
+  const contactHref = `mailto:${contact}`;
   return `<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -50,7 +59,7 @@ export function privacyPage(config: Config): string {
     <p>هذه السياسة تشرح كيف تتعامل خدمة «الهلب جروب · مهندس الميدان» مع بيانات الحساب والموقع
     الجغرافي للمهندسين الميدانيين. الخدمة أداة عمل داخلية لمتابعة الزيارات الميدانية وإعداد
     التقارير، وليست خدمة موجّهة للجمهور العام.</p>
-    <p class="muted">المنطقة الزمنية المستخدمة في التقارير: <span class="pill">${config.timezone}</span></p>
+    <p class="muted">المنطقة الزمنية المستخدمة في التقارير: <span class="pill">${timezone}</span></p>
   </section>
 
   <section>
@@ -129,7 +138,7 @@ export function privacyPage(config: Config): string {
   <section>
     <h2>١٠) التواصل</h2>
     <p>لأي استفسار أو طلب متعلق بالخصوصية أو حذف البيانات:
-    <a href="mailto:${config.privacyContact}">${config.privacyContact}</a></p>
+    <a href="${contactHref}">${contact}</a></p>
   </section>
 
   <p class="muted">آخر تحديث: ${updated}</p>

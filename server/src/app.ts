@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import { z } from 'zod';
 import { Store } from './db.js';
-import { readConfig, type Config } from './config.js';
+import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js';
 import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
@@ -78,6 +78,9 @@ export function createApp(overrides: Partial<Config> = {}) {
   };
   const io = new Server(httpServer, { cors: { origin: originCheck }, maxHttpBufferSize: 128 * 1024, serveClient: false });
   app.disable('x-powered-by');
+  // Behind Caddy every request arrives from 127.0.0.1. Without this the rate limiters would
+  // share one bucket for the whole team (`TRUST_PROXY=loopback` by default, see config.ts).
+  app.set('trust proxy', config.trustProxy);
   app.use(helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
@@ -100,6 +103,26 @@ export function createApp(overrides: Partial<Config> = {}) {
   const repOnly = requireAuth(store, 'rep');
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
   const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
+  // A leaked password list is replayed from many addresses, so the per-IP limiter alone is not
+  // enough: too many failures on one account also freeze that account for a quarter of an hour.
+  const LOGIN_FAILURE_LIMIT = config.loginAccountLimit;
+  const LOGIN_FAILURE_WINDOW = config.loginRateLimit.windowMs;
+  const loginFailures = new Map<string, { count: number; resetAt: number }>();
+  function loginIsFrozen(email: string): boolean {
+    const record = loginFailures.get(email);
+    return !!record && record.resetAt > Date.now() && record.count >= LOGIN_FAILURE_LIMIT;
+  }
+  function noteLoginFailure(email: string) {
+    const now = Date.now();
+    const record = loginFailures.get(email);
+    const next = record && record.resetAt > now
+      ? { count: record.count + 1, resetAt: record.resetAt }
+      : { count: 1, resetAt: now + LOGIN_FAILURE_WINDOW };
+    loginFailures.set(email, next);
+    if (loginFailures.size > 2000) {
+      for (const [key, value] of loginFailures) if (value.resetAt <= now) loginFailures.delete(key);
+    }
+  }
 
   function endShift(userId: string) {
     const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', userId);
@@ -117,6 +140,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!stats || stats.day !== day || Date.now() - stats.computedAt > 5000) {
       const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at', user.id, bounds.start, bounds.end) as unknown as GeoPoint[];
       stats = { day, computedAt: Date.now(), distanceMeters: Math.round(distanceMeters(points)), pointCount: points.length };
+      // One entry per engineer; the map is cleared hourly, and a hard cap keeps a long-lived
+      // process from growing it without bound if accounts are created and removed often.
+      if (dayStatsCache.size > 500) dayStatsCache.clear();
       dayStatsCache.set(user.id, stats);
     }
     const online = io.sockets.adapter.rooms.get(`user:${user.id}`)?.size ? true : !!user.last_seen && Date.now() - user.last_seen < 75000;
@@ -209,16 +235,23 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
 
   app.get('/api/health', (_req, res) => { res.json({ ok: true, timezone: config.timezone, retentionDays: config.retentionDays, consentVersion: CONSENT_VERSION, staleGpsMinutes: config.staleGpsMinutes }); });
-  app.post('/api/auth/login', rateLimit({ windowMs: 15 * 60000, limit: 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ١٥ دقيقة.' } }), (req, res) => {
+  app.post('/api/auth/login', rateLimit({ ...config.loginRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ربع ساعة.' } }), (req, res) => {
     const parsed = credentials.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'أدخل بريدًا إلكترونيًا صحيحًا وكلمة مرور.' }); return; }
+    if (loginIsFrozen(parsed.data.email)) {
+      res.status(429).json({ error: 'محاولات دخول كثيرة على هذا الحساب. انتظر ١٥ دقيقة أو اطلب من مدير المتابعة تغيير كلمة المرور.', code: 'ACCOUNT_THROTTLED' }); return;
+    }
     const user = store.get('SELECT * FROM users WHERE email=? AND active=1', parsed.data.email);
     // Run scrypt even for unknown accounts to reduce account-enumeration timing differences.
     const dummy = '00000000000000000000000000000000:' + '00'.repeat(64);
     const valid = verifyPassword(parsed.data.password, user?.password_hash || dummy);
-    if (!user || !valid) { res.status(401).json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' }); return; }
+    if (!user || !valid) {
+      noteLoginFailure(parsed.data.email);
+      res.status(401).json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' }); return;
+    }
     if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير — سيتم تفعيله قريبًا.', code: 'PENDING_APPROVAL' }); return; }
     if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
+    loginFailures.delete(parsed.data.email);
     const session = createSession(store, user.id);
     setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
     store.audit(user.id, 'auth.login');
@@ -240,6 +273,31 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
   app.get('/api/auth/me', auth, (_req, res) => { res.json({ user: publicUser(res.locals.user) }); });
+  // The manager creates accounts with a password they chose; the owner must be able to replace
+  // it without asking anyone to edit the database by hand.
+  const passwordChangeSchema = z.object({
+    currentPassword: z.string().min(1).max(200),
+    newPassword: z.string().min(10).max(200),
+  }).strict();
+  app.post('/api/me/password', auth, (req, res) => {
+    const parsed = passwordChangeSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.', code: 'PASSWORD_TOO_SHORT' }); return; }
+    const user = res.locals.user;
+    if (!verifyPassword(parsed.data.currentPassword, user.password_hash)) {
+      res.status(403).json({ error: 'كلمة المرور الحالية غير صحيحة.', code: 'WRONG_PASSWORD' }); return;
+    }
+    if (parsed.data.newPassword === parsed.data.currentPassword) {
+      res.status(400).json({ error: 'اختر كلمة مرور مختلفة عن الحالية.', code: 'SAME_PASSWORD' }); return;
+    }
+    if (user.role === 'admin' && parsed.data.newPassword.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      res.status(400).json({ error: `كلمة مرور المدير ${MIN_ADMIN_PASSWORD_LENGTH} حرفًا على الأقل.`, code: 'PASSWORD_TOO_SHORT' }); return;
+    }
+    store.run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(parsed.data.newPassword), user.id);
+    // Every other device is signed out, so a password change cannot leave an old session alive.
+    store.run('DELETE FROM sessions WHERE user_id=? AND token_hash<>?', user.id, res.locals.tokenHash);
+    store.audit(user.id, 'auth.password_change');
+    res.json({ ok: true });
+  });
   app.post('/api/auth/logout', auth, (req, res) => {
     if (res.locals.user.role === 'rep') endShift(res.locals.user.id);
     store.run('DELETE FROM sessions WHERE token_hash=?', res.locals.tokenHash);
@@ -603,7 +661,11 @@ export function createApp(overrides: Partial<Config> = {}) {
   // Excel users get the .xlsx endpoints instead — a CSV is interpreted with the machine's
   // locale delimiter and encoding, which is exactly what made the register look broken.
   function csvCell(value: unknown): string {
-    return `"${String(value ?? '').replace(/"/g, '""')}"`;
+    let text = String(value ?? '');
+    // Excel and Google Sheets treat a leading = + - @ (or tab/CR) as a formula. Customer and
+    // engineer names are typed by hand, so an exported register must never execute them.
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
   }
   function csvDocument(header: string[], body: unknown[][]): string {
     return [header.map(csvCell).join(',')].concat(body.map(row => row.map(csvCell).join(','))).join('\r\n');
