@@ -17,6 +17,9 @@ export default async function globalSetup() {
   if (!login.ok()) throw new Error(`e2e: manager login failed (${login.status()}) ${await login.text()}`);
   const { token } = await login.json();
   const admin = { Authorization: `Bearer ${token}` };
+  // Playwright forwards environment changes made here to the test workers, which install this
+  // token as the session cookie instead of signing in again for every test.
+  process.env.E2E_ADMIN_TOKEN = token;
   // The manager session is saved once and reused by every browser test, so the suite never
   // exhausts the login rate limit (15 attempts per 15 minutes) while it runs.
   mkdirSync('e2e/.auth', { recursive: true });
