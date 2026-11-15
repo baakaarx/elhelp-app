@@ -10,7 +10,7 @@ import Reports from './Reports';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
 import Monthly from './Monthly';
-import type { ManagerAlert, Overview, Rep, Report, RouteResponse, User, Visit } from './types';
+import type { IdleReport, ManagerAlert, Overview, Rep, Report, RouteResponse, User, Visit } from './types';
 import { visitPurposeLabels } from './types';
 
 type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'team' | 'account' | 'agent';
@@ -28,6 +28,7 @@ export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [alerts, setAlerts] = useState<ManagerAlert[]>([]);
+  const [idleReports, setIdleReports] = useState<IdleReport[]>([]);
   const [tab, setTab] = useState<Tab>('live');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [visits, setVisits] = useState<Visit[]>([]);
@@ -44,12 +45,16 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextOverview, nextAlerts] = await Promise.all([
+      const [nextOverview, nextAlerts, nextIdle] = await Promise.all([
         api<Overview>('/api/overview'),
         api<{ alerts: ManagerAlert[] }>('/api/alerts'),
+        // Stillness justifications: the engineer sends them from the phone, and without them
+        // the manager only saw the alert vanish — never why.
+        api<{ reports: IdleReport[] }>('/api/idle-reports?limit=20').catch(() => ({ reports: [] })),
       ]);
       setOverview(nextOverview);
       setAlerts(nextAlerts.alerts);
+      setIdleReports(nextIdle.reports);
       setSyncedAt(Date.now());
       setError('');
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.'); }
@@ -79,6 +84,9 @@ export default function App() {
   const trackingNow = reps.filter(r => r.tracking).length;
   const totalKm = reps.reduce((sum, r) => sum + r.distanceMeters, 0);
   const warnCount = alerts.filter(a => a.level === 'warn').length;
+  // Server owns the threshold so the map text and the alert list agree.
+  const staleMs = (overview?.staleGpsMinutes ?? 10) * 60000;
+  const selectedIdle = useMemo(() => idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId]);
 
   useEffect(() => {
     if (!selectedId) { setRoute(null); setVisits([]); return; }
@@ -134,7 +142,8 @@ export default function App() {
         {error && <p className="error banner" role="alert">{error}</p>}
         {tab === 'live' && (
           <section className="page">
-            {alerts.length > 0 && <AlertsPanel alerts={alerts} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
+            {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
+            {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={repId => setSelectedId(repId)} />}
             <div className="stats">
               <Stat label="مهندسون في الميدان" value={formatNumber(activeToday)} hint={`من ${formatNumber(reps.length)} مهندس`} />
               <Stat label="يتتبع الآن" value={formatNumber(trackingNow)} hint="وردية مفتوحة" />
@@ -163,7 +172,7 @@ export default function App() {
                         <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                         <span className="grow">
                           <strong>{rep.name}</strong>
-                          <small>{movementStatus(rep, clock)} · آخر موقع {ago(rep.location?.recordedAt ?? null, clock)} · {formatNumber(rep.visitsToday)} زيارة</small>
+                          <small>{movementStatus(rep, clock, staleMs)} · آخر موقع {ago(rep.location?.recordedAt ?? null, clock)} · {formatNumber(rep.visitsToday)} زيارة</small>
                         </span>
                         <span className={rep.online ? 'status ok' : 'status'} title={rep.online ? 'متصل' : 'غير متصل'} />
                         <small className="mono">{formatNumber(rep.distanceMeters / 1000)} كم</small>
@@ -174,8 +183,9 @@ export default function App() {
                 {selected && (
                   <div className="selected-summary">
                     <h4>{selected.name}</h4>
-                    <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock)}</p>
+                    <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock, staleMs)}</p>
                     <LocationName key={selected.id} location={selected.location} />
+                    {selectedIdle && <p className="muted small">آخر تبرير وقوف: {selectedIdle.reason} · {ago(selectedIdle.createdAt, clock)}</p>}
                     <dl>
                       <div><dt>آخر موقع</dt><dd>{ago(selected.location?.recordedAt ?? null, clock)}</dd></div>
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
@@ -203,7 +213,7 @@ export default function App() {
             </div>
           </section>
         )}
-        {tab === 'performance' && <Performance reps={reps} />}
+        {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} />}
         {tab === 'monthly' && <Monthly reps={reps} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
@@ -239,14 +249,14 @@ function EngineerRedirect() {
   );
 }
 
-function AlertsPanel({ alerts, onPick }: { alerts: ManagerAlert[]; onPick: (repId?: string) => void }) {
+function AlertsPanel({ alerts, staleMinutes, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; onPick: (repId?: string) => void }) {
   const [open, setOpen] = useState(true);
   const warn = alerts.filter(a => a.level === 'warn');
   const shown = open ? alerts.slice(0, 8) : alerts.slice(0, 2);
   return (
     <div className="alerts-panel" role="region" aria-label="تنبيهات الميدان">
       <div className="alerts-head">
-        <strong>تنبيهات الميدان <span className="pill warn">{formatNumber(warn.length)} مهم</span> <span className="pill">{formatNumber(alerts.length)} إجمالًا</span></strong>
+        <strong>تنبيهات الميدان <span className="pill warn">{formatNumber(warn.length)} مهم</span> <span className="pill">{formatNumber(alerts.length)} إجمالًا</span> <small className="muted">حد انقطاع الإشارة {formatNumber(staleMinutes)} دقيقة</small></strong>
         <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>
       </div>
       <ul>
@@ -258,6 +268,31 @@ function AlertsPanel({ alerts, onPick }: { alerts: ManagerAlert[]; onPick: (repI
               <small>{alert.detail}</small>
             </div>
             {alert.repId && <button className="btn ghost sm" onClick={() => onPick(alert.repId)}>فتح</button>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]; clock: number; onPick: (repId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? reports.slice(0, 10) : reports.slice(0, 3);
+  return (
+    <div className="alerts-panel" role="region" aria-label="تبريرات الوقوف">
+      <div className="alerts-head">
+        <strong>تبريرات الوقوف <span className="pill">{formatNumber(reports.length)}</span> <small className="muted">سبب السكون المرسل من الموبايل</small></strong>
+        {reports.length > 3 && <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>}
+      </div>
+      <ul>
+        {shown.map(item => (
+          <li key={item.id} className="alert">
+            <span className="alert-dot" aria-hidden="true" />
+            <div className="grow">
+              <strong>{item.repName}{item.durationMinutes ? ` · توقف ${formatNumber(item.durationMinutes)} دقيقة` : ''}</strong>
+              <small>{item.reason} · {ago(item.createdAt, clock)}</small>
+            </div>
+            <button className="btn ghost sm" onClick={() => onPick(item.userId)}>فتح</button>
           </li>
         ))}
       </ul>
@@ -361,7 +396,7 @@ function Account({ user, overview }: { user: User; overview: Overview | null }) 
             <div><dt>الدور</dt><dd>{user.role === 'admin' ? 'متابعة (مدير)' : 'مهندس مبيعات'}</dd></div>
             <div><dt>المنطقة</dt><dd>{user.region || '—'}</dd></div>
           </dl>
-          <p className="muted small">تصدير المؤشرات متاح من صفحة «الأداء والمؤشرات» بصيغة CSV تفتح في Excel.</p>
+          <p className="muted small">تصدير المؤشرات متاح من صفحة «الأداء والمؤشرات» كملف Excel (.xlsx) يفتح مباشرة بالعربي.</p>
         </div>
         <div className="panel prose">
           <h3 className="panel-title">الخصوصية والاحتفاظ</h3>

@@ -161,7 +161,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY is_demo DESC, created_at, name").map(repSnapshot);
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
-    return { reps, serverTime: Date.now(), demo: config.demo, timezone: config.timezone, retentionDays: config.retentionDays, newReports };
+    // The dashboard needs the same staleness threshold the alerts use, otherwise the map and
+    // the alert list disagree about who lost their signal.
+    return { reps, serverTime: Date.now(), demo: config.demo, timezone: config.timezone, retentionDays: config.retentionDays, newReports, staleGpsMinutes: config.staleGpsMinutes };
   }
   function reportRow(id: string) {
     return store.get(`SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
@@ -509,8 +511,17 @@ export function createApp(overrides: Partial<Config> = {}) {
       const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', rep.id);
       const last = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id);
       const lastAt = last?.at ? Number(last.at) : null;
-      if (shift && lastAt && now - lastAt > 30 * 60000) {
-        alerts.push({ id: `${rep.id}:stale`, level: 'warn', code: 'stale_gps', repId: rep.id, repName: rep.name, title: 'انقطاع في إرسال الموقع', detail: `آخر إشارة ${Math.round((now - lastAt) / 60000)} دقيقة — تأكد من فتح التطبيق والسماح بالموقع.`, at: lastAt });
+      // One threshold for the whole product (`STALE_GPS_MINUTES`, default 10): the map says
+      // "لا إشارة" at exactly the moment this alert fires.
+      const staleMs = config.staleGpsMinutes * 60000;
+      if (shift && lastAt && now - lastAt > staleMs) {
+        const staleMinutes = Math.round((now - lastAt) / 60000);
+        alerts.push({
+          id: `${rep.id}:stale`, level: 'warn', code: 'stale_gps', repId: rep.id, repName: rep.name,
+          title: 'انقطاع في إرسال الموقع',
+          detail: `آخر إشارة قبل ${staleMinutes} دقيقة (حد التنبيه ${config.staleGpsMinutes} دقيقة) — تأكد من فتح التطبيق والسماح بالموقع.`,
+          at: lastAt,
+        });
       }
       if (shift && lastAt && now - lastAt > 60 * 60000) {
         const recentJustification = store.get('SELECT id FROM idle_reports WHERE user_id=? AND created_at>?', rep.id, now - 70 * 60000);
@@ -525,6 +536,31 @@ export function createApp(overrides: Partial<Config> = {}) {
       const hasActivity = !!lastAt && lastAt >= bounds.start;
       if (hasActivity && Number(visitsToday.c) === 0 && now - bounds.start > 2 * 3600000) {
         alerts.push({ id: `${rep.id}:novisit`, level: 'info', code: 'no_visits', repId: rep.id, repName: rep.name, title: 'لا زيارات مسجلة اليوم', detail: 'المهندس في الميدان لكن لم يسجل أي زيارة اليوم.', at: bounds.start });
+      }
+      // An open visit is what hides "the engineer forgot to close it": the pair check-in /
+      // check-out is the record the manager relies on, so an unclosed one must surface.
+      const openVisit = store.get('SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status=? ORDER BY checked_in_at LIMIT 1', rep.id, 'open');
+      if (openVisit) {
+        const openMinutes = Math.max(0, Math.round((now - Number(openVisit.checkedInAt)) / 60000));
+        if (openMinutes >= 180) {
+          const hours = Math.floor(openMinutes / 60);
+          const rest = openMinutes % 60;
+          const hoursText = hours >= 3 && hours <= 10 ? `${hours} ساعات` : `${hours} ساعة`;
+          alerts.push({
+            id: `${rep.id}:openvisit`, level: 'warn', code: 'long_open_visit', repId: rep.id, repName: rep.name,
+            title: 'زيارة مفتوحة منذ فترة طويلة',
+            detail: `زيارة «${openVisit.customerName}» مفتوحة منذ ${hoursText}${rest ? ` و${rest} دقيقة` : ''} بدون تسجيل خروج.`,
+            at: Number(openVisit.checkedInAt),
+          });
+        }
+        if (!shift) {
+          alerts.push({
+            id: `${rep.id}:orphanvisit`, level: 'warn', code: 'open_visit_without_shift', repId: rep.id, repName: rep.name,
+            title: 'زيارة مفتوحة بعد انتهاء الوردية',
+            detail: `الوردية مغلقة وزيارة «${openVisit.customerName}» لسه مفتوحة — لازم تتقفل بحضور (check-out).`,
+            at: Number(openVisit.checkedInAt),
+          });
+        }
       }
       const daily = store.get('SELECT id FROM daily_reports WHERE user_id=? AND report_date=?', rep.id, today);
       const localHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, hour: '2-digit', hourCycle: 'h23' }).format(now));

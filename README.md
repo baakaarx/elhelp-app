@@ -4,7 +4,7 @@
 وتطبيق موبايل يسجّل الموقع أثناء الوردية فقط بموافقة صريحة، ويرسل تقارير الزيارات والتقرير اليومي
 الموقّع إلكترونيًا (نفس نموذج الورق المستخدم في الشركة) مع تصدير PDF.
 
-> هذا المستودع يحتوي على الكود الكامل القابل للتشغيل: API + لوحة التحكم + تطبيق Expo، مع ٣٩ اختبار API.
+> هذا المستودع يحتوي على الكود الكامل القابل للتشغيل: API + لوحة التحكم + تطبيق Expo، مع ٩٠ اختبار API.
 
 ---
 
@@ -29,8 +29,8 @@ npm workspaces من الجذر، بدون monorepo tooling إضافي.
 - **حسابي:** حالة المزامنة، الأذونات، الخصوصية، وخروج يوقف التتبع.
 
 **للمدير (الويب)**
-- **المتابعة الحية:** لوحة تنبيهات (انقطاع GPS، وردية بلا إشارة، لا زيارات، تقرير يومي ناقص)، خريطة الفريق، **إعادة تشغيل خط السير** بشريط تقدّم وسرعات، وبطاقة المهندس مع زياراته اليوم.
-- **الأداء والمؤشرات:** مقارنة الفريق (زيارات، متوسط الزيارة، مسافة، تقارير، تحصيل، تقارير يومية) مع تصدير **CSV** يفتح في Excel.
+- **المتابعة الحية:** لوحة تنبيهات (انقطاع GPS، وردية بلا إشارة، لا زيارات، تقرير يومي ناقص، زيارة مفتوحة طويلًا أو بعد انتهاء الوردية)، **تبريرات الوقوف** المرسلة من الموبايل، خريطة الفريق، **إعادة تشغيل خط السير** بشريط تقدّم وسرعات، وبطاقة المهندس مع زياراته اليوم.
+- **الأداء والمؤشرات:** مقارنة الفريق (زيارات، متوسط الزيارة، مسافة، تقارير، تحصيل، تقارير يومية) مع تصدير **Excel (.xlsx)** يفتح بالعربي مباشرة.
 - **التقارير:** مراجعة التقارير اليومية والميدانية وتنزيل PDF.
 - **الفريق:** إضافة الحسابات وإيقافها فورًا (يقطع الجلسات والتتبع).
 
@@ -38,9 +38,12 @@ npm workspaces من الجذر، بدون monorepo tooling إضافي.
 
 ```bash
 npm ci
-cp .env.example server/.env      # اختياري في وضع العرض
 npm run dev                      # API على :3000 ولوحة التحكم على :5173
 ```
+
+> **لا تنسخ `.env.example` إلى `server/.env` في التطوير.** الملف ده قالب إنتاج: `ADMIN_EMAIL`
+> فيه هو عنوان أول حساب مدير، ونسخه يجعل دخول `admin@mandoub.test` مرفوضًا. وضع العرض
+> لا يحتاج أي `.env`، والسيرفر يطبع في السجل عنوان المدير الفعلي عند التشغيل.
 
 ثم افتح <http://localhost:5173>.
 
@@ -68,7 +71,7 @@ npm run dev         # API + لوحة التحكم مع إعادة التحميل
 npm run dev:mobile  # Expo dev server
 npm run build       # بناء server ثم dashboard
 npm start           # تشغيل الـ API (يقدّم dashboard/dist تلقائيًا)
-npm test            # ٤٨ اختبار API (node:test + supertest + socket.io-client)
+npm test            # ٩٠ اختبار API (node:test + supertest + socket.io-client)
 npm run typecheck   # tsc لكل الوركسبيسز
 npm run test:e2e    # Playwright (يبدأ خادمًا معزولًا على 3100/5174)
 npm run export:mobile  # تصدير نسخة الويب من التطبيق
@@ -78,16 +81,17 @@ npm run build:vercel  # نفس البناء لكن مُجمَّعًا في publi
 
 ## متغيرات البيئة
 
-انسخ `.env.example` إلى `server/.env`:
+للتشغيل في الإنتاج، انسخ `.env.example` إلى `server/.env` واستبدل قيم القالب:
 
 | المتغير | الافتراضي | ملاحظات |
 | --- | --- | --- |
 | `PORT` | `3000` | منفذ الـ API |
 | `NODE_ENV` | `development` | `production` يفعّل CSP وقيود الكوكيز |
 | `DEMO_MODE` | `false` | بيانات عرض + محاكي؛ ممنوع في الإنتاج |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | مطلوبان للإنتاج، كلمة المرور ١٢ حرفًا على الأقل |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | مطلوبان للإنتاج، كلمة المرور ١٢ حرفًا على الأقل، وبريد المدير ليس بريد القالب |
 | `DB_PATH` | `server/data/mandoub.db` | استخدم قرصًا دائمًا في الإنتاج |
 | `RETENTION_DAYS` | `30` | ١–٣٦٥، حذف تلقائي كل ساعة |
+| `STALE_GPS_MINUTES` | `10` | ٣–١٢٠، نفس الحد في التنبيهات ونص الخريطة |
 | `TIMEZONE` | `Africa/Cairo` | حدود اليوم والمسارات والتقارير |
 | `ALLOWED_ORIGINS` | — | أصول HTTPS مفصولة بفواصل (لا `*`) |
 
@@ -111,8 +115,9 @@ POST   /api/presence
 POST   /api/visits/check-in     (rep) زيارة جديدة بموقع ودقة (زيارة مفتوحة واحدة)
 POST   /api/visits/:id/check-out (rep) نتيجة الزيارة + المبلغ، والتحصيل يُنسخ لتقرير مالي
 GET    /api/visits?date=&status=&repId=
-GET    /api/alerts              (admin) تنبيهات الميدان المشفّرة (stale_gps/no_signal/no_visits/missing_daily_report/stale_reviews)
-GET    /api/kpis?from=&to=      (admin) مؤشرات لكل مهندس · GET /api/kpis.csv تصدير Excel
+GET    /api/alerts              (admin) تنبيهات الميدان (stale_gps/no_signal/no_visits/missing_daily_report/stale_reviews/long_open_visit/open_visit_without_shift)
+GET    /api/idle-reports?date=&repId=  تبريرات الوقوف (admin: الكل · rep: الخاصة به)
+GET    /api/kpis?from=&to=      (admin) مؤشرات لكل مهندس · GET /api/kpis.xlsx تصدير Excel
 POST   /api/reports             (rep) · GET /api/reports · PATCH /api/reports/:id { status }
 POST   /api/daily-reports       (rep) · GET /api/daily-reports · GET /api/daily-reports/:id
 PATCH  /api/daily-reports/:id   (admin) { status: 'reviewed' }
@@ -188,7 +193,7 @@ npm run build     # server/dist + dashboard/dist
 
 `.github/workflows/ci.yml` يشغّل على Node 24: `npm ci` → `typecheck` → `npm test` → `build`،
 ثم مهمة ثانية تشغّل Playwright بعد `npx playwright install --with-deps chromium`
-(١٨ اختبار متصفح: دخول/جلسة/خريطة/تنبيهات/إعادة تشغيل المسار/مؤشرات/تقارير/تنزيل PDF وCSV).
+(اختبارات متصفح: دخول/جلسة/خريطة/تنبيهات/إعادة تشغيل المسار/مؤشرات/تقارير/تنزيل PDF وExcel).
 
 > `node:sqlite` يحتاج Node ≥ 22.13 بدون flag. على Node 22.12 يفشل التشغيل بـ
 > `ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite`.

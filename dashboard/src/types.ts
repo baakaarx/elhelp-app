@@ -42,6 +42,25 @@ export interface Overview {
   timezone: string;
   retentionDays: number;
   newReports: number;
+  /** Server-side staleness threshold (STALE_GPS_MINUTES), so both sides agree. */
+  staleGpsMinutes?: number;
+}
+/**
+ * A stillness justification the engineer sends from the phone after an hour without
+ * movement. Without it the manager only saw the alert disappear, never the reason.
+ */
+export interface IdleReport {
+  id: string;
+  userId: string;
+  repName: string;
+  shiftId: string | null;
+  lat: number | null;
+  lng: number | null;
+  accuracy: number | null;
+  reason: string;
+  durationMinutes: number;
+  deviceId: string;
+  createdAt: number;
 }
 export const REPORT_TYPES = ['visit', 'order', 'collection', 'note', 'issue', 'other'] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];

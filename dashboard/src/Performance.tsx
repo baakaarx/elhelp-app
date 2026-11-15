@@ -8,7 +8,7 @@ import type { KpiResponse, KpiRow, Rep } from './types';
 const today = () => new Date().toLocaleDateString('en-CA');
 const daysAgo = (days: number) => new Date(Date.now() - days * 86400000).toLocaleDateString('en-CA');
 
-export default function Performance({ reps }: { reps: Rep[] }) {
+export default function Performance({ reps, staleGpsMinutes = 10 }: { reps: Rep[]; staleGpsMinutes?: number }) {
   const [from, setFrom] = useState(daysAgo(6));
   const [to, setTo] = useState(today());
   const [data, setData] = useState<KpiResponse | null>(null);
@@ -79,7 +79,7 @@ export default function Performance({ reps }: { reps: Rep[] }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(row => <KpiTableRow key={row.repId} row={row} rep={reps.find(rep => rep.id === row.repId)} />)}
+                {rows.map(row => <KpiTableRow key={row.repId} row={row} rep={reps.find(rep => rep.id === row.repId)} staleMinutes={staleGpsMinutes} />)}
               </tbody>
               <tfoot>
                 <tr>
@@ -100,12 +100,12 @@ export default function Performance({ reps }: { reps: Rep[] }) {
   );
 }
 
-function KpiTableRow({ row, rep }: { row: KpiRow; rep?: Rep }) {
+function KpiTableRow({ row, rep, staleMinutes }: { row: KpiRow; rep?: Rep; staleMinutes: number }) {
   const bar = Math.min(100, row.visits * 12);
   return (
     <tr>
       <td><span className="dot" style={{ background: row.color }} aria-hidden="true" /> {row.name}{row.isDemo ? <em className="muted small"> (تجريبي)</em> : null}{row.active ? null : <em className="muted small"> · موقوف</em>}</td>
-      <td>{row.region && row.region !== 'موقعك الحقيقي' ? <div>{row.region} <small className="muted">(مسجلة)</small></div> : null}{rep ? <div>{movementStatus(rep)}</div> : null}<LocationName location={rep?.location ?? null} /></td>
+      <td>{row.region && row.region !== 'موقعك الحقيقي' ? <div>{row.region} <small className="muted">(مسجلة)</small></div> : null}{rep ? <div>{movementStatus(rep, Date.now(), staleMinutes * 60000)}</div> : null}<LocationName location={rep?.location ?? null} /></td>
       <td className="mono">{formatNumber(row.daysWithData)}</td>
       <td>
         <div className="bar-cell"><span className="mono">{formatNumber(row.visits)}</span><span className="bar"><i style={{ width: `${bar}%` }} /></span></div>
