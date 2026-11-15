@@ -35,31 +35,21 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Point the app at the server
+      # Runs the exact script a developer runs locally, so CI proves it still works.
+      - name: Build release APK
         run: |
           set -euo pipefail
           if [ -z "${API_URL:-}" ]; then
             echo "::error title=API URL missing::Set the api_url input (or a repository variable ELHELP_API_URL) — the APK bakes this address in at build time."
             exit 1
           fi
-          printf 'EXPO_PUBLIC_API_URL=%s\n' "${API_URL%/}" > mobile/.env
-          echo "building against ${API_URL%/}"
-
-      - name: Generate the Android project
-        working-directory: mobile
-        run: npx expo prebuild --platform android --no-install
-
-      - name: Build release APK
-        working-directory: mobile/android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          npm run build:apk -- "${API_URL%/}"
 
       - name: Collect the APK
         run: |
           mkdir -p out
-          cp mobile/android/app/build/outputs/apk/release/app-release.apk \
-             "out/elhelp-engineer-${GITHUB_REF_NAME//\//-}.apk"
+          cp mobile/dist-android/*.apk "out/elhelp-engineer-${GITHUB_REF_NAME//\//-}.apk"
+          ls -lh out
 
       - uses: actions/upload-artifact@v4
         with:
