@@ -35,21 +35,21 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
           <div className="login-brand">
             <img className="brand-mark" src="/elhelb-emblem.png" alt="شعار الهلب جروب" width={52} height={52} />
             <div>
-              <h1>Elite Operations Center</h1>
+              <h1>مركز العمليات</h1>
               <p>الهلب جروب الدولية · مركز عمليات النخبة</p>
             </div>
           </div>
           <form onSubmit={submit} className="stack">
             <label className="field">
               <span>البريد الإلكتروني</span>
-              <input type="email" dir="ltr" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@mandoub.test" />
+              <input type="email" dir="ltr" autoComplete="username" required value={email} onChange={e => setEmail(e.target.value)} placeholder="manager@company.com" />
             </label>
             <label className="field">
               <span>كلمة المرور</span>
               <input type="password" dir="ltr" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
             </label>
             {error && <p className="error" role="alert">{error}</p>}
-            <button className="btn primary" disabled={busy}>{busy ? 'جارٍ الدخول…' : 'دخول مركز النخبة →'}</button>
+            <button className="btn primary" disabled={busy}>{busy ? 'جارٍ الدخول…' : 'دخول →'}</button>
           </form>
           <SocialLogin onError={setError} />
           <div className="login-switch">
@@ -57,7 +57,6 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
             <a href="/app" className="btn ghost sm">افتح تطبيق المهندس ←</a>
           </div>
           <div className="login-hint">
-            <p>دخول النخبة التجريبي: <b dir="ltr">admin@mandoub.test</b> / <b dir="ltr">Demo1234!</b></p>
             <p className="muted small">🔒 بياناتك محمية بمعايير دولية. الموقع يُجمع أثناء المهمة فقط بموافقتك، ويُحذف تلقائياً بعد مدة الاحتفاظ.</p>
           </div>
         </div>

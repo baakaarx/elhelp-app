@@ -10,7 +10,7 @@ COPY server server
 RUN npm run build
 
 FROM node:24-bookworm-slim AS runtime
-ENV NODE_ENV=production PORT=3000 DB_PATH=/data/mandoub.db DEMO_MODE=false
+ENV NODE_ENV=production PORT=3000 DB_PATH=/data/mandoub.db
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY server/package.json server/package.json

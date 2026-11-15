@@ -16,7 +16,7 @@ export class Store {
         id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','rep')),
         phone TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '',
-        color TEXT NOT NULL DEFAULT '#28745b', is_demo INTEGER NOT NULL DEFAULT 0,
+        color TEXT NOT NULL DEFAULT '#28745b',
         active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, last_seen INTEGER
       );
       CREATE TABLE IF NOT EXISTS sessions (
@@ -33,7 +33,7 @@ export class Store {
         shift_id TEXT NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
         lat REAL NOT NULL, lng REAL NOT NULL, accuracy REAL, speed REAL, heading REAL, battery REAL,
         recorded_at INTEGER NOT NULL, received_at INTEGER NOT NULL,
-        source TEXT NOT NULL CHECK(source IN ('gps','demo')),
+        source TEXT NOT NULL CHECK(source IN ('gps')),
         PRIMARY KEY(user_id, point_id)
       );
       CREATE INDEX IF NOT EXISTS locations_user_time ON locations(user_id, recorded_at);
@@ -110,6 +110,33 @@ export class Store {
         created_at INTEGER NOT NULL
       );
     `);
+    // The product no longer ships simulated engineers. Deleting the marker without deleting
+    // the rows would have left fake people inside a live account, so the rows go first.
+    if (this.all('PRAGMA table_info(users)').some((column: any) => column.name === 'is_demo')) {
+      this.run('DELETE FROM users WHERE is_demo=1');
+      this.db.exec('ALTER TABLE users DROP COLUMN is_demo');
+    }
+    // `source` used to allow 'demo'. SQLite cannot alter a CHECK constraint, so the table is
+    // rebuilt once and any legacy simulated track is dropped.
+    const locationsSql = String(this.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='locations'")?.sql || '');
+    if (locationsSql.includes("'demo'")) {
+      this.db.exec(`
+        CREATE TABLE locations_rebuilt (
+          point_id TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          shift_id TEXT NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+          lat REAL NOT NULL, lng REAL NOT NULL, accuracy REAL, speed REAL, heading REAL, battery REAL,
+          recorded_at INTEGER NOT NULL, received_at INTEGER NOT NULL,
+          source TEXT NOT NULL CHECK(source IN ('gps')),
+          PRIMARY KEY(user_id, point_id)
+        );
+        INSERT INTO locations_rebuilt
+          SELECT point_id, user_id, shift_id, lat, lng, accuracy, speed, heading, battery, recorded_at, received_at, source
+          FROM locations WHERE source='gps';
+        DROP TABLE locations;
+        ALTER TABLE locations_rebuilt RENAME TO locations;
+        CREATE INDEX IF NOT EXISTS locations_user_time ON locations(user_id, recorded_at);
+      `);
+    }
     // Lightweight migrations for international/enterprise requirements
     for (const sql of [
       "ALTER TABLE shifts ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",

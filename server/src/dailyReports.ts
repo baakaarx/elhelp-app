@@ -40,7 +40,7 @@ export interface DailyReport {
   engineerName: string; reportDate: string; dayName: string; leftAt: string; returnedAt: string; circumstances: string;
   status: 'new' | 'reviewed'; createdAt: number; reviewedAt: number | null;
   signedName: string; signedAt: number; lat: number | null; lng: number | null; accuracy: number | null;
-  repName: string; repColor: string; repIsDemo: number; visits: DailyVisit[];
+  repName: string; repColor: string; visits: DailyVisit[];
 }
 export function weekdayName(date: string, timezone: string) {
   const { start } = dayBounds(date, timezone);
@@ -50,7 +50,7 @@ const SELECT = `SELECT d.id, d.user_id AS userId, d.shift_id AS shiftId, d.engin
   d.report_date AS reportDate, d.day_name AS dayName, d.left_at AS leftAt, d.returned_at AS returnedAt,
   d.circumstances, d.status, d.created_at AS createdAt, d.reviewed_at AS reviewedAt,
   d.signed_name AS signedName, d.signed_at AS signedAt, d.lat, d.lng, d.accuracy,
-  u.name AS repName, u.color AS repColor, u.is_demo AS repIsDemo
+  u.name AS repName, u.color AS repColor
   FROM daily_reports d JOIN users u ON u.id=d.user_id`;
 function visits(store: Store, reportId: string): DailyVisit[] {
   return store.all(`SELECT id, position, customer_name AS customerName, governorate, district, village, phone,

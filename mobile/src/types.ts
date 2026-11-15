@@ -1,7 +1,7 @@
 export type Role = 'admin' | 'rep';
 export interface User {
   id: string; name: string; email: string; role: Role; phone: string; region: string;
-  color: string; isDemo: boolean; active: boolean;
+  color: string; active: boolean;
 }
 export interface Shift {
   id: string; user_id: string; started_at: number; ended_at: number | null;
@@ -98,7 +98,7 @@ export interface RepSummary {
 export interface RouteResponse {
   date: string;
   timezone: string;
-  points: Array<{ id: string; lat: number; lng: number; accuracy: number | null; recordedAt: number; source: 'gps' | 'demo' }>;
+  points: Array<{ id: string; lat: number; lng: number; accuracy: number | null; recordedAt: number; source: 'gps' }>;
   truncated: boolean;
   distanceMeters: number;
 }

@@ -14,7 +14,7 @@ import { readConfig } from '../src/config.js';
  * alert list but was invisible — the reason itself never reached the dashboard.
  */
 const config = {
-  dbPath: ':memory:', demo: false, production: false, retentionDays: 30, timezone: 'Africa/Cairo',
+  dbPath: ':memory:', production: false, retentionDays: 30, timezone: 'Africa/Cairo',
   adminEmail: 'admin@mandoub.test', adminPassword: 'TestPassword123!', allowedOrigins: [], port: 0,
   staleGpsMinutes: 10,
 };

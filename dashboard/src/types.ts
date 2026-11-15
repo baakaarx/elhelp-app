@@ -7,7 +7,6 @@ export interface User {
   phone: string;
   region: string;
   color: string;
-  isDemo: boolean;
   active: boolean;
   approvalStatus?: string;
   deviceId?: string;
@@ -22,7 +21,7 @@ export interface LocationPoint {
   battery: number | null;
   recordedAt: number;
   receivedAt: number;
-  source: 'gps' | 'demo';
+  source: 'gps';
 }
 export interface Rep extends User {
   online: boolean;
@@ -38,7 +37,6 @@ export interface Rep extends User {
 export interface Overview {
   reps: Rep[];
   serverTime: number;
-  demo: boolean;
   timezone: string;
   retentionDays: number;
   newReports: number;
@@ -81,7 +79,6 @@ export interface Report {
   reviewedAt: number | null;
   repName: string;
   repColor: string;
-  repIsDemo: number;
 }
 export interface DailyVisit {
   id?: string;
@@ -116,7 +113,6 @@ export interface DailyReport {
   accuracy: number | null;
   repName: string;
   repColor: string;
-  repIsDemo: number;
   visits: DailyVisit[];
 }
 export interface RouteResponse {
@@ -153,7 +149,6 @@ export interface Visit {
   outLng: number | null;
   repName: string;
   repColor: string;
-  repIsDemo: number;
 }
 export interface ManagerAlert {
   id: string;
@@ -170,7 +165,6 @@ export interface KpiRow {
   name: string;
   color: string;
   region: string;
-  isDemo: boolean;
   active: boolean;
   distanceMeters: number;
   pointCount: number;

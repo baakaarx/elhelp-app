@@ -99,7 +99,7 @@ export default function Monthly({ reps }: { reps: Rep[] }) {
               <tbody>
                 {rows.map(r => (
                   <tr key={r.repId}>
-                    <td><span className="dot" style={{ background: r.color }} aria-hidden="true" /> {r.name}{r.isDemo ? <em className="muted small"> (تجريبي)</em> : null}{r.active ? null : <em className="muted small"> · موقوف</em>}</td>
+                    <td><span className="dot" style={{ background: r.color }} aria-hidden="true" /> {r.name}{r.active ? null : <em className="muted small"> · موقوف</em>}</td>
                     <td>{r.region || '—'}</td>
                     <td className="mono"><strong>{formatNumber(r.visits)}</strong></td>
                     <td className="mono">{formatNumber(r.visitsCompleted)}</td>

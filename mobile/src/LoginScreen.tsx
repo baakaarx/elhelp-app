@@ -81,11 +81,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
             </View>
           </View>
 
-          <View style={styles.hint}>
-            <Text style={styles.hintTitle}>حساب تجريبي</Text>
-            <Text style={styles.hintBody}><Text style={styles.mono}>rep@mandoub.test</Text>  /  <Text style={styles.mono}>Demo1234!</Text></Text>
-            <Text style={styles.hintNote}>هذا الحساب يسجّل موقعك الحقيقي أثناء الوردية فقط.</Text>
-          </View>
+
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

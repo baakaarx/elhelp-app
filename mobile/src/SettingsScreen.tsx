@@ -37,7 +37,6 @@ export default function SettingsScreen({ user, field, onLogout }: { user: User; 
             <Text style={styles.meta}>{user.role === 'rep' ? 'مهندس مبيعات' : 'متابعة'}{user.region ? ` · ${user.region}` : ''}{user.phone ? ` · ${user.phone}` : ''}</Text>
           </View>
         </Row>
-        {user.isDemo ? <Pill label="حساب تجريبي — بيانات محاكاة" tone="warn" /> : null}
       </Card>
 
       <Card>

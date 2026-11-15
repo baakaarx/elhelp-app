@@ -34,35 +34,28 @@ npm workspaces من الجذر، بدون monorepo tooling إضافي.
 - **التقارير:** مراجعة التقارير اليومية والميدانية وتنزيل PDF.
 - **الفريق:** إضافة الحسابات وإيقافها فورًا (يقطع الجلسات والتتبع).
 
-## تشغيل سريع (وضع العرض التجريبي)
+## تشغيل سريع
 
 ```bash
 npm ci
+cp .env.example server/.env      # املأ ADMIN_EMAIL و ADMIN_PASSWORD
 npm run dev                      # API على :3000 ولوحة التحكم على :5173
 ```
 
-> **لا تنسخ `.env.example` إلى `server/.env` في التطوير.** الملف ده قالب إنتاج: `ADMIN_EMAIL`
-> فيه هو عنوان أول حساب مدير، ونسخه يجعل دخول `admin@mandoub.test` مرفوضًا. وضع العرض
-> لا يحتاج أي `.env`، والسيرفر يطبع في السجل عنوان المدير الفعلي عند التشغيل.
+ثم افتح <http://localhost:5173> وسجّل بالبريد وكلمة المرور اللي حطيتهم في `server/.env`.
 
-ثم افتح <http://localhost:5173>.
+- أول حساب مدير يُنشأ من `ADMIN_EMAIL` + `ADMIN_PASSWORD` عند أول تشغيل فقط، وما بعدهما يُستخدم
+  لتسجيل الدخول. كلمة المرور ١٢ حرفًا على الأقل، والسيرفر يرفض الإقلاع بدونها.
+- التطبيق يبدأ **فاضيًا تمامًا**: لا مهندسين ولا بيانات. أضف الفريق من صفحة «نخبة الفريق»،
+  أو دع المهندسين يسجّلون بـ Google/Apple ثم وافق عليهم من نفس الصفحة.
+- لا توجد حسابات جاهزة ولا بيانات محاكاة في هذه النسخة.
 
 | المسار | التطبيق |
 | --- | --- |
-| `/` | **لوحة المدير** — حساب `admin@mandoub.test` |
-| `/app` | **تطبيق المهندس** (نسخة الويب من الموبايل، تحتاج `npm run export:mobile`) |
+| `/` | **لوحة المدير** |
+| `/app` | **تطبيق المهندس** (نسخة الويب، تحتاج `npm run export:mobile`) |
 
 حساب المهندس على لوحة المدير يُرفض ويُحوَّل تلقائيًا إلى `/app`، حتى لا يدخل على واجهة إدارية فارغة.
-
-| الحساب | البريد | كلمة المرور | الاستخدام |
-| --- | --- | --- | --- |
-| مدير المتابعة | `admin@mandoub.test` | `Demo1234!` | لوحة التحكم |
-| مهندس GPS حقيقي | `rep@mandoub.test` | `Demo1234!` | تجربة تتبع من الموبايل |
-| ٥ مهندسين محاكاة | `ahmed@…` / `mohamed@…` / `sara@…` / `khaled@…` / `mostafa@mandoub.test` | `Demo1234!` | بيانات خريطة وتقارير تجريبية (لا تقبل مواقع حقيقية) |
-
-`DEMO_MODE=true` يُنشئ بيانات العرض: ٥ مهندسين محاكاة، تقارير ميدانية ويومية، وزيارات منتهية
-(مع تحصيل) مرتبطة بوقت التشغيل، ومحاكي مسارات كل ثانيتين. **يمنع تشغيله في الإنتاج**
-(`NODE_ENV=production` + `DEMO_MODE=true` = توقف متعمد عند بدء التشغيل).
 
 ## أوامر الجذر
 
@@ -71,12 +64,11 @@ npm run dev         # API + لوحة التحكم مع إعادة التحميل
 npm run dev:mobile  # Expo dev server
 npm run build       # بناء server ثم dashboard
 npm start           # تشغيل الـ API (يقدّم dashboard/dist تلقائيًا)
-npm test            # ٩٠ اختبار API (node:test + supertest + socket.io-client)
+npm test            # ٨٢ اختبار API (node:test + supertest + socket.io-client)
 npm run typecheck   # tsc لكل الوركسبيسز
 npm run test:e2e    # Playwright (يبدأ خادمًا معزولًا على 3100/5174)
 npm run export:mobile  # تصدير نسخة الويب من التطبيق
-npm run preview     # بناء + تصدير الموبايل + تقديم كل شيء على :5173
-npm run build:vercel  # نفس البناء لكن مُجمَّعًا في public/ للنشر على Vercel
+npm run preview     # بناء + تصدير الموبايل + تقديم كل شيء على :5173 (يحتاج ADMIN_EMAIL/PASSWORD)
 ```
 
 ## متغيرات البيئة
@@ -87,7 +79,6 @@ npm run build:vercel  # نفس البناء لكن مُجمَّعًا في publi
 | --- | --- | --- |
 | `PORT` | `3000` | منفذ الـ API |
 | `NODE_ENV` | `development` | `production` يفعّل CSP وقيود الكوكيز |
-| `DEMO_MODE` | `false` | بيانات عرض + محاكي؛ ممنوع في الإنتاج |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | مطلوبان للإنتاج، كلمة المرور ١٢ حرفًا على الأقل، وبريد المدير ليس بريد القالب |
 | `DB_PATH` | `server/data/mandoub.db` | استخدم قرصًا دائمًا في الإنتاج |
 | `RETENTION_DAYS` | `30` | ١–٣٦٥، حذف تلقائي كل ساعة |
@@ -159,22 +150,26 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 - انسخ نسخة احتياطية من ملف SQLite (أو استخدم قرصًا دائمًا) — البيانات كلها هناك.
 - تطبيق الموبايل: `eas build --profile production` بعد ضبط `EXPO_PUBLIC_API_URL`.
 
-### نشر نسخة العرض على Vercel (`elhelp-mandoub.vercel.app`)
+### النشر على VPS
 
-نسخة العرض العامة مبنية على مُهايئ serverless بسيط، ولا تلمس منطق التطبيق:
+النسخة النهائية تعمل كعملية واحدة دائمة (Express + Socket.IO + ملف SQLite على قرص ثابت).
+الدليل الكامل خطوة بخطوة في [`docs/DEPLOY-VPS.md`](docs/DEPLOY-VPS.md)، وملفاته الجاهزة في:
 
-- `api/index.js` — يُشغّل نفس `createApp()` من `server/dist/app.js` داخل دالة Vercel.
-- `scripts/build-vercel.mjs` (`npm run build:vercel`) — يبني اللوحة وتصدير Expo للويب ويجمعهما في `public/`: لوحة المدير على `/` وتطبيق المهندس على `/app`.
-- `vercel.json` — يوجّه `/api/*` إلى الدالة، ويضبط مخرجات البناء ومدة الدالة.
+- `deploy/elhelp.service` — خدمة systemd (إعادة تشغيل تلقائي بعد إعادة الإقلاع).
+- `deploy/Caddyfile` — HTTPS تلقائي عبر Let's Encrypt.
+- `scripts/backup-sqlite.sh` — نسخة احتياطية يومية متسقة باستخدام `VACUUM INTO`.
 
-قيود هذه النسخة (مقصودة، لأنها للعرض فقط):
+باختصار:
 
-- **وضع الديمو مفروض** (`DEMO_MODE=true`) والبيانات في `/tmp` — تُصفَّر مع كل إقلاع بارد ولا تُستخدم لأي بيانات حقيقية.
-- لا يوجد بث لحظي (Socket.IO) على serverless؛ اللوحة تتحول تلقائيًا إلى «وضع التحديث الدوري» كل ٨ ثوانٍ.
-- على النسخة المستضافة تكون الجلسة **موقّعة (stateless)** لأن كل نسخة من الدالة لها قاعدة بياناتها الخاصة؛ يُفعَّل ذلك تلقائيًا عند ضبط `SESSION_SECRET`.
-- حركة الديمو على النسخة المستضافة **مدفوعة بالطلبات** (`DEMO_SIMULATE=true`): لا يوجد مؤقت دائم، فتُحسب مواقع المهندسين من الوقت الفعلي عند كل تحديث، واللوحة تُحدّث كل ثانيتين.
-- **اللحظية الحقيقية** (تليفون المهندس يتحرك على اللوحة لحظة بلحظة) تحتاج سيرفرًا دائمًا واحدًا مع Socket.IO وقرص ثابت — نسخة Vercel للعرض فقط.
-- التشغيل الفعلي للمهندسين يحتاج خادمًا دائمًا (Docker + قرص دائم) كما في القسم أعلاه.
+```bash
+git clone https://github.com/baakaarx/elhelp-app.git && cd elhelp-app
+npm ci && npm run build
+cp .env.example server/.env    # DB_PATH=/var/lib/elhelp/mandoub.db
+sudo cp deploy/elhelp.service /etc/systemd/system/ && sudo systemctl enable --now elhelp
+```
+
+> نسخة Vercel السابقة (serverless + `/tmp`) **أُزيلت** مع بيانات العرض: كل نسخة من الدالة كانت
+> بقاعدة بيانات منفصلة تُصفَّر، وهذا لا يصلح لبيانات ميدانية حقيقية.
 
 ## الهوية البصرية
 
@@ -186,7 +181,7 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 ## الاختبارات و CI
 
 ```bash
-npm test          # # tests 48 · # pass 48 · # fail 0
+npm test          # # tests 82 · # pass 82 · # fail 0
 npm run typecheck # لا أخطاء
 npm run build     # server/dist + dashboard/dist
 ```
@@ -209,5 +204,4 @@ npm run build     # server/dist + dashboard/dist
 ## ملاحظات
 
 - أصول الشعار (`dashboard/public/*.png`, `mobile/assets/*.png`) منقولة من مشروع الهلب لتُستخدم كعناصر نائبة؛ استبدلها بالشعار الرسمي عند النشر.
-- بيانات العرض أسماء تجريبية فقط ولا تحتوي بيانات عملاء حقيقيين.
 - نسخة الموافقة الحالية: `1.0`.

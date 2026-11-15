@@ -4,7 +4,7 @@ import { flushOutbox } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce } from './location';
 import { getDeviceId, getDeviceName } from './device';
-import { getActiveShift, getShiftToken, setShiftToken } from './storage';
+import { getActiveShift, setActiveShift } from './storage';
 import type { RepSummary, RouteResponse, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
@@ -54,15 +54,15 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         myVisits(),
         myRoute(user.id).catch(() => null),
       ]);
-      // A single empty answer used to look like "the shift ended": on the hosted demo each
-      // request can reach a different instance. Confirm before dropping the engineer out.
+      // A single empty answer used to look like "the shift ended". If the phone believes a
+      // shift is open, ask once more before dropping the engineer out mid-workday.
       let shift = state.shift;
-      if (!shift && (await getShiftToken())) {
+      if (!shift && (await getActiveShift())) {
         await new Promise(resolve => setTimeout(resolve, 900));
         const retry = await shiftState().catch(() => null);
         if (retry?.shift) shift = retry.shift;
         else {
-          await setShiftToken(null);
+          await setActiveShift(null);
           await stopTracking().catch(() => undefined);
           setTrackingActive(false);
           setError('الوردية اتقفلت على الحساب من السيرفر. ابدأ وردية جديدة عشان تسجيل الموقع يرجع.');
