@@ -21,7 +21,8 @@
     "test:e2e": "node scripts/reset-e2e-db.mjs && playwright test",
     "preview": "node scripts/preview.mjs",
     "agent": "npm run agent -w @mandoub/server",
-    "agent:skills": "npm run agent -w @mandoub/server -- skills"
+    "agent:skills": "npm run agent -w @mandoub/server -- skills",
+    "build:apk": "node scripts/run-apk-build.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

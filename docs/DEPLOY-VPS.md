@@ -130,15 +130,17 @@ sudo systemctl restart elhelp
 
 ## ١٠) تطبيق الموبايل (APK)
 
+الدليل الكامل في [`BUILD-APK.md`](BUILD-APK.md). أسرع طريق:
+
 ```bash
 cd mobile
 echo "EXPO_PUBLIC_API_URL=https://tracking.your-company.com" > .env
-npx expo prebuild --platform android        # يولّد mobile/android
-cd android && ./gradlew assembleRelease     # أو افتح mobile/android في Android Studio
+cd .. && ./scripts/build-apk.sh https://tracking.your-company.com
+# الناتج: mobile/dist-android/elhelp-engineer-1.0.0-release.apk
 ```
 
-- `EXPO_PUBLIC_API_URL` يُثبَّت وقت البناء؛ بدون ضبطه سيبحث التطبيق عن `127.0.0.1` ولن يجد شيئًا.
-- نسخة `assembleRelease` تحتاج keystore للتوقيع — اتبع `mobile/eas.json` profile `preview` للـAPK
-  أو أنشئ keystore بـ`keytool` وأضف توقيع `release` في `android/app/build.gradle`.
+- العنوان بيتحرق وقت البناء، فلازم يكون الدومين النهائي (HTTPS) مش `localhost`.
+- البناء بيربط عنوان http تلقائيًا كمسموح (cleartext) لو السيرفر لسه بدون شهادة؛ مع HTTPS
+  الإعداد بيرجع للوضع الآمن.
 - على الهاتف: اسمح بالموقع **«السماح دائمًا»**، ومن إعدادات البطارية اختر **«بدون قيود»**،
   وإلا سيوقف أندرويد التتبع في الخلفية.

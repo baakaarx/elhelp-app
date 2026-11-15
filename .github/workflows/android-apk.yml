@@ -1,0 +1,68 @@
+name: Android APK
+
+# Builds an installable release APK without needing Android Studio on the machine.
+# Run it from the Actions tab (enter the API URL), or push a v* tag.
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'API base URL the installed app should talk to (https://… or http://IP:3000)'
+        required: true
+        default: 'https://tracking.example.com'
+  push:
+    tags: ['v*']
+
+jobs:
+  apk:
+    name: build apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      API_URL: ${{ inputs.api_url || vars.ELHELP_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install
+        run: npm ci
+
+      - name: Point the app at the server
+        run: |
+          set -euo pipefail
+          if [ -z "${API_URL:-}" ]; then
+            echo "::error title=API URL missing::Set the api_url input (or a repository variable ELHELP_API_URL) — the APK bakes this address in at build time."
+            exit 1
+          fi
+          printf 'EXPO_PUBLIC_API_URL=%s\n' "${API_URL%/}" > mobile/.env
+          echo "building against ${API_URL%/}"
+
+      - name: Generate the Android project
+        working-directory: mobile
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Collect the APK
+        run: |
+          mkdir -p out
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk \
+             "out/elhelp-engineer-${GITHUB_REF_NAME//\//-}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elhelp-apk
+          path: out/*.apk
+          retention-days: 30
