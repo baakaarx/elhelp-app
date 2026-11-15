@@ -32,8 +32,8 @@ test.describe('المتابعة الحية والفريق', () => {
 
   test('navigation switches between team, reports, and privacy pages', async ({ page }) => {
     await signInAsManager(page);
-    await page.getByRole('button', { name: /نخبة الفريق/ }).click();
-    await expect(page.getByRole('heading', { level: 1, name: 'نخبة الفريق' })).toBeVisible();
+    await page.getByRole('button', { name: /فريق الميدان/ }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'فريق الميدان' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: 'الفريق' })).toBeVisible();
     await page.getByRole('button', { name: /إنجازات وتقارير/ }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'إنجازات وتقارير' })).toBeVisible();

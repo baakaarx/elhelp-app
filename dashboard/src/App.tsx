@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { api, getToken, patch, post, setToken } from './api';
+import { localDay } from './dates';
 import { ENGINEER_APP_PATH, ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
 import MapView from './MapView';
@@ -19,7 +20,7 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
   { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
   { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
-  { id: 'team', label: 'نخبة الفريق', icon: '◆' },
+  { id: 'team', label: 'فريق الميدان', icon: '◆' },
   { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
   { id: 'account', label: 'هويتي', icon: '◉' },
 ];
@@ -161,7 +162,7 @@ export default function App() {
                 <div className="map-controls">
                   <label className="field inline">
                     <span>يوم المسار</span>
-                    <input type="date" lang="ar-EG" value={routeDate} max={new Date().toISOString().slice(0, 10)} onChange={e => setRouteDate(e.target.value)} />
+                    <input type="date" lang="ar-EG" value={routeDate} max={localDay(overview?.timezone)} onChange={e => setRouteDate(e.target.value)} />
                   </label>
                   {routeDate && <button className="btn ghost sm" onClick={() => setRouteDate('')}>اليوم</button>}
                   {route && <span className="muted small">{arabicDate(route.date)} · {formatNumber(route.distanceMeters / 1000)} كم · {formatNumber(route.pointCount ?? route.points.length)} نقطة</span>}
@@ -218,11 +219,11 @@ export default function App() {
             </div>
           </section>
         )}
-        {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} />}
-        {tab === 'monthly' && <Monthly reps={reps} />}
+        {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
+        {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
-        {tab === 'agent' && <AgentPanel reps={reps} />}
+        {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={() => setUser(null)} />}
       </main>
     </div>
@@ -316,6 +317,28 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
 
 function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
   const [error, setError] = useState('');
+  // A representative who forgets their password cannot sign in and cannot be emailed: the
+  // manager has to hand out a new one. Kept inline instead of a browser prompt so the field is
+  // masked and the rule (ten characters) is visible while typing.
+  const [passwordFor, setPasswordFor] = useState<{ id: string; name: string } | null>(null);
+  const [passwordValue, setPasswordValue] = useState('');
+  const [savingPassword, setSavingPassword] = useState(false);
+  async function savePassword() {
+    if (!passwordFor) return;
+    if (passwordValue.trim().length < 10) { setError('كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.'); return; }
+    setSavingPassword(true);
+    try {
+      await post(`/api/reps/${passwordFor.id}/password`, { password: passwordValue.trim() });
+      setError('');
+      setPasswordFor(null);
+      setPasswordValue('');
+      onChange();
+    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تغيير كلمة المرور.'); }
+    finally { setSavingPassword(false); }
+  }
+  const passwordButton = (rep: Rep) => (
+    <button className="btn ghost sm" onClick={() => { setError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); }}>كلمة المرور</button>
+  );
   async function toggle(rep: Rep) {
     try { await patch(`/api/reps/${rep.id}`, { active: !rep.active }); onChange(); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث الحساب.'); }
@@ -363,6 +386,7 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
                 <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.tracking ? '● في وردية الآن' : '○ متصل'} · {rep.region || 'بدون منطقة'} · {formatNumber(rep.visitsToday)} زيارة اليوم · {rep.shiftStartedAt ? `بدأ ${new Date(rep.shiftStartedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {(rep as any).deviceId && <button className="btn ghost sm" onClick={() => resetDevice(rep)}>فك ربط الجهاز</button>}
+                  {passwordButton(rep)}
                   <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                 </span>
               </li>
@@ -376,11 +400,32 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
                   <li key={rep.id} className="team-row" style={{ opacity: 0.85 }}>
                     <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                     <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}</small></span>
+                    {passwordButton(rep)}
                     <button className="btn ghost sm" onClick={() => toggle(rep)}>إيقاف</button>
                   </li>
                 ))}
               </ul>
             </>
+          )}
+          {passwordFor && (
+            <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
+              <h4 className="panel-title">كلمة مرور جديدة لـ {passwordFor.name}</h4>
+              <p className="muted small">
+                اكتبها له بنفسك بأمان — مفيش استرجاع بالبريد. تغييرها يخرج كل أجهزته من الحساب فورًا،
+                فالوردية المفتوحة عليه تتقفل.
+              </p>
+              <div className="filters">
+                <label className="field inline">
+                  <span>كلمة المرور</span>
+                  <input type="password" dir="ltr" autoComplete="new-password" value={passwordValue}
+                    placeholder="10 أحرف على الأقل" onChange={event => setPasswordValue(event.target.value)} />
+                </label>
+                <button className="btn primary sm" onClick={() => void savePassword()} disabled={savingPassword}>
+                  {savingPassword ? 'جارٍ الحفظ…' : 'حفظ'}
+                </button>
+                <button className="btn ghost sm" onClick={() => { setPasswordFor(null); setPasswordValue(''); }}>إلغاء</button>
+              </div>
+            </div>
           )}
         </div>
       </div>

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import { ago, durationText, formatNumber } from './session';
+import { localMonth, shiftMonth } from './dates';
 import type { KpiResponse, KpiRow, Rep } from './types';
 
 type MonthlyResponse = KpiResponse & { month: string };
 
-export default function Monthly({ reps }: { reps: Rep[] }) {
-  const currentMonth = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }).slice(0, 7);
-  const [month, setMonth] = useState(currentMonth);
+export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: string }) {
+  const currentMonth = localMonth(timezone);
+  const [month, setMonth] = useState(() => localMonth(timezone));
   const [data, setData] = useState<MonthlyResponse | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -49,13 +50,10 @@ export default function Monthly({ reps }: { reps: Rep[] }) {
 
   const months = useMemo(() => {
     const list: string[] = [];
-    const d = new Date(); d.setDate(1);
-    for (let i = 0; i < 12; i++) {
-      list.push(d.toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }).slice(0, 7));
-      d.setMonth(d.getMonth() - 1);
-    }
+    // Walk back month by month as strings: no Date object, so no timezone or day-overflow trap.
+    for (let index = 0; index < 12; index++) list.push(shiftMonth(currentMonth, -index));
     return list;
-  }, []);
+  }, [currentMonth]);
 
   return (
     <section className="page">

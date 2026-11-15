@@ -31,7 +31,10 @@ PRIVACY_CONTACT=privacy@your-company.com   # في server/.env
 ## ٣) Google Play — خطوة بخطوة
 
 1. **حساب**: [Play Console](https://play.google.com/console) — $25 مرة واحدة (فرد أو شركة).
-2. **بناء AAB**: `npm run build:aab -- https://tracking.your-company.com`.
+2. **بناء AAB**: `npm run build:aab -- https://tracking.your-company.com --version-code=2`.
+   - **`--version-code` مهم**: Google Play بيرفض أي حزمة بـ`versionCode` استُخدم قبل كده،
+     و`expo prebuild` بيكتب `1` دايمًا. أول رفع = ١، وكل رفع بعده زوّد الرقم واحد.
+     السكربت بيطبع الرقم اللي الحزمة طالعة بيه، وبيحذّرك لو نسيت.
 3. **أنشئ التطبيق** ثم **Testing ▸ Internal testing ▸ Create new release** وارفع الـAAB.
    - أول رفع بيسألك عن **Play App Signing** → اختَر «Use Google-managed key» (أسهل وأأمن).
 4. **App content** (كل بند إجباري قبل المراجعة):

@@ -22,11 +22,11 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
           <img className="aside-logo" src="/elhelb-logo.gif" alt="شعار الهلب جروب" width={150} height={183} />
           <div>
             <h2>ELHELB GROUP</h2>
-            <p className="tagline">نخبة الخبراء الميدانيين · منذ ١٩٩٣</p>
+            <p className="tagline">مهندسو الميدان · منذ ١٩٩٣</p>
             <p className="aside-note">٣٠ عاماً من الريادة · من المختبر إلى الحقل، خبراؤنا يصنعون الأثر كل يوم.</p>
           </div>
           <ul>
-            <li>✦ مركز عمليات النخبة — رؤية لحظية لفريقك</li>
+            <li>✦ متابعة لحظية لفريق الميدان</li>
             <li>✦ توثيق إنجازات وزيارات موقعة رقمياً</li>
             <li>✦ ذكاء ميداني ومؤشرات تأثير قابلة للقياس</li>
           </ul>
@@ -36,7 +36,7 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
             <img className="brand-mark" src="/elhelb-emblem.png" alt="شعار الهلب جروب" width={52} height={52} />
             <div>
               <h1>مركز العمليات</h1>
-              <p>الهلب جروب الدولية · مركز عمليات النخبة</p>
+              <p>الهلب جروب الدولية · متابعة الميدان</p>
             </div>
           </div>
           <form onSubmit={submit} className="stack">

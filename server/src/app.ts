@@ -138,6 +138,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     loginFailures.set(email, next);
     if (loginFailures.size > 2000) {
       for (const [key, value] of loginFailures) if (value.resetAt <= now) loginFailures.delete(key);
+      // Guessing at thousands of different addresses leaves nothing to expire, so the map used
+      // to grow without limit and every later failure paid for a full scan. Dropping the oldest
+      // entries keeps the cost flat; the limit that matters (per account) still applies.
+      if (loginFailures.size > 4000) {
+        let excess = loginFailures.size - 3000;
+        for (const key of loginFailures.keys()) { if (excess <= 0) break; loginFailures.delete(key); excess -= 1; }
+      }
     }
   }
 
@@ -744,6 +751,27 @@ export function createApp(overrides: Partial<Config> = {}) {
     invalidateKpis(); broadcast();
     res.json({ ok: true });
   });
+  /**
+   * Replace a representative's password.
+   *
+   * The manager chooses every first password, and there is no email delivery in this
+   * installation — so a forgotten password used to mean editing the database by hand while
+   * the sign-in screen told the engineer to "ask the manager", who had no such button.
+   * All of that account's sessions are dropped with the change.
+   */
+  const repPasswordSchema = z.object({ password: z.string().min(10).max(200) }).strict();
+  app.post('/api/reps/:id/password', adminOnly, (req, res) => {
+    const parsed = repPasswordSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.', code: 'PASSWORD_TOO_SHORT' }); return; }
+    const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
+    if (!user) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
+    store.run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(parsed.data.password), user.id);
+    // A new password means every device signed in with the old one loses access at once.
+    store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+    io.in(`user:${user.id}`).disconnectSockets(true);
+    store.audit(res.locals.user.id, 'rep.password_reset', { repId: user.id });
+    res.json({ ok: true });
+  });
   // ---- CSV helpers: standard RFC-4180 CSV (UTF-8 with a BOM) for integrations and scripts.
   // Excel users get the .xlsx endpoints instead — a CSV is interpreted with the machine's
   // locale delimiter and encoding, which is exactly what made the register look broken.
@@ -960,6 +988,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     catch (e) { res.status(422).json({ error: (e as Error).message }); return; }
     const existing = store.get('SELECT user_id FROM daily_reports WHERE id=?', data.id);
     if (existing && existing.user_id !== res.locals.user.id) { res.status(409).json({ error: 'معرّف التقرير مستخدم بالفعل.' }); return; }
+    // One paper form per engineer per day. A second send — a double tap, or a retry after the
+    // first one was queued offline under a fresh id — used to create a second row, so the same
+    // day counted twice in the monthly register and appeared twice for the manager.
+    if (!existing) {
+      const sameDay = store.get('SELECT id FROM daily_reports WHERE user_id=? AND report_date=?', res.locals.user.id, data.reportDate);
+      if (sameDay) {
+        res.status(409).json({ error: 'سبق إرسال تقرير لهذا اليوم. لو محتاج تعديله، كلّم مدير المتابعة.', code: 'DAILY_REPORT_EXISTS', reportId: sameDay.id }); return;
+      }
+    }
     const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     const now = Date.now();
     const duplicate = !!existing;

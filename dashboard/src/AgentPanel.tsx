@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, post } from './api';
+import { localDay } from './dates';
 
 type TaskName = 'review-daily-reports' | 'summarize-day' | 'analyze-route' | 'field-alerts';
 
@@ -14,18 +15,17 @@ interface AgentResult {
   durationMs: number;
 }
 
-export default function AgentPanel({ reps }: { reps: { id: string; name: string }[] }) {
+export default function AgentPanel({ reps, timezone }: { reps: { id: string; name: string }[]; timezone?: string }) {
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [status, setStatus] = useState<any>(null);
   const [result, setResult] = useState<AgentResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // form fields — use Africa/Cairo for correct local date (not UTC)
-  const cairoDate = (d = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(d);
+  // The date the task runs for is a calendar day on the installation's clock, not UTC.
   const [task, setTask] = useState<TaskName>('field-alerts');
   const [repId, setRepId] = useState('');
-  const [date, setDate] = useState(cairoDate());
+  const [date, setDate] = useState(() => localDay(timezone));
 
   const load = async () => {
     try {
