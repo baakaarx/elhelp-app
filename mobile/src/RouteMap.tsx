@@ -6,10 +6,18 @@ import type { RouteResponse } from './types';
 
 const WIDTH = 320;
 const HEIGHT = 150;
+/** A day can be tens of thousands of fixes; the preview only needs the shape of the trail. */
+const MAX_DRAWN_POINTS = 400;
+
+function samplePath<T>(points: T[], max: number): T[] {
+  if (points.length <= max) return points;
+  const step = (points.length - 1) / (max - 1);
+  return Array.from({ length: max }, (_, index) => points[Math.round(index * step)]);
+}
 
 export default function RouteMap({ route, height = HEIGHT, showEmpty = true }: { route: RouteResponse | null; height?: number; showEmpty?: boolean }) {
   const drawn = useMemo(() => {
-    const points = (route?.points ?? []).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+    const points = samplePath((route?.points ?? []).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng)), MAX_DRAWN_POINTS);
     if (points.length < 2) return null;
     const lats = points.map(p => p.lat), lngs = points.map(p => p.lng);
     const minLat = Math.min(...lats), maxLat = Math.max(...lats);
@@ -63,7 +71,7 @@ export default function RouteMap({ route, height = HEIGHT, showEmpty = true }: {
       <View style={styles.legend}>
         <Text style={styles.legendText}>● بداية</Text>
         <Text style={styles.legendText}>● آخر نقطة</Text>
-        <Text style={styles.legendText}>{(drawn.count).toLocaleString('ar-EG')} نقطة</Text>
+        <Text style={styles.legendText}>{(route?.pointCount ?? drawn.count).toLocaleString('ar-EG')} نقطة</Text>
       </View>
     </View>
   );

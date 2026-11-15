@@ -45,14 +45,18 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
 
   useEffect(() => () => { mounted.current = false; }, []);
 
+  // The day's trail is large, so it follows a slower clock than the counters and visits.
+  const refreshCount = useRef(0);
   const refresh = useCallback(async () => {
     if (!user) return;
     try {
+      refreshCount.current += 1;
+      const withRoute = refreshCount.current % 4 === 1;
       const [state, nextSummary, nextVisits, nextRoute] = await Promise.all([
         shiftState(),
         mySummary(),
         myVisits(),
-        myRoute(user.id).catch(() => null),
+        withRoute ? myRoute(user.id).catch(() => null) : Promise.resolve(undefined),
       ]);
       // A single empty answer used to look like "the shift ended". If the phone believes a
       // shift is open, ask once more before dropping the engineer out mid-workday.
@@ -71,7 +75,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (!mounted.current) return;
       setSummary({ ...nextSummary, shift } as RepSummary);
       setVisits(nextVisits.visits);
-      setRoute(nextRoute);
+      if (nextRoute !== undefined) setRoute(nextRoute);
     } catch (e) {
       const status = (e as { status?: number }).status ?? 0;
       if (status === 401) { onSessionExpired(); return; }

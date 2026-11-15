@@ -1,14 +1,14 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import { z } from 'zod';
 import { Store } from './db.js';
 import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js';
-import { createSession, hashPassword, publicUser, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
+import { createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
@@ -90,7 +90,18 @@ export function createApp(overrides: Partial<Config> = {}) {
   }));
   app.use(cors({ origin: originCheck }));
   app.use(express.json({ limit: '128kb' }));
-  const apiLimiter = rateLimit({ windowMs: 60000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'طلبات كثيرة جدًا. حاول بعد دقيقة.' } });
+  // Anonymous calls are counted per address; signed-in ones per session token. Keying only by
+  // address made twenty engineers behind one office NAT share a single budget, so the whole
+  // team started seeing 429s at random during the day.
+  const identityKey = (req: express.Request) => {
+    const token = requestToken(req);
+    // Only a token that belongs to a live session counts: otherwise a client could mint a
+    // random header on every call and land in a fresh bucket, which is no limit at all.
+    const user = token ? sessionUser(store, token) : undefined;
+    if (user) return `user:${user.id}`;
+    return `ip:${ipKeyGenerator(req.ip ?? '')}`;
+  };
+  const apiLimiter = rateLimit({ ...config.apiRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: identityKey, message: { error: 'طلبات كثيرة جدًا. حاول بعد دقيقة.' } });
   // High-frequency GPS has its own authenticated per-representative budget, so one busy
   // office IP does not throttle the whole team's one-second updates.
   app.use('/api', (req, res, next) => req.path === '/locations' ? next() : apiLimiter(req, res, next));
@@ -137,7 +148,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const bounds = dayBounds(localDate(config.timezone), config.timezone);
     const day = localDate(config.timezone);
     let stats = dayStatsCache.get(user.id);
-    if (!stats || stats.day !== day || Date.now() - stats.computedAt > 5000) {
+    if (!stats || stats.day !== day || Date.now() - stats.computedAt > 15000) {
       const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at', user.id, bounds.start, bounds.end) as unknown as GeoPoint[];
       stats = { day, computedAt: Date.now(), distanceMeters: Math.round(distanceMeters(points)), pointCount: points.length };
       // One entry per engineer; the map is cleared hourly, and a hard cap keeps a long-lived
@@ -169,6 +180,13 @@ export function createApp(overrides: Partial<Config> = {}) {
       r.lat, r.lng, r.accuracy, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt,
       u.name AS repName, u.color AS repColor
       FROM reports r JOIN users u ON u.id=r.user_id WHERE r.id=?`, id);
+  }
+  const ROUTE_MAX_POINTS = 600;
+  /** Evenly spaced sample that always keeps the first and last fix, so the trail still ends on the phone. */
+  function thinPolyline<T>(points: T[], max: number): T[] {
+    if (points.length <= max) return points;
+    const step = (points.length - 1) / (max - 1);
+    return Array.from({ length: max }, (_, index) => points[Math.round(index * step)]);
   }
   const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
     v.village, v.phone, v.purpose, v.notes, v.outcome, v.status, v.checked_in_at AS checkedInAt,
@@ -387,11 +405,20 @@ export function createApp(overrides: Partial<Config> = {}) {
     let bounds;
     try { bounds = dayBounds(date, config.timezone); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
     if (!store.get("SELECT id FROM users WHERE id=? AND role='rep'", id)) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
+    const requested = Number(req.query.maxPoints);
+    const maxPoints = Number.isFinite(requested) ? Math.min(5000, Math.max(200, Math.round(requested))) : ROUTE_MAX_POINTS;
     const rows = store.all(`SELECT point_id AS id,lat,lng,accuracy,speed,heading,battery,recorded_at AS recordedAt,received_at AS receivedAt,source,shift_id AS shiftId
       FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at LIMIT 20001`, id, bounds.start, bounds.end);
     const truncated = rows.length > 20000;
-    const points = (truncated ? rows.slice(0, 20000) : rows) as unknown as GeoPoint[];
-    res.json({ date, timezone: config.timezone, points, truncated, distanceMeters: Math.round(distanceMeters(points)) });
+    const all = (truncated ? rows.slice(0, 20000) : rows) as unknown as GeoPoint[];
+    // The trail is drawn, never recomputed client-side: a full day at one fix per second is
+    // ~28k points (≈5 MB). Distance still uses every point; only the polyline is thinned.
+    const points = all.length > maxPoints ? thinPolyline(all, maxPoints) : all;
+    res.json({
+      date, timezone: config.timezone, points, pointCount: all.length,
+      sampled: points.length < all.length, truncated,
+      distanceMeters: Math.round(distanceMeters(all)),
+    });
   });
   app.get('/api/me/shift', repOnly, (req, res) => {
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
@@ -696,6 +723,21 @@ export function createApp(overrides: Partial<Config> = {}) {
     return [...rows].sort((a, b) =>
       b.visits - a.visits || b.dailyReports - a.dailyReports || b.reports - a.reports || a.name.localeCompare(b.name, 'ar'));
   }
+  /**
+   * Activity days on the configured calendar, not UTC. A shift that ends after local midnight
+   * used to add a phantom day: a 00:30 check-out is still 22:30 of the previous UTC date.
+   * Buckets are 15 minutes wide so even half-hour offsets land on the right date.
+   */
+  const DAY_BUCKET_MS = 15 * 60000;
+  function activeLocalDays(userId: string, start: number, end: number): number {
+    const buckets = store.all(
+      `SELECT MIN(recorded_at) AS at FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<?
+       GROUP BY recorded_at/${DAY_BUCKET_MS}`, userId, start, end,
+    );
+    const days = new Set<string>();
+    for (const bucket of buckets) days.add(localDate(config.timezone, Number(bucket.at)));
+    return days.size;
+  }
   function kpiRows(from: string, to: string) {
     const start = dayBounds(from, config.timezone).start;
     const end = dayBounds(to, config.timezone).end;
@@ -707,7 +749,7 @@ export function createApp(overrides: Partial<Config> = {}) {
         FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?`, rep.id, start, end)!;
       const reportsRow = store.get("SELECT COUNT(*) AS c, COALESCE(SUM(CASE WHEN type='collection' THEN amount ELSE 0 END),0) AS collected FROM reports WHERE user_id=? AND created_at>=? AND created_at<?", rep.id, start, end)!;
       const dailyRow = store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=? AND created_at>=? AND created_at<?', rep.id, start, end)!;
-      const daysRow = store.get("SELECT COUNT(DISTINCT date(recorded_at/1000,'unixepoch')) AS c FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<?", rep.id, start, end)!;
+      const daysWithData = activeLocalDays(rep.id, start, end);
       const lastRow = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id)!;
       return {
         repId: rep.id, name: rep.name, color: rep.color, region: rep.region, active: !!rep.active,
@@ -715,7 +757,7 @@ export function createApp(overrides: Partial<Config> = {}) {
         visits: Number(visits.total || 0), visitsCompleted: Number(visits.closed || 0),
         avgVisitSeconds: visits.avgDuration ? Math.round(Number(visits.avgDuration)) : null,
         reports: Number(reportsRow.c || 0), collected: Number(reportsRow.collected || 0),
-        dailyReports: Number(dailyRow.c || 0), daysWithData: Number(daysRow.c || 0),
+        dailyReports: Number(dailyRow.c || 0), daysWithData,
         lastFixAt: lastRow.at ? Number(lastRow.at) : null,
       };
     });
