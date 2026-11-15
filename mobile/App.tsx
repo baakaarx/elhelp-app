@@ -11,7 +11,9 @@ import ReportScreen from './src/ReportScreen';
 import DailyReports from './src/DailyReports';
 import SettingsScreen from './src/SettingsScreen';
 import { me, logout } from './src/api';
-import { getToken } from './src/storage';
+import { clearDeviceData, getToken } from './src/storage';
+import { createQueue } from './src/queue';
+import { flushOutbox } from './src/reports';
 import { hhmmss } from './src/format';
 import { stopTracking } from './src/tracking';
 import { useField } from './src/useField';
@@ -102,9 +104,19 @@ function Root() {
             <SettingsScreen
               user={user}
               field={field}
-              onLogout={async () => { await stopTracking(); await logout(); setUser(null); }}
+              onLogout={async () => {
+                await stopTracking();
+                // Anything still queued was written by THIS engineer. Sending it after the next
+                // person signs in on the same phone filed their collections under the wrong
+                // account, so the queue is drained best-effort and then emptied here.
+                await flushOutbox().catch(() => null);
+                await logout();
+                try { await (await createQueue()).clear(); } catch { /* nothing queued */ }
+                await clearDeviceData();
+                setUser(null);
+              }}
               // The account is already gone on the server, so there is nothing left to log out of.
-              onDeleted={async () => { await stopTracking(); setUser(null); }}
+              onDeleted={async () => { await stopTracking(); await clearDeviceData(); setUser(null); }}
             />
           )}
         </View>

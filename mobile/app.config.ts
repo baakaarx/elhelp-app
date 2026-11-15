@@ -20,6 +20,9 @@ const config: ExpoConfig = {
   },
   android: {
     package: 'com.elhelb.mandoub',
+    // Play rejects a bundle whose versionCode was already used; `npm run build:aab -- ...
+    // --version-code=7` (or ANDROID_VERSION_CODE) raises it without hand-editing Gradle.
+    versionCode: Number(process.env.ANDROID_VERSION_CODE || '1') || 1,
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#0a1f33' },
     permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'ACCESS_BACKGROUND_LOCATION', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_LOCATION', 'POST_NOTIFICATIONS'],
   },

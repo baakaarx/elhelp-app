@@ -3,14 +3,14 @@ import { api } from './api';
 import LocationName from './LocationName';
 import { movementStatus } from './locationStatus';
 import { ago, downloadKpisExcel, durationText, formatNumber } from './session';
+import { dayBefore, localDay } from './dates';
 import type { KpiResponse, KpiRow, Rep } from './types';
 
-const today = () => new Date().toLocaleDateString('en-CA');
-const daysAgo = (days: number) => new Date(Date.now() - days * 86400000).toLocaleDateString('en-CA');
-
-export default function Performance({ reps, staleGpsMinutes = 10 }: { reps: Rep[]; staleGpsMinutes?: number }) {
-  const [from, setFrom] = useState(daysAgo(6));
-  const [to, setTo] = useState(today());
+export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { reps: Rep[]; staleGpsMinutes?: number; timezone?: string }) {
+  const today = () => localDay(timezone);
+  const daysAgo = (days: number) => dayBefore(days, timezone);
+  const [from, setFrom] = useState(() => dayBefore(6, timezone));
+  const [to, setTo] = useState(() => localDay(timezone));
   const [data, setData] = useState<KpiResponse | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);

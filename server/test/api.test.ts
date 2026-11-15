@@ -1068,3 +1068,42 @@ test('the day summary reports the requested day, not today', async () => {
   assert.equal(today.status, 200);
   assert.equal(today.body.distanceMeters, 0, 'today has no fixes of its own');
 });
+
+test('the manager can replace a forgotten password, and every old session dies with it', async () => {
+  const engineer = await freshRep('forgot');
+  // A second device, so "all sessions" is a real claim and not just the token we hold.
+  const secondDevice = await login(request(app), engineer.email, 'FreshPassword123!');
+
+  // A representative must not be able to do this to anybody, including themselves.
+  const forbidden = await rep.post(`/api/reps/${engineer.id}/password`).set(auth(engineer.token)).send({ password: 'AnotherPassword123!' });
+  assert.equal(forbidden.status, 403);
+  const tooShort = await admin.post(`/api/reps/${engineer.id}/password`).set(auth(adminToken)).send({ password: 'short' });
+  assert.equal(tooShort.status, 400);
+
+  const changed = await admin.post(`/api/reps/${engineer.id}/password`).set(auth(adminToken)).send({ password: 'BrandNewPassword123!' });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+
+  assert.equal((await request(app).get('/api/auth/me').set(auth(engineer.token))).status, 401);
+  assert.equal((await request(app).get('/api/auth/me').set(auth(secondDevice.body.token))).status, 401);
+  const withOldPassword = await request(app).post('/api/auth/login').send({ email: engineer.email, password: 'FreshPassword123!' });
+  assert.equal(withOldPassword.status, 401);
+  const fresh = await login(request(app), engineer.email, 'BrandNewPassword123!');
+  assert.equal(fresh.body.user.id, engineer.id);
+});
+
+test('a second daily report for the same day is refused instead of counted twice', async () => {
+  const engineer = await freshRep('onereport');
+  const today = localDate(config.timezone);
+  const payload = (id: string) => ({
+    version: 1, id, engineerName: 'مهندس اختبار', reportDate: today, leftAt: '08:00', returnedAt: '16:00',
+    circumstances: '', signedName: 'مهندس اختبار', confirmed: true, location: null,
+    visits: [{ customerName: 'مزرعة النور', governorate: '', district: '', village: '', phone: '', areaFeddan: null, crops: '', recommendations: '', outcome: '' }],
+  });
+  const first = await request(app).post('/api/daily-reports').set(auth(engineer.token)).send(payload(crypto.randomUUID()));
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const second = await request(app).post('/api/daily-reports').set(auth(engineer.token)).send(payload(crypto.randomUUID()));
+  assert.equal(second.status, 409, JSON.stringify(second.body));
+  assert.equal(second.body.code, 'DAILY_REPORT_EXISTS');
+  assert.equal(second.body.reportId, first.body.report.id);
+  assert.equal(store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=?', engineer.id)!.c, 1);
+});

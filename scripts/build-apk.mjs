@@ -31,6 +31,13 @@ const apiUrlFlag = args.find(arg => arg.startsWith('--api-url='));
 
 const clean = flags.has('--clean');
 const debugBuild = flags.has('--debug');
+/**
+ * Google Play refuses an upload whose versionCode was already used, and `expo prebuild`
+ * always writes 1 — so the second release of the app could not be published at all.
+ * `--version-code=7` (or ANDROID_VERSION_CODE=7) sets the code the bundle ships with.
+ */
+const versionCodeFlag = args.find(arg => arg.startsWith('--version-code='));
+const requestedVersionCode = versionCodeFlag ? Number(versionCodeFlag.split('=')[1]) : Number(process.env.ANDROID_VERSION_CODE || 0);
 /** `--aab` produces the Play Store bundle instead of an APK; it requires a real keystore. */
 const appBundle = flags.has('--aab');
 
@@ -99,7 +106,27 @@ if (!existsSync(join(androidDir, isWindows ? 'gradlew.bat' : 'gradlew'))) {
   console.log('\n  mobile/android already exists — reusing it (pass --clean to regenerate).');
 }
 
-/* ── 5. gradle ─────────────────────────────────────────────────────────────── */
+/* ── 5. the version code Google Play will see ──────────────────────────────── */
+const gradleFile = join(androidDir, 'app', 'build.gradle');
+if (!existsSync(gradleFile)) fail(`Missing ${gradleFile}.`, 'Delete mobile\\android and run the command again.');
+let gradleSource = readFileSync(gradleFile, 'utf8');
+const currentVersionCode = Number((gradleSource.match(/versionCode\s+(\d+)/) || [])[1] || 1);
+if (requestedVersionCode) {
+  if (!Number.isInteger(requestedVersionCode) || requestedVersionCode < 1) {
+    fail(`--version-code=${requestedVersionCode} is not a positive whole number.`);
+  }
+  const patched = gradleSource.replace(/versionCode\s+\d+/, `versionCode ${requestedVersionCode}`);
+  if (patched === gradleSource) fail('Could not find versionCode in android/app/build.gradle.');
+  writeFileSync(gradleFile, patched, 'utf8');
+  gradleSource = patched;
+  console.log(`  versionCode set to ${requestedVersionCode} (was ${currentVersionCode}).`);
+} else if (appBundle) {
+  console.log(`  versionCode stays ${currentVersionCode}. Play rejects a re-used code, so pass` +
+    ` --version-code=${currentVersionCode + 1} on the next release.`);
+}
+const shippedVersionCode = Number((gradleSource.match(/versionCode\s+(\d+)/) || [])[1] || currentVersionCode);
+
+/* ── 6. gradle ─────────────────────────────────────────────────────────────── */
 if (appBundle && !existsSync(join(mobile, 'keystore.properties'))) {
   fail('An .aab for Google Play must be signed with your own key.',
     'Run `npm run keystore` first (it creates mobile/elhelp-release.keystore and keystore.properties).');
@@ -112,7 +139,7 @@ const gradle = spawnSync(isWindows ? 'gradlew.bat' : './gradlew', [task, '--no-d
 });
 if (gradle.status !== 0) fail(`Gradle failed (exit ${gradle.status}).`, 'The first error above names the missing SDK or JDK piece.');
 
-/* ── 6. result ─────────────────────────────────────────────────────────────── */
+/* ── 7. result ─────────────────────────────────────────────────────────────── */
 const built = appBundle
   ? join(androidDir, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab')
   : join(androidDir, 'app', 'build', 'outputs', 'apk', variant, `app-${variant}.apk`);
@@ -127,10 +154,11 @@ copyFileSync(built, target);
 try { chmodSync(target, 0o644); } catch { /* windows */ }
 
 const megabytes = (statSync(target).size / 1024 / 1024).toFixed(1);
-console.log(`\n\u2714 ${appBundle ? 'AAB' : 'APK'} ready (${megabytes} MB)`);
+console.log(`\n\u2714 ${appBundle ? 'AAB' : 'APK'} ready (${megabytes} MB, versionCode ${shippedVersionCode})`);
 console.log(`  ${target}\n`);
 if (appBundle) {
   console.log('  upload this .aab in Google Play Console > Internal testing (or `eas submit`).');
+  console.log(`  versionCode ${shippedVersionCode} — the next bundle must use a higher one.`);
 } else {
   console.log(`  install on a USB-connected phone:  adb install -r "${target}"`);
 }
