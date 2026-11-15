@@ -17,11 +17,25 @@ import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 
 const CONSENT_VERSION = '1.0';
+/** How far a phone's clock may run ahead before every fix in the batch is refused. */
+const CLOCK_SKEW_TOLERANCE_MS = 10 * 60000;
 const credentials = z.object({ email: z.email().max(254).transform(x => x.toLowerCase().trim()), password: z.string().min(1).max(200) });
 const newRep = z.object({
   name: z.string().trim().min(2).max(80), email: z.email().max(254).transform(x => x.toLowerCase().trim()),
   password: z.string().min(10).max(200), phone: z.string().trim().max(30).default(''), region: z.string().trim().max(80).default(''),
 });
+/**
+ * Each engineer needs their own colour: the live map draws one pin per account, and every
+ * account used to inherit the same default, so a team of six looked like a single person.
+ */
+const REP_COLORS = ['#28745b', '#1f6feb', '#b8611a', '#7a3ea8', '#0f766e', '#b02a37', '#3f6212', '#a16207'];
+function nextRepColor(used: string[]): string {
+  const taken = used.map(color => color.toLowerCase());
+  const counts = REP_COLORS.map(color => taken.filter(value => value === color).length);
+  // The least-used colour keeps a larger team distinguishable instead of repeating the first.
+  const fewest = Math.min(...counts);
+  return REP_COLORS[counts.indexOf(fewest)];
+}
 const pointSchema = z.object({
   id: z.uuid(), shiftId: z.uuid(), lat: z.number().finite().min(-90).max(90), lng: z.number().finite().min(-180).max(180),
   accuracy: z.number().finite().min(0).max(100000).nullable(), speed: z.number().finite().min(0).max(150).nullable(),
@@ -428,7 +442,8 @@ export function createApp(overrides: Partial<Config> = {}) {
     const data = parsed.data;
     if (store.get('SELECT id FROM users WHERE email=?', data.email)) { res.status(409).json({ error: 'البريد الإلكتروني مستخدم بالفعل.' }); return; }
     const id = randomUUID();
-    store.run('INSERT INTO users(id,name,email,password_hash,role,phone,region,created_at) VALUES (?,?,?,?,?,?,?,?)', id, data.name, data.email, hashPassword(data.password), 'rep', data.phone, data.region, Date.now());
+    const usedColors = store.all("SELECT color FROM users WHERE role='rep'").map(row => String(row.color || ''));
+    store.run('INSERT INTO users(id,name,email,password_hash,role,phone,region,color,created_at) VALUES (?,?,?,?,?,?,?,?,?)', id, data.name, data.email, hashPassword(data.password), 'rep', data.phone, data.region, nextRepColor(usedColors), Date.now());
     store.audit(res.locals.user.id, 'rep.create', { repId: id });
     invalidateKpis(); broadcast();
     res.status(201).json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', id)!) });
@@ -536,11 +551,25 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = batchSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'بيانات الموقع غير صالحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const now = Date.now(), cutoff = now - config.retentionDays * 86400000;
+    // A phone whose clock runs fast used to lose its whole day: every fix looked like it came
+    // from the future, the batch was rejected, and the engineer saw "everything is sent" while
+    // the manager saw no signal. The offset is measured once from the newest fix and removed
+    // from the batch, which keeps the spacing between fixes intact.
+    const newestStamp = parsed.data.points.reduce((latest, point) => Math.max(latest, point.recordedAt), 0);
+    const clockSkew = newestStamp > now ? newestStamp - now : 0;
+    if (clockSkew > CLOCK_SKEW_TOLERANCE_MS) {
+      res.status(422).json({
+        error: 'ساعة الهاتف متقدمة كثيرًا عن السيرفر. فعّل «الوقت التلقائي» في إعدادات الهاتف ثم أعد المحاولة.',
+        code: 'CLOCK_SKEW', skewMinutes: Math.round(clockSkew / 60000),
+      }); return;
+    }
+    const stamped = (recordedAt: number) => recordedAt - clockSkew;
     const shiftCache = new Map<string, Record<string, any> | undefined>();
     for (const point of parsed.data.points) {
       if (!shiftCache.has(point.shiftId)) shiftCache.set(point.shiftId, store.get('SELECT * FROM shifts WHERE id=? AND user_id=?', point.shiftId, res.locals.user.id));
       const shift = shiftCache.get(point.shiftId);
-      if (!shift || point.recordedAt < shift.started_at || point.recordedAt > (shift.ended_at ?? now) + 5000 || point.recordedAt > now + 120000 || point.recordedAt < cutoff) {
+      const recordedAt = stamped(point.recordedAt);
+      if (!shift || recordedAt < shift.started_at || recordedAt > (shift.ended_at ?? now) + 5000 || recordedAt < cutoff) {
         res.status(422).json({ error: 'نقطة خارج وردية مصرح بها أو خارج مدة الاحتفاظ. لن يتم قبول الدفعة.' }); return;
       }
     }
@@ -548,7 +577,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.transaction(() => {
       for (const p of parsed.data.points) {
         const result = store.run(`INSERT OR IGNORE INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.id, res.locals.user.id, p.shiftId, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.battery, p.recordedAt, now, 'gps');
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.id, res.locals.user.id, p.shiftId, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.battery, stamped(p.recordedAt), now, 'gps');
         if (result.changes) accepted++; else duplicates++;
       }
       store.run('UPDATE users SET last_seen=? WHERE id=?', now, res.locals.user.id);
@@ -859,12 +888,24 @@ export function createApp(overrides: Partial<Config> = {}) {
     kpiCache.set(key, { at: Date.now(), rows });
     return rows;
   }
+  /**
+   * With a year of fixes on disk a caller could ask for a decade in one request: the loop walks
+   * it day by day and SQLite runs on the request thread, so one such call stalls the whole team.
+   * The register only ever needs a month; a year is the ceiling.
+   */
+  const MAX_RANGE_DAYS = 366;
+  function rangeTooLong(from: string, to: string): boolean {
+    const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
+    return days > MAX_RANGE_DAYS;
+  }
+  const RANGE_ERROR = { error: `أقصى نطاق للتقارير ${MAX_RANGE_DAYS} يومًا. اختر فترة أقصر.`, code: 'RANGE_TOO_LARGE' };
   app.get('/api/kpis', adminOnly, (req, res) => {
     const today = localDate(config.timezone);
     const from = typeof req.query.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : today;
     const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
     try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
     if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+    if (rangeTooLong(from, to)) { res.status(400).json(RANGE_ERROR); return; }
     res.json({ from, to, timezone: config.timezone, rows: kpiRowsFor(from, to) });
   });
   const KPI_HEADER = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
@@ -882,6 +923,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); }
     catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
     if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+    if (rangeTooLong(from, to)) { res.status(400).json(RANGE_ERROR); return; }
     sendCsv(res, `elhelb-kpis-${from}_${to}.csv`, KPI_HEADER, kpiExportRows(from, to));
   });
   app.get('/api/kpis.xlsx', adminOnly, (req, res) => {
@@ -891,6 +933,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     try {
       dayBounds(from, config.timezone); dayBounds(to, config.timezone);
       if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+      if (rangeTooLong(from, to)) { res.status(400).json(RANGE_ERROR); return; }
       sendXlsx(res, `elhelb-kpis-${from}_${to}.xlsx`, 'مؤشرات الأداء', KPI_HEADER, kpiExportRows(from, to), KPI_WIDTHS);
     } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); }
   });

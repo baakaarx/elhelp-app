@@ -3,6 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export type Row = Record<string, any>;
+/** The value `users.color` defaults to, shared by every account created before this migration. */
+const DEFAULT_REP_COLOR = '#28745b';
 export class Store {
   db: DatabaseSync;
   constructor(path: string) {
@@ -37,6 +39,9 @@ export class Store {
         PRIMARY KEY(user_id, point_id)
       );
       CREATE INDEX IF NOT EXISTS locations_user_time ON locations(user_id, recorded_at);
+      -- Retention now keeps a year of fixes; without this the hourly cleanup scans the whole
+      -- table, and it is the only query that filters on time alone.
+      CREATE INDEX IF NOT EXISTS locations_recorded ON locations(recorded_at);
       CREATE INDEX IF NOT EXISTS shifts_user_start ON shifts(user_id, started_at);
       CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
       CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
@@ -44,6 +49,7 @@ export class Store {
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
         action TEXT NOT NULL, created_at INTEGER NOT NULL, metadata TEXT NOT NULL DEFAULT '{}'
       );
+      CREATE INDEX IF NOT EXISTS audit_log_time ON audit_log(created_at);
       CREATE TABLE IF NOT EXISTS reports (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         shift_id TEXT REFERENCES shifts(id) ON DELETE SET NULL,
@@ -102,6 +108,7 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS visits_user_time ON visits(user_id, checked_in_at);
       CREATE INDEX IF NOT EXISTS visits_open ON visits(user_id, status);
+      CREATE INDEX IF NOT EXISTS visits_created ON visits(created_at);
       -- Pending approval for OAuth social login (manager must approve)
       CREATE TABLE IF NOT EXISTS idle_reports (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -136,7 +143,22 @@ export class Store {
         DROP TABLE locations;
         ALTER TABLE locations_rebuilt RENAME TO locations;
         CREATE INDEX IF NOT EXISTS locations_user_time ON locations(user_id, recorded_at);
+        CREATE INDEX IF NOT EXISTS locations_recorded ON locations(recorded_at);
       `);
+    }
+    // Every representative used to be created with the same default colour, so the live map
+    // drew identical pins for the whole team. Give each one its own colour once; an explicit
+    // colour is never touched, and the second run finds nothing to do.
+    const repColors = this.all("SELECT id, color FROM users WHERE role='rep' ORDER BY created_at, id");
+    const shared = repColors.filter(rep => String(rep.color || '').toLowerCase() === DEFAULT_REP_COLOR).length;
+    if (shared > 1) {
+      const palette = ['#28745b', '#1f6feb', '#b8611a', '#7a3ea8', '#0f766e', '#b02a37', '#3f6212', '#a16207'];
+      let index = 0;
+      for (const rep of repColors) {
+        if (String(rep.color || '').toLowerCase() !== DEFAULT_REP_COLOR) continue;
+        this.run('UPDATE users SET color=? WHERE id=?', palette[index % palette.length], rep.id);
+        index += 1;
+      }
     }
     // Lightweight migrations for international/enterprise requirements
     for (const sql of [

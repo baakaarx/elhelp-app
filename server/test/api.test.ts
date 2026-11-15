@@ -1107,3 +1107,83 @@ test('a second daily report for the same day is refused instead of counted twice
   assert.equal(second.body.reportId, first.body.report.id);
   assert.equal(store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=?', engineer.id)!.c, 1);
 });
+
+test('a phone whose clock runs fast keeps its fixes instead of losing the day', async () => {
+  const engineer = await freshRep('skew');
+  const started = await request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId: 'skew-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const shiftId = started.body.shift.id as string;
+  // An hour into the shift, as in the field, so the corrected fixes land inside it.
+  store.run('UPDATE shifts SET started_at=? WHERE id=?', Date.now() - 3600000, shiftId);
+
+  // Five minutes ahead: the old check refused the whole batch, so the trail vanished.
+  const ahead = Date.now() + 5 * 60000;
+  const points = [0, 1, 2].map(index => ({
+    id: crypto.randomUUID(), shiftId, lat: 31.2 + index * 0.0002, lng: 29.9, accuracy: 6,
+    speed: 3, heading: 90, battery: 70, recordedAt: ahead + index * 10000,
+  }));
+  const accepted = await request(app).post('/api/locations').set(auth(engineer.token)).send({ points });
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  assert.equal(accepted.body.accepted, 3);
+  const stored = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', engineer.id)!;
+  assert.ok(Number(stored.at) <= Date.now(), 'a fix from the future must be stored in the past');
+  // The spacing between the three fixes survives the correction, so distance still works.
+  const ids = points.map(point => point.id);
+  const spans = store.all('SELECT recorded_at AS at FROM locations WHERE point_id IN (?,?,?) ORDER BY recorded_at', ...ids)
+    .map((row: any) => Number(row.at));
+  assert.equal(spans.length, 3);
+  assert.deepEqual([spans[1] - spans[0], spans[2] - spans[1]], [10000, 10000]);
+
+  // A clock that is hours off is still refused, with an explanation instead of silence.
+  const absurd = await request(app).post('/api/locations').set(auth(engineer.token)).send({
+    points: [{ ...points[0], id: crypto.randomUUID(), recordedAt: Date.now() + 6 * 3600000 }],
+  });
+  assert.equal(absurd.status, 422);
+  assert.equal(absurd.body.code, 'CLOCK_SKEW');
+});
+
+test('each new engineer gets a distinct colour so the live map stays readable', async () => {
+  const first = await freshRep('colour-one');
+  const second = await freshRep('colour-two');
+  const colors = store.all("SELECT color FROM users WHERE id IN (?,?)", first.id, second.id).map((row: any) => String(row.color));
+  assert.equal(colors.length, 2);
+  assert.notEqual(colors[0], colors[1]);
+});
+
+test('engineers who shared the old default colour get their own on the next start', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { Store } = await import('../src/db.js');
+  const dir = mkdtempSync(join(tmpdir(), 'elhelp-colour-'));
+  const file = join(dir, 'legacy.db');
+  const legacy = new Store(file);
+  for (const [index, id] of ['r1', 'r2', 'r3'].entries()) {
+    legacy.run('INSERT INTO users(id,name,email,password_hash,role,created_at) VALUES (?,?,?,?,?,?)',
+      id, `مهندس ${index + 1}`, `${id}@mandoub.test`, 'salt:hash', 'rep', index + 1);
+  }
+  legacy.close();
+  const upgraded = new Store(file);
+  const colors = upgraded.all("SELECT color FROM users WHERE role='rep' ORDER BY created_at").map(row => String(row.color));
+  assert.equal(colors.length, 3);
+  assert.equal(new Set(colors).size, 3, `colours must be distinct, got ${colors.join(',')}`);
+  // Running again must not shuffle them a second time.
+  upgraded.close();
+  const again = new Store(file);
+  const after = again.all("SELECT color FROM users WHERE role='rep' ORDER BY created_at").map(row => String(row.color));
+  assert.deepEqual(after, colors);
+  again.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a report range longer than a year is refused instead of stalling the server', async () => {
+  const tooWide = await admin.get('/api/kpis?from=2020-01-01&to=2026-01-01').set(auth(adminToken));
+  assert.equal(tooWide.status, 400);
+  assert.equal(tooWide.body.code, 'RANGE_TOO_LARGE');
+  assert.equal((await admin.get('/api/kpis.csv?from=2020-01-01&to=2026-01-01').set(auth(adminToken))).status, 400);
+  assert.equal((await admin.get('/api/kpis.xlsx?from=2020-01-01&to=2026-01-01').set(auth(adminToken))).status, 400);
+  // A full year is still allowed: that is exactly what the register may ask for.
+  const oneYear = await admin.get('/api/kpis?from=2025-01-01&to=2025-12-31').set(auth(adminToken));
+  assert.equal(oneYear.status, 200, JSON.stringify(oneYear.body));
+});

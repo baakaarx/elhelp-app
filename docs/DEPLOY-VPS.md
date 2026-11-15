@@ -57,7 +57,7 @@ PORT=3000
 ADMIN_EMAIL=manager@your-company.com
 ADMIN_PASSWORD=<١٢ حرفًا على الأقل، قيمة فريدة>
 DB_PATH=/var/lib/elhelp/mandoub.db
-RETENTION_DAYS=30
+RETENTION_DAYS=365
 STALE_GPS_MINUTES=10
 TIMEZONE=Africa/Cairo
 ALLOWED_ORIGINS=https://tracking.your-company.com
@@ -69,6 +69,10 @@ TRUST_PROXY=loopback
 ```bash
 sudo chmod 600 /opt/elhelp-app/server/.env
 ```
+
+> **حجم البيانات مع `RETENTION_DAYS=365`**: كل مهندس بيبعت تقريبًا ٢٠٠٠–٤٠٠٠ نقطة في اليوم
+> (نقطة كل ١٠–٣٠ ثانية). ٥ مهندسين × سنة ≈ ٤–٦ مليون نقطة ≈ **٦٠٠ ميجا–١ جيجا** لقاعدة البيانات
+> مع الفهارس. احسب مساحة القرص على `/var/lib/elhelp` قبل التشغيل، وخد نسخة احتياطية (القسم ٧).
 
 - أول تشغيل يُنشئ حساب المدير من `ADMIN_EMAIL` + `ADMIN_PASSWORD`. بعد ذلك لا يُعاد إنشاؤه،
   وتغيير كلمة المرور من داخل اللوحة (**هويتي ← كلمة المرور**) أو شاشة «حسابي» في التطبيق.
