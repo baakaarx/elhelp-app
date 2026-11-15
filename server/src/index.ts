@@ -40,7 +40,11 @@ if (existsSync(dashboard)) {
 }
 instance.httpServer.listen(instance.config.port, '0.0.0.0', () => {
   console.log(`Elhelb engineer server is listening on 0.0.0.0:${instance.config.port} | demo=${instance.config.demo}`);
-  if (instance.config.demo) console.log('Demo manager: admin@mandoub.test / Demo1234! | GPS test rep: rep@mandoub.test / Demo1234!');
+  if (instance.config.demo) {
+    // Print the address the administrator was actually created with: a copied .env changes
+    // it, and a hard-coded line sent operators to credentials that get rejected.
+    console.log(`Demo manager: ${instance.config.adminEmail} / ${instance.config.adminPassword} | GPS test rep: rep@mandoub.test / Demo1234!`);
+  }
 });
 let closing = false;
 async function shutdown() {

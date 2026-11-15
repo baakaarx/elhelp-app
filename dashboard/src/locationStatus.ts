@@ -3,21 +3,26 @@ import type { Rep } from './types';
 /**
  * A fix is not "stale" the moment it is a minute old: the app sends a heartbeat every 30s
  * while the engineer stands still, and a phone indoors can easily miss one. Three minutes
- * still means "we do not know where they are", without crying wolf on every pause.
+ * cried wolf on every pause; thirty minutes hid a real gap. Ten minutes is the default and
+ * the server ships the live value (`staleGpsMinutes` on /api/overview) so the map text and
+ * the manager alert fire at the same moment.
  */
-export const STALE_FIX_MS = 180_000;
+export const STALE_FIX_MS = 600_000;
 /** Above this the position is a guess; say so instead of showing a confident marker. */
 export const WEAK_ACCURACY_M = 100;
 
-/** GPS speed is an estimate; an old, weak or missing fix cannot prove motion. */
-export function movementStatus(rep: Rep, now = Date.now()): string {
+/**
+ * GPS speed is an estimate; an old, weak or missing fix cannot prove motion.
+ * `staleMs` mirrors the server's `STALE_GPS_MINUTES`; pass it when the overview is loaded.
+ */
+export function movementStatus(rep: Rep, now = Date.now(), staleMs = STALE_FIX_MS): string {
   const fix = rep.location;
   if (!rep.tracking) return 'خارج الوردية';
   if (!fix) return 'بانتظار أول موقع';
   const ageSeconds = Math.max(0, Math.round((now - fix.recordedAt) / 1000));
   if (fix.recordedAt > now + 120_000) return 'وقت الجهاز غير مضبوط · الحركة غير معروفة';
   const accuracyText = typeof fix.accuracy === 'number' ? `±${Math.round(fix.accuracy)} م` : '';
-  if (now - fix.recordedAt > STALE_FIX_MS) {
+  if (now - fix.recordedAt > staleMs) {
     // Say why: either the phone stopped sending, or the reading never met the accuracy gate.
     return `لا إشارة من ${Math.round(ageSeconds / 60)} دقيقة · آخر موقع معروف${accuracyText ? ` (${accuracyText})` : ''}`;
   }

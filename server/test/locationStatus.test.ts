@@ -32,10 +32,24 @@ test('a fix a minute old is still fresh — the app heartbeats every 30s', () =>
   assert.ok(STALE_FIX_MS > 120_000);
 });
 
+test('the staleness window is ten minutes and matches the server default', () => {
+  // 3 minutes was too twitchy, 30 hid a real gap. STALE_GPS_MINUTES (default 10) owns the
+  // number and /api/overview sends it to the dashboard.
+  assert.equal(STALE_FIX_MS, 10 * 60_000);
+  assert.match(movementStatus(rep({}, { recordedAt: NOW - 5 * 60_000, speed: 0 }), NOW), /واقف تقريبًا/);
+});
+
 test('a fix older than the staleness window says how long it has been missing', () => {
-  const text = movementStatus(rep({}, { recordedAt: NOW - (STALE_FIX_MS + 60_000) }), NOW);
-  assert.match(text, /لا إشارة من 4 دقيقة/);
+  // The reported age is the real one, not the threshold — an 11-minute gap must say 11.
+  const text = movementStatus(rep({}, { recordedAt: NOW - 11 * 60_000 }), NOW);
+  assert.match(text, /لا إشارة من 11 دقيقة/);
   assert.match(text, /آخر موقع معروف/);
+});
+
+test('a configured server threshold overrides the default window', () => {
+  const sixMinutesOld = rep({}, { recordedAt: NOW - 6 * 60_000, speed: 0 });
+  assert.match(movementStatus(sixMinutesOld, NOW, 5 * 60_000), /لا إشارة/);
+  assert.match(movementStatus(sixMinutesOld, NOW, 10 * 60_000), /واقف تقريبًا/);
 });
 
 test('a weak fix is described as weak instead of a confident position', () => {
