@@ -88,18 +88,24 @@ export default function App() {
   const staleMs = (overview?.staleGpsMinutes ?? 10) * 60000;
   const selectedIdle = useMemo(() => idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId]);
 
+  // The trail is refreshed on its own slow clock. Tying it to `overview.serverTime` meant every
+  // live position update re-downloaded the selected engineer's whole day, several times a minute.
   useEffect(() => {
     if (!selectedId) { setRoute(null); setVisits([]); return; }
     let cancelled = false;
     const query = routeDate ? `?date=${routeDate}` : '';
-    api<RouteResponse>(`/api/reps/${selectedId}/route${query}`)
-      .then(res => { if (!cancelled) setRoute(res); })
-      .catch(() => { if (!cancelled) setRoute(null); });
-    api<{ visits: Visit[] }>(`/api/visits?repId=${selectedId}${query.replace('?', '&')}`)
-      .then(res => { if (!cancelled) setVisits(res.visits); })
-      .catch(() => { if (!cancelled) setVisits([]); });
-    return () => { cancelled = true; };
-  }, [selectedId, routeDate, overview?.serverTime]);
+    const load = () => {
+      api<RouteResponse>(`/api/reps/${selectedId}/route${query}`)
+        .then(res => { if (!cancelled) setRoute(res); })
+        .catch(() => { if (!cancelled) setRoute(null); });
+      api<{ visits: Visit[] }>(`/api/visits?repId=${selectedId}${query.replace('?', '&')}`)
+        .then(res => { if (!cancelled) setVisits(res.visits); })
+        .catch(() => { if (!cancelled) setVisits([]); });
+    };
+    load();
+    const timer = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [selectedId, routeDate]);
 
   if (user === undefined) return <div className="boot">جارٍ التحقق من الجلسة…</div>;
   if (!user) return <Login onLogin={setUser} />;
@@ -158,7 +164,7 @@ export default function App() {
                     <input type="date" lang="ar-EG" value={routeDate} max={new Date().toISOString().slice(0, 10)} onChange={e => setRouteDate(e.target.value)} />
                   </label>
                   {routeDate && <button className="btn ghost sm" onClick={() => setRouteDate('')}>اليوم</button>}
-                  {route && <span className="muted small">{arabicDate(route.date)} · {formatNumber(route.distanceMeters / 1000)} كم · {formatNumber(route.points.length)} نقطة</span>}
+                  {route && <span className="muted small">{arabicDate(route.date)} · {formatNumber(route.distanceMeters / 1000)} كم · {formatNumber(route.pointCount ?? route.points.length)} نقطة</span>}
                 </div>
               </div>
               <div className="panel">

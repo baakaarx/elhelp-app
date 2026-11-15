@@ -100,6 +100,9 @@ export interface RouteResponse {
   timezone: string;
   points: Array<{ id: string; lat: number; lng: number; accuracy: number | null; recordedAt: number; source: 'gps' }>;
   truncated: boolean;
+  /** Total fixes of the day; `points` may be a thinned sample of it. */
+  pointCount?: number;
+  sampled?: boolean;
   distanceMeters: number;
 }
 export const visitPurposeLabels: Record<VisitPurpose, string> = {

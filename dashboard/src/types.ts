@@ -120,6 +120,9 @@ export interface RouteResponse {
   timezone: string;
   points: (LocationPoint & { id: string; shiftId: string })[];
   truncated: boolean;
+  /** Total fixes of the day; `points` may be a thinned sample of it. */
+  pointCount?: number;
+  sampled?: boolean;
   distanceMeters: number;
 }
 export const reportTypeLabels: Record<ReportType, string> = {

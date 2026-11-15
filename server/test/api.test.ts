@@ -860,3 +860,121 @@ test('the privacy page escapes the operator supplied contact address', async () 
     assert.ok(html.includes('&lt;script&gt;'));
   } finally { await isolated.close(); }
 });
+
+// ---- Payload and accounting fixes ---------------------------------------------------------
+
+test('a route response is thinned for drawing while the distance uses every fix', async () => {
+  const engineer = await freshRep('route-thinning');
+  const shift = await request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId: 'thin-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(shift.status, 200, JSON.stringify(shift.body));
+  const shiftId = shift.body.shift.id as string;
+  // Backdate the shift so the ten minutes of fixes below are in the past: the endpoint rejects
+  // fixes stamped in the future, which is the point of the timestamp checks.
+  store.run('UPDATE shifts SET started_at=? WHERE id=?', Date.now() - 3600000, shiftId);
+  const base = Date.now() - 660000;
+  const points = Array.from({ length: 600 }, (_, index) => ({
+    id: crypto.randomUUID(), shiftId,
+    lat: 31.2 + index * 0.0001, lng: 29.9 + index * 0.0001,
+    accuracy: 6, speed: 3, heading: 100, battery: 80, recordedAt: base + index * 1000,
+  }));
+  // The endpoint takes at most 100 fixes per batch, exactly like the device's outbox.
+  for (let start = 0; start < points.length; start += 100) {
+    const batch = points.slice(start, start + 100);
+    const pushed = await request(app).post('/api/locations').set(auth(engineer.token)).send({ points: batch });
+    assert.equal(pushed.status, 200, JSON.stringify(pushed.body));
+  }
+
+  const full = await request(app).get(`/api/reps/${engineer.id}/route?maxPoints=5000`).set(auth(engineer.token));
+  assert.equal(full.status, 200, JSON.stringify(full.body));
+  assert.equal(full.body.pointCount, 601, 'the check-in point plus the batch');
+  assert.equal(full.body.sampled, false);
+
+  const thinned = await request(app).get(`/api/reps/${engineer.id}/route?maxPoints=200`).set(auth(engineer.token));
+  assert.equal(thinned.status, 200);
+  assert.equal(thinned.body.points.length, 200);
+  assert.equal(thinned.body.sampled, true);
+  assert.equal(thinned.body.pointCount, 601);
+  // The shape still starts and ends where the engineer did.
+  assert.equal(thinned.body.points[0].lat, full.body.points[0].lat);
+  assert.equal(thinned.body.points[199].lat, full.body.points[600].lat);
+  // Distance is computed before thinning, so it must not shrink with the payload.
+  assert.equal(thinned.body.distanceMeters, full.body.distanceMeters);
+});
+
+test('one busy office address does not spend another engineer\'s budget', async () => {
+  const isolated = createApp({ ...config, dbPath: ':memory:', apiRateLimit: { windowMs: 60000, limit: 10 } });
+  try {
+    const client = request(isolated.app);
+    const adminSession = await client.post('/api/auth/login').send({ email: config.adminEmail, password: config.adminPassword });
+    const adminToken = adminSession.body.token as string;
+    const created = await client.post('/api/reps').set(auth(adminToken))
+      .send({ name: 'مهندس الشبكة', email: 'nat@mandoub.test', password: 'NatPassword1234!' });
+    assert.equal(created.status, 201);
+    const repSession = await client.post('/api/auth/login').send({ email: 'nat@mandoub.test', password: 'NatPassword1234!' });
+    const repToken = repSession.body.token as string;
+
+    // The manager's own bucket is separate, so it can be exhausted without touching the rep.
+    // Creating the rep above already spent one of the ten calls.
+    const statuses: number[] = [];
+    for (let i = 0; i < 10; i++) statuses.push((await client.get('/api/auth/me').set(auth(adminToken))).status);
+    assert.deepEqual(statuses.slice(0, 9), Array(9).fill(200));
+    assert.equal(statuses[9], 429, 'the eleventh call exceeds the manager budget');
+
+    // Same public IP, different session: still served.
+    assert.equal((await client.get('/api/auth/me').set(auth(repToken))).status, 200);
+  } finally { await isolated.close(); }
+});
+
+test('activity days are counted on the company calendar, not on UTC', async () => {
+  const isolated = createApp({ ...config, dbPath: ':memory:' });
+  try {
+    const client = request(isolated.app);
+    const adminSession = await client.post('/api/auth/login').send({ email: config.adminEmail, password: config.adminPassword });
+    const adminToken = adminSession.body.token as string;
+    const created = await client.post('/api/reps').set(auth(adminToken))
+      .send({ name: 'مهندس الأيام', email: 'days@mandoub.test', password: 'DaysPassword1234!' });
+    const engineer = created.body.user as { id: string };
+    const repSession = await client.post('/api/auth/login').send({ email: 'days@mandoub.test', password: 'DaysPassword1234!' });
+    const repToken = repSession.body.token as string;
+
+    // Yesterday, so both fixes are safely in the past.
+    const today = localDate(config.timezone);
+    const yesterday = localDate(config.timezone, Date.now() - 86400000);
+    const bounds = dayBounds(yesterday, config.timezone);
+    const started = await client.post('/api/shifts/start').set(auth(repToken))
+      .send({ consentVersion: '1.0', deviceId: 'days-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+    const shiftId = started.body.shift.id as string;
+    isolated.store.run('UPDATE shifts SET started_at=? WHERE id=?', bounds.start - 3600000, shiftId);
+    // Early morning and late evening of the same local day: in Cairo these two fall on different
+    // UTC dates, which is exactly what used to inflate "أيام النشاط" in the monthly register.
+    const at = [bounds.start + 3600000, bounds.end - 3600000];
+    const points = at.map((recordedAt, index) => ({
+      id: crypto.randomUUID(), shiftId, lat: 31.2 + index * 0.001, lng: 29.9, accuracy: 6,
+      speed: 2, heading: 90, battery: 70, recordedAt,
+    }));
+    assert.equal((await client.post('/api/locations').set(auth(repToken)).send({ points })).status, 200);
+
+    const kpis = await client.get(`/api/kpis?from=${yesterday}&to=${yesterday}`).set(auth(adminToken));
+    assert.equal(kpis.status, 200, JSON.stringify(kpis.body));
+    const row = (kpis.body.rows as Array<{ repId: string; daysWithData: number; pointCount: number }>)
+      .find(entry => entry.repId === engineer.id);
+    assert.ok(row, 'the engineer must appear in the KPI rows');
+    assert.equal(row!.daysWithData, 1, 'one local day, not two UTC dates');
+  } finally { await isolated.close(); }
+});
+
+test('a forged token does not buy a fresh rate-limit bucket', async () => {
+  const isolated = createApp({ ...config, dbPath: ':memory:', apiRateLimit: { windowMs: 60000, limit: 4 } });
+  try {
+    const client = request(isolated.app);
+    const statuses: number[] = [];
+    // A random token each time must not create a new identity: only live sessions are keyed.
+    for (let i = 0; i < 6; i++) {
+      statuses.push((await client.get('/api/auth/me').set({ 'X-Mandoub-Token': crypto.randomUUID() })).status);
+    }
+    assert.deepEqual(statuses.slice(0, 4), Array(4).fill(401));
+    assert.equal(statuses[4], 429);
+    assert.equal(statuses[5], 429);
+  } finally { await isolated.close(); }
+});

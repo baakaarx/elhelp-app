@@ -57,6 +57,8 @@ export interface Config {
   loginAccountLimit: number;
   /** Sign-in attempts allowed per client address inside one window. */
   loginRateLimit: { windowMs: number; limit: number };
+  /** General API budget: per session token when signed in, per address otherwise. */
+  apiRateLimit: { windowMs: number; limit: number };
 }
 
 export function readConfig(): Config {
@@ -100,5 +102,6 @@ export function readConfig(): Config {
     trustProxy: readTrustProxy(process.env.TRUST_PROXY, production),
     loginAccountLimit: 10,
     loginRateLimit: { windowMs: 15 * 60000, limit: 15 },
+    apiRateLimit: { windowMs: 60000, limit: 600 },
   };
 }
