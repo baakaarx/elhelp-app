@@ -22,7 +22,7 @@
     "preview": "node scripts/preview.mjs",
     "agent": "npm run agent -w @mandoub/server",
     "agent:skills": "npm run agent -w @mandoub/server -- skills",
-    "build:apk": "node scripts/run-apk-build.mjs"
+    "build:apk": "node scripts/build-apk.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

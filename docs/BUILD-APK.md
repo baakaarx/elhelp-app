@@ -25,16 +25,18 @@
 
 ---
 
-## ٢) الطريقة السريعة — سكربت جاهز (ويندوز)
+## ٢) الطريقة السريعة — أمر واحد (ويندوز وماك ولينكس)
 
 ```powershell
 cd C:\Users\mo.ai\projects\elhelp-app
 git pull
-.\scripts\build-apk.ps1 -ApiUrl http://55.0.55.70:3000
+npm ci
+npm run build:apk -- http://55.0.55.70:3000
 ```
 
-السكربت بيعمل كل حاجة: يكتب `mobile\.env` → يتأكد من Java وAndroid SDK → `expo prebuild` أول مرة →
-`gradlew assembleRelease` → ينسخ الناتج ويطبع مساره:
+السكربت (`scripts/build-apk.mjs`) بيعمل كل حاجة: يكتب `mobile\.env` → يتأكد من Java وAndroid SDK
+(وبيلاقيهم تلقائيًا في مسار Android Studio) → `expo prebuild` أول مرة → `gradlew assembleRelease`
+→ ينسخ الناتج ويطبع مساره:
 
 ```
 mobile\dist-android\elhelp-engineer-1.0.0-release.apk
@@ -43,13 +45,16 @@ mobile\dist-android\elhelp-engineer-1.0.0-release.apk
 خيارات:
 
 ```powershell
-.\scripts\build-apk.ps1 -ApiUrl https://tracking.company.com -Clean   # أعِد توليد مجلد أندرويد
-.\scripts\build-apk.ps1 -ApiUrl http://192.168.1.20:3000 -DebugBuild  # debug للتجربة مع Metro
+npm run build:apk -- https://tracking.company.com --clean   # أعِد توليد مجلد أندرويد من الأول
+npm run build:apk -- http://192.168.1.20:3000 --debug       # debug للتجربة مع Metro فقط
+npm run build:apk                                            # يستخدم العنوان الموجود في mobile\.env
 ```
 
-> على لينكس/ماك/VPS نفس الحاجة: `./scripts/build-apk.sh https://tracking.company.com`
-
----
+> على لينكس/ماك/VPS: `./scripts/build-apk.sh https://tracking.company.com` — نفس الملف ونفس الخطوات.
+>
+> **ليه مفيش سكربت PowerShell؟** Windows PowerShell 5.1 بيقرا أي `.ps1` بدون BOM على إنه ANSI،
+> فالنص العربي جوّه السكربت بيتحوّل لرموز ويكسر الملف (`Missing closing ')'`). النسخة الحالية
+> مكتوبة بـNode ورسائلها إنجليزي بسيط، فمفيش مشكلة ترميز ولا فرق بين الأنظمة.
 
 ## ٣) الطريقة اليدوية — Android Studio
 
