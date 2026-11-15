@@ -1187,3 +1187,20 @@ test('a report range longer than a year is refused instead of stalling the serve
   const oneYear = await admin.get('/api/kpis?from=2025-01-01&to=2025-12-31').set(auth(adminToken));
   assert.equal(oneYear.status, 200, JSON.stringify(oneYear.body));
 });
+
+test('a fix taken right at the shift start is still accepted', async () => {
+  // The app stamps the first fix at the shift start itself; correcting clock drift must never
+  // push that fix before the shift and drop the batch (this is how the browser suite seeds).
+  const engineer = await freshRep('boundary');
+  const started = await request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId: 'boundary-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const shift = started.body.shift;
+  const points = [0, 1, 2, 3].map(step => ({
+    id: crypto.randomUUID(), shiftId: shift.id, lat: 31.2001 + step * 0.0008, lng: 29.9187 + step * 0.0011,
+    accuracy: 10 + step, speed: 3.4, heading: 90, battery: 80, recordedAt: Number(shift.started_at) + step * 1000,
+  }));
+  const res = await request(app).post('/api/locations').set(auth(engineer.token)).send({ points });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.accepted, 4);
+});

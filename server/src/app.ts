@@ -19,6 +19,8 @@ import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 const CONSENT_VERSION = '1.0';
 /** How far a phone's clock may run ahead before every fix in the batch is refused. */
 const CLOCK_SKEW_TOLERANCE_MS = 10 * 60000;
+/** Drift below this is normal jitter around "now" and is not treated as a wrong clock. */
+const CLOCK_SKEW_FLOOR_MS = 60000;
 const credentials = z.object({ email: z.email().max(254).transform(x => x.toLowerCase().trim()), password: z.string().min(1).max(200) });
 const newRep = z.object({
   name: z.string().trim().min(2).max(80), email: z.email().max(254).transform(x => x.toLowerCase().trim()),
@@ -553,23 +555,32 @@ export function createApp(overrides: Partial<Config> = {}) {
     const now = Date.now(), cutoff = now - config.retentionDays * 86400000;
     // A phone whose clock runs fast used to lose its whole day: every fix looked like it came
     // from the future, the batch was rejected, and the engineer saw "everything is sent" while
-    // the manager saw no signal. The offset is measured once from the newest fix and removed
-    // from the batch, which keeps the spacing between fixes intact.
+    // the manager saw no signal. A real offset is measured from the newest fix and removed from
+    // the whole batch, which keeps the spacing between fixes intact. A few seconds of drift is
+    // ordinary jitter and is left alone, so a fix taken exactly at the shift start still counts.
     const newestStamp = parsed.data.points.reduce((latest, point) => Math.max(latest, point.recordedAt), 0);
-    const clockSkew = newestStamp > now ? newestStamp - now : 0;
-    if (clockSkew > CLOCK_SKEW_TOLERANCE_MS) {
+    const drift = newestStamp > now ? newestStamp - now : 0;
+    if (drift > CLOCK_SKEW_TOLERANCE_MS) {
       res.status(422).json({
         error: 'ساعة الهاتف متقدمة كثيرًا عن السيرفر. فعّل «الوقت التلقائي» في إعدادات الهاتف ثم أعد المحاولة.',
-        code: 'CLOCK_SKEW', skewMinutes: Math.round(clockSkew / 60000),
+        code: 'CLOCK_SKEW', skewMinutes: Math.round(drift / 60000),
       }); return;
     }
-    const stamped = (recordedAt: number) => recordedAt - clockSkew;
+    const clockSkew = drift > CLOCK_SKEW_FLOOR_MS ? drift : 0;
     const shiftCache = new Map<string, Record<string, any> | undefined>();
+    const stamped = (recordedAt: number, shift: Record<string, any>) => {
+      if (!clockSkew) return recordedAt;
+      const corrected = Math.min(now, recordedAt - clockSkew);
+      // Correcting a fast clock can pull the first fix of the shift a little before its start;
+      // the fix belongs to that shift, so it is pinned to the boundary instead of being dropped.
+      return corrected < Number(shift.started_at) ? Number(shift.started_at) : corrected;
+    };
     for (const point of parsed.data.points) {
       if (!shiftCache.has(point.shiftId)) shiftCache.set(point.shiftId, store.get('SELECT * FROM shifts WHERE id=? AND user_id=?', point.shiftId, res.locals.user.id));
       const shift = shiftCache.get(point.shiftId);
-      const recordedAt = stamped(point.recordedAt);
-      if (!shift || recordedAt < shift.started_at || recordedAt > (shift.ended_at ?? now) + 5000 || recordedAt < cutoff) {
+      const recordedAt = shift ? stamped(point.recordedAt, shift) : point.recordedAt;
+      if (!shift || recordedAt > (shift.ended_at ?? now) + 5000 || recordedAt < cutoff
+        || (!clockSkew && recordedAt < Number(shift.started_at))) {
         res.status(422).json({ error: 'نقطة خارج وردية مصرح بها أو خارج مدة الاحتفاظ. لن يتم قبول الدفعة.' }); return;
       }
     }
@@ -577,7 +588,8 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.transaction(() => {
       for (const p of parsed.data.points) {
         const result = store.run(`INSERT OR IGNORE INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.id, res.locals.user.id, p.shiftId, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.battery, stamped(p.recordedAt), now, 'gps');
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.id, res.locals.user.id, p.shiftId, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.battery,
+          stamped(p.recordedAt, shiftCache.get(p.shiftId) as Record<string, any>), now, 'gps');
         if (result.changes) accepted++; else duplicates++;
       }
       store.run('UPDATE users SET last_seen=? WHERE id=?', now, res.locals.user.id);
