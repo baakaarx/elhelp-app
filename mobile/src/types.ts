@@ -11,7 +11,7 @@ export interface Snapshot {
   id: string; name: string; tracking: boolean; distanceMeters: number; pointCount: number;
   lastSeen: number | null; online: boolean; location: { lat: number; lng: number; accuracy: number | null; recordedAt: number } | null;
 }
-export interface ShiftResponse { shift: Shift | null; snapshot: Snapshot; consentVersion: string }
+export interface ShiftResponse { shift: Shift | null; snapshot?: Snapshot; consentVersion: string }
 export interface GeoPoint {
   id: string; shiftId: string; lat: number; lng: number;
   accuracy: number | null; speed: number | null; heading: number | null; battery: number | null;

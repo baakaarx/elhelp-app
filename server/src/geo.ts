@@ -23,31 +23,61 @@ const MIN_STEP_METERS = 10;
 const MAX_HUMAN_SPEED_MPS = 55; // ~200 km/h, above any field visit
 const MAX_USABLE_ACCURACY_M = 100;
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+/**
+ * Median of the first `count` slots, sorted in place on a scratch buffer.
+ *
+ * The window never holds more than five values, and this runs three times per GPS fix — for a
+ * month's register that is millions of calls, so it allocates nothing and does not use the
+ * generic sort the first version called (which dominated the cost of every KPI export).
+ */
+function medianOf(slots: number[], count: number, scratch: number[]): number {
+  for (let index = 0; index < count; index++) scratch[index] = slots[index];
+  for (let index = 1; index < count; index++) {
+    const value = scratch[index];
+    let cursor = index - 1;
+    while (cursor >= 0 && scratch[cursor] > value) { scratch[cursor + 1] = scratch[cursor]; cursor--; }
+    scratch[cursor + 1] = value;
+  }
+  const middle = count >> 1;
+  return count % 2 ? scratch[middle] : (scratch[middle - 1] + scratch[middle]) / 2;
 }
 
 export function distanceMeters(points: GeoPoint[]): number {
   const usable = points.filter(p => p.accuracy === null || (p.accuracy > 0 && p.accuracy <= MAX_USABLE_ACCURACY_M));
   if (usable.length < 2) return 0;
-  const steps: Array<{ dLat: number; dLng: number; seconds: number }> = [];
+  // Fixed windows instead of an array of objects: the same numbers, built without allocating.
+  const latSteps = new Array<number>(STEP_WINDOW).fill(0);
+  const lngSteps = new Array<number>(STEP_WINDOW).fill(0);
+  const secondsSteps = new Array<number>(STEP_WINDOW).fill(0);
+  const scratch = new Array<number>(STEP_WINDOW).fill(0);
+  const stepScratch = new Array<number>(STEP_WINDOW).fill(0);
+  let count = 0;
   let total = 0;
-  for (let i = 1; i < usable.length; i++) {
-    const previous = usable[i - 1];
-    const current = usable[i];
+  for (let index = 1; index < usable.length; index++) {
+    const previous = usable[index - 1];
+    const current = usable[index];
     const seconds = (current.recordedAt - previous.recordedAt) / 1000;
-    if (seconds <= 0 || seconds > 600) { steps.length = 0; continue; }
-    steps.push({ dLat: current.lat - previous.lat, dLng: current.lng - previous.lng, seconds });
-    if (steps.length > STEP_WINDOW) steps.shift();
-    const dLat = median(steps.map(step => step.dLat));
-    const dLng = median(steps.map(step => step.dLng));
-    const stepSeconds = median(steps.map(step => step.seconds));
+    if (seconds <= 0 || seconds > 600) { count = 0; continue; }
+    if (count === STEP_WINDOW) {
+      // Drop the oldest of the five so the newest fits.
+      for (let slot = 0; slot < STEP_WINDOW - 1; slot++) {
+        latSteps[slot] = latSteps[slot + 1];
+        lngSteps[slot] = lngSteps[slot + 1];
+        secondsSteps[slot] = secondsSteps[slot + 1];
+      }
+      count = STEP_WINDOW - 1;
+    }
+    latSteps[count] = current.lat - previous.lat;
+    lngSteps[count] = current.lng - previous.lng;
+    secondsSteps[count] = seconds;
+    count++;
+    const dLat = medianOf(latSteps, count, scratch);
+    const dLng = medianOf(lngSteps, count, scratch);
+    const stepSeconds = medianOf(secondsSteps, count, stepScratch);
     if (stepSeconds <= 0) continue;
     const meters = haversine(current, { lat: current.lat + dLat, lng: current.lng + dLng });
     if (meters / stepSeconds > MAX_HUMAN_SPEED_MPS) continue; // a bad fix, not a trip
-    const accuracy = (( previous.accuracy ?? 0) + (current.accuracy ?? 0)) / 2;
+    const accuracy = ((previous.accuracy ?? 0) + (current.accuracy ?? 0)) / 2;
     if (meters < Math.max(MIN_STEP_METERS, accuracy)) continue; // jitter, not movement
     total += meters;
   }

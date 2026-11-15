@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { normalizeDigits, parseNumberText } from './format';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { sendDailyReport } from './api';
@@ -31,7 +32,10 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [openVisit, setOpenVisit] = useState(0);
-  const dateValid = useMemo(() => /^\d{4}-\d{2}-\d{2}$/.test(reportDate) && reportDate <= todayInCairo(), [reportDate]);
+  const dateValid = useMemo(
+    () => /^\d{4}-\d{2}-\d{2}$/.test(normalizeDigits(reportDate)) && normalizeDigits(reportDate) <= todayInCairo(),
+    [reportDate],
+  );
   const filled = visits.filter(v => v.customerName.trim().length >= 2).length;
 
   function update(index: number, patch: Partial<DailyVisitInput>) {
@@ -51,8 +55,8 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
     if (problem) { setError(problem); return; }
     setBusy(true); setError(''); setMessage('');
     const payload: DailyReportInput = {
-      version: 1, id: randomUUID(), engineerName: engineerName.trim(), reportDate,
-      leftAt, returnedAt, circumstances: circumstances.trim(),
+      version: 1, id: randomUUID(), engineerName: engineerName.trim(), reportDate: normalizeDigits(reportDate),
+      leftAt: normalizeDigits(leftAt), returnedAt: normalizeDigits(returnedAt), circumstances: circumstances.trim(),
       visits: visits.filter(v => v.customerName.trim().length >= 2).map(v => ({
         ...v, customerName: v.customerName.trim(), governorate: v.governorate.trim(), district: v.district.trim(),
         village: v.village.trim(), phone: v.phone.trim(), crops: v.crops.trim(),
@@ -121,7 +125,7 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
                   <View style={{ flex: 1 }}><Field label="الهاتف" value={visit.phone} onChangeText={text => update(index, { phone: text })} keyboardType="phone-pad" style={styles.ltr} /></View>
                 </Row>
                 <Row style={{ gap: space.sm }}>
-                  <View style={{ flex: 1 }}><Field label="المساحة بالفدان" value={visit.areaFeddan === null ? '' : String(visit.areaFeddan)} keyboardType="decimal-pad" onChangeText={text => update(index, { areaFeddan: text.trim() === '' ? null : Number(text) || 0 })} style={styles.ltr} /></View>
+                  <View style={{ flex: 1 }}><Field label="المساحة بالفدان" value={visit.areaFeddan === null ? '' : String(visit.areaFeddan)} keyboardType="decimal-pad" onChangeText={text => update(index, { areaFeddan: parseNumberText(text) })} style={styles.ltr} /></View>
                   <View style={{ flex: 2 }}><Field label="أهم المحاصيل" value={visit.crops} onChangeText={text => update(index, { crops: text })} placeholder="قمح، برسيم" /></View>
                 </Row>
                 <Field label="التوصيات" value={visit.recommendations} onChangeText={text => update(index, { recommendations: text })} multiline style={{ minHeight: 56 }} />

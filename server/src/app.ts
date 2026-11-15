@@ -114,6 +114,12 @@ export function createApp(overrides: Partial<Config> = {}) {
   const repOnly = requireAuth(store, 'rep');
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
   const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
+  // A month for the whole team is hundreds of thousands of fixes. The page, the CSV and the
+  // workbook ask for the same rows seconds apart, so the result is reused — and any change the
+  // manager could be looking for (a visit, a report, an account) clears it immediately.
+  const KPI_CACHE_MS = 30000;
+  const kpiCache = new Map<string, { at: number; rows: ReturnType<typeof kpiRows> }>();
+  function invalidateKpis() { kpiCache.clear(); }
   // A leaked password list is replayed from many addresses, so the per-IP limiter alone is not
   // enough: too many failures on one account also freeze that account for a quarter of an hour.
   const LOGIN_FAILURE_LIMIT = config.loginAccountLimit;
@@ -212,6 +218,39 @@ export function createApp(overrides: Partial<Config> = {}) {
     const lastPoint = points[points.length - 1];
     return { meters: Math.round(distanceMeters(points)), points: points.length, first: points[0]?.recordedAt ?? null, last: lastPoint?.recordedAt ?? null, lastAccuracy: lastPoint?.accuracy ?? null };
   }
+  /**
+   * Distance over a range, walked one day at a time: loading a month of fixes for one engineer
+   * at once is millions of rows on a busy installation, while a single shift fits easily.
+   */
+  // A day that ended more than five minutes ago cannot change, so its figures are kept: a
+  // monthly register then costs one day of work instead of thirty.
+  const DAY_MS = 86400000;
+  const dayDistanceCache = new Map<string, { meters: number; points: number }>();
+  function rangeDistance(userId: string, start: number, end: number) {
+    let meters = 0;
+    let points = 0;
+    const oldestCacheable = Date.now() - config.retentionDays * DAY_MS;
+    for (let cursor = start; cursor < end;) {
+      const next = Math.min(end, cursor + DAY_MS);
+      const key = `${userId}|${cursor}|${next}`;
+      const cacheable = next < Date.now() - 5 * 60000 && cursor >= oldestCacheable;
+      const hit = cacheable ? dayDistanceCache.get(key) : undefined;
+      if (hit) {
+        meters += hit.meters;
+        points += hit.points;
+      } else {
+        const day = dayDistance(userId, cursor, next);
+        meters += day.meters;
+        points += day.points;
+        if (cacheable) {
+          if (dayDistanceCache.size > 8000) dayDistanceCache.clear();
+          dayDistanceCache.set(key, { meters: day.meters, points: day.points });
+        }
+      }
+      cursor = next;
+    }
+    return { meters: Math.round(meters), points };
+  }
   function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string }) {
     const where: string[] = []; const params: any[] = [];
     if (filter.userId) { where.push('r.user_id=?'); params.push(filter.userId); }
@@ -248,7 +287,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     socket.join(`user:${user.id}`);
     if (user.role === 'admin') { socket.join('admins'); socket.emit('overview', overview()); }
     else socket.emit('shift', store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id) || null);
-    broadcast();
+    invalidateKpis(); broadcast();
     socket.on('disconnect', broadcast);
   });
 
@@ -287,7 +326,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.run('UPDATE users SET approval_status=? WHERE id=?', parsed.data.status, user.id);
     if (parsed.data.status !== 'approved') { store.run('DELETE FROM sessions WHERE user_id=?', user.id); io.in(`user:${user.id}`).disconnectSockets(true); }
     store.audit(res.locals.user.id, 'rep.approval', { repId: user.id, status: parsed.data.status });
-    broadcast();
+    invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
   app.get('/api/auth/me', auth, (_req, res) => { res.json({ user: publicUser(res.locals.user) }); });
@@ -313,6 +352,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(parsed.data.newPassword), user.id);
     // Every other device is signed out, so a password change cannot leave an old session alive.
     store.run('DELETE FROM sessions WHERE user_id=? AND token_hash<>?', user.id, res.locals.tokenHash);
+    // A live socket keeps its identity from the handshake, so deleting the row is not enough:
+    // the other devices must be dropped or they keep receiving live updates.
+    io.in(`user:${user.id}`).disconnectSockets(true);
     store.audit(user.id, 'auth.password_change');
     res.json({ ok: true });
   });
@@ -322,7 +364,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     clearSessionCookies(req, res);
     store.audit(res.locals.user.id, 'auth.logout');
     io.in(`user:${res.locals.user.id}`).disconnectSockets(true);
-    broadcast();
+    invalidateKpis(); broadcast();
     res.json({ ok: true });
   });
   // ---- Public privacy policy: both app stores require a reachable URL for it ----
@@ -367,7 +409,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
     io.in(`user:${snapshot.id}`).disconnectSockets(true);
     clearSessionCookies(req, res);
-    broadcast();
+    invalidateKpis(); broadcast();
     res.json({ ok: true });
   });
 
@@ -381,7 +423,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const id = randomUUID();
     store.run('INSERT INTO users(id,name,email,password_hash,role,phone,region,created_at) VALUES (?,?,?,?,?,?,?,?)', id, data.name, data.email, hashPassword(data.password), 'rep', data.phone, data.region, Date.now());
     store.audit(res.locals.user.id, 'rep.create', { repId: id });
-    broadcast();
+    invalidateKpis(); broadcast();
     res.status(201).json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', id)!) });
   });
   app.patch('/api/reps/:id', adminOnly, (req, res) => {
@@ -395,7 +437,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       io.in(`user:${user.id}`).disconnectSockets(true);
     }
     store.audit(res.locals.user.id, parsed.data.active ? 'rep.enable' : 'rep.disable', { repId: user.id });
-    broadcast();
+    invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
   app.get('/api/reps/:id/route', auth, (req, res) => {
@@ -422,7 +464,10 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
   app.get('/api/me/shift', repOnly, (req, res) => {
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
-    res.json({ shift: shift || null, snapshot: repSnapshot(res.locals.user), consentVersion: CONSENT_VERSION });
+    // The engineer app polls this every fifteen seconds and only reads `shift`, so it asks for
+    // `?snapshot=0`; the snapshot walks the whole day's fixes and is kept for API consumers.
+    const snapshot = req.query.snapshot === '0' ? undefined : repSnapshot(res.locals.user);
+    res.json({ shift: shift || null, snapshot, consentVersion: CONSENT_VERSION });
   });
   const bindDevice = (user: any, deviceId: string): string | null => {
     const existing = String(user.device_id || '').trim();
@@ -454,7 +499,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       });
       shift = store.get('SELECT * FROM shifts WHERE id=?', id);
     }
-    broadcast();
+    invalidateKpis(); broadcast();
     res.json({ shift });
   });
   const idleSchema = z.object({ reason: z.string().trim().min(5).max(1000), location: reportLocation, deviceId: z.string().trim().min(3).max(120) }).strict();
@@ -471,7 +516,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.run('INSERT INTO idle_reports(id,user_id,shift_id,lat,lng,accuracy,reason,duration_minutes,device_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
       id, res.locals.user.id, shift?.id ?? null, parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null, parsed.data.reason, idleMinutes, parsed.data.deviceId, now);
     store.audit(res.locals.user.id, 'shift.idle_report', { reason: parsed.data.reason, idleMinutes, deviceId: parsed.data.deviceId });
-    broadcast();
+    invalidateKpis(); broadcast();
     res.status(201).json({ id, idleMinutes });
   });
   app.post('/api/shifts/stop', repOnly, (_req, res) => { endShift(res.locals.user.id); broadcast(); res.json({ ok: true }); });
@@ -501,6 +546,8 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
       store.run('UPDATE users SET last_seen=? WHERE id=?', now, res.locals.user.id);
     });
+    // Raw fixes arrive every second, so they only refresh the live view. The KPI cache expires
+    // on its own; clearing it here would make the report recompute on every single position.
     broadcast();
     res.json({ accepted, duplicates });
   });
@@ -533,7 +580,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       data.location.lat, data.location.lng, data.location.accuracy ?? null, now);
     store.audit(res.locals.user.id, 'visit.check_in', { visitId: data.id, purpose: data.purpose });
     io.to('admins').emit('visit', visitRow(data.id));
-    broadcast();
+    invalidateKpis(); broadcast();
     res.status(201).json({ visit: visitRow(data.id), duplicate: false });
   });
   app.post('/api/visits/:id/check-out', repOnly, (req, res) => {
@@ -557,7 +604,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     store.audit(res.locals.user.id, 'visit.check_out', { visitId: visit.id, durationSeconds: duration });
     io.to('admins').emit('visit', visitRow(visit.id));
-    broadcast();
+    invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
   });
   app.get('/api/visits', auth, (req, res) => {
@@ -573,7 +620,20 @@ export function createApp(overrides: Partial<Config> = {}) {
     let bounds;
     try { bounds = dayBounds(date, config.timezone); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
     const user = res.locals.user;
-    const distance = dayDistance(user.id, bounds.start, bounds.end);
+    // For today the figures come from the snapshot the live view already keeps warm, instead of
+    // walking the whole day again on every poll. Any other date is computed on demand, because
+    // the snapshot only ever describes today.
+    const isToday = date === localDate(config.timezone);
+    const snapshot = isToday ? repSnapshot(user) : null;
+    const distance = snapshot
+      ? {
+          meters: snapshot.distanceMeters,
+          points: snapshot.pointCount,
+          first: (store.get('SELECT MIN(recorded_at) AS at FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<?', user.id, bounds.start, bounds.end)?.at ?? null) as number | null,
+          last: snapshot.location?.recordedAt ?? null,
+          lastAccuracy: snapshot.location?.accuracy ?? null,
+        }
+      : dayDistance(user.id, bounds.start, bounds.end);
     const visits = listVisits({ userId: user.id, date });
     const completed = visits.filter(v => v.status === 'closed');
     const open = visits.find(v => v.status === 'open') || null;
@@ -681,7 +741,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!user) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
     store.run('UPDATE users SET device_id=? WHERE id=?', '', user.id);
     store.audit(res.locals.user.id, 'rep.reset_device', { repId: user.id });
-    broadcast();
+    invalidateKpis(); broadcast();
     res.json({ ok: true });
   });
   // ---- CSV helpers: standard RFC-4180 CSV (UTF-8 with a BOM) for integrations and scripts.
@@ -742,7 +802,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const start = dayBounds(from, config.timezone).start;
     const end = dayBounds(to, config.timezone).end;
     return store.all("SELECT * FROM users WHERE role='rep' ORDER BY name").map(rep => {
-      const distance = dayDistance(rep.id, start, end);
+      const distance = rangeDistance(rep.id, start, end);
       const visits = store.get(`SELECT COUNT(*) AS total,
         SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed,
         AVG(CASE WHEN status='closed' THEN duration_seconds END) AS avgDuration
@@ -762,18 +822,27 @@ export function createApp(overrides: Partial<Config> = {}) {
       };
     });
   }
+  function kpiRowsFor(from: string, to: string) {
+    const key = `${from}|${to}`;
+    const hit = kpiCache.get(key);
+    if (hit && Date.now() - hit.at < KPI_CACHE_MS) return hit.rows;
+    const rows = kpiRows(from, to);
+    if (kpiCache.size > 24) kpiCache.clear();
+    kpiCache.set(key, { at: Date.now(), rows });
+    return rows;
+  }
   app.get('/api/kpis', adminOnly, (req, res) => {
     const today = localDate(config.timezone);
     const from = typeof req.query.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : today;
     const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
     try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
     if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
-    res.json({ from, to, timezone: config.timezone, rows: kpiRows(from, to) });
+    res.json({ from, to, timezone: config.timezone, rows: kpiRowsFor(from, to) });
   });
   const KPI_HEADER = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
   const KPI_WIDTHS = [26, 18, 12, 14, 16, 12, 12, 14, 14];
   function kpiExportRows(from: string, to: string): CellValue[][] {
-    return byActivity(kpiRows(from, to)).map(r => [
+    return byActivity(kpiRowsFor(from, to)).map(r => [
       r.name, r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
       Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.collected, r.dailyReports,
     ]);
@@ -784,6 +853,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
     try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); }
     catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
+    if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
     sendCsv(res, `elhelb-kpis-${from}_${to}.csv`, KPI_HEADER, kpiExportRows(from, to));
   });
   app.get('/api/kpis.xlsx', adminOnly, (req, res) => {
@@ -792,6 +862,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : from;
     try {
       dayBounds(from, config.timezone); dayBounds(to, config.timezone);
+      if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
       sendXlsx(res, `elhelb-kpis-${from}_${to}.xlsx`, 'مؤشرات الأداء', KPI_HEADER, kpiExportRows(from, to), KPI_WIDTHS);
     } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); }
   });
@@ -811,14 +882,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     const month = typeof req.query.month === 'string' ? req.query.month : localDate(config.timezone).slice(0, 7);
     try {
       const { from, to } = monthBounds(month);
-      const rows = byActivity(kpiRows(from, to));
+      const rows = byActivity(kpiRowsFor(from, to));
       res.json({ month, from, to, timezone: config.timezone, rows });
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
   const MONTHLY_HEADER = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'التحصيل (ج.م)'];
   const MONTHLY_WIDTHS = [26, 18, 10, 12, 10, 16, 12, 14, 14, 14];
   function monthlyExportRows(month: string, from: string, to: string): CellValue[][] {
-    return byActivity(kpiRows(from, to)).map(r => [
+    return byActivity(kpiRowsFor(from, to)).map(r => [
       r.name, r.region, month, r.visits, r.visitsCompleted, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
       Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.dailyReports, r.collected,
     ]);
@@ -851,7 +922,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       store.audit(res.locals.user.id, 'report.create', { reportId: data.id, type: data.type });
       const report = reportRow(data.id);
       io.to('admins').emit('report', report);
-      broadcast();
+      invalidateKpis(); broadcast();
     }
     res.status(result.changes ? 201 : 200).json({ report: reportRow(data.id), duplicate: !result.changes });
   });
@@ -876,7 +947,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (report.status !== 'reviewed') {
       store.run("UPDATE reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
       store.audit(res.locals.user.id, 'report.review', { reportId: report.id });
-      broadcast();
+      invalidateKpis(); broadcast();
     }
     res.json({ report: reportRow(String(req.params.id)) });
   });
@@ -897,7 +968,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!duplicate) {
       store.audit(res.locals.user.id, 'daily_report.create', { reportId: data.id, date: data.reportDate, visits: data.visits.length });
       io.to('admins').emit('daily-report', report);
-      broadcast();
+      invalidateKpis(); broadcast();
     }
     res.status(duplicate ? 200 : 201).json({ report, duplicate });
   });
@@ -925,7 +996,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       store.run("UPDATE daily_reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
       store.audit(res.locals.user.id, 'daily_report.review', { reportId: report.id });
       io.to('admins').emit('daily-report', dailyReportRow(store, report.id));
-      broadcast();
+      invalidateKpis(); broadcast();
     }
     res.json({ report: dailyReportRow(store, report.id) });
   });
