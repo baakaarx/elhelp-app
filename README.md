@@ -148,7 +148,7 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 - استخدم HTTPS ونطاق ثابت؛ الكوكيز تصبح `Secure; SameSite=None` تلقائيًا خلف TLS.
 - `ALLOWED_ORIGINS` قائمة صريحة — لا تستخدم `*`.
 - انسخ نسخة احتياطية من ملف SQLite (أو استخدم قرصًا دائمًا) — البيانات كلها هناك.
-- تطبيق الموبايل: `eas build --profile production` بعد ضبط `EXPO_PUBLIC_API_URL`.
+- تطبيق الموبايل (APK): `./scripts/build-apk.sh https://your-domain` أو `npm run build:apk`، والتفاصيل في [`docs/BUILD-APK.md`](docs/BUILD-APK.md).
 
 ### النشر على VPS
 

@@ -31,6 +31,7 @@ const config: ExpoConfig = {
       isAndroidBackgroundLocationEnabled: true,
       isAndroidForegroundServiceEnabled: true,
     }],
+    './plugins/withApiTraffic',
     'expo-secure-store',
     'expo-sqlite',
     'expo-font',
