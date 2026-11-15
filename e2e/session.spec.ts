@@ -35,6 +35,15 @@ test.describe('تسجيل الدخول', () => {
     await expect(page.getByRole('button', { name: /مركز العمليات/ })).toHaveCount(0);
   });
 
+  test('the public privacy policy opens without a session', async ({ page }) => {
+    const response = await page.goto('/privacy');
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole('heading', { level: 1, name: 'سياسة الخصوصية' })).toBeVisible();
+    // The deletion path the stores look for must be described on that same page.
+    await expect(page.locator('body')).toContainText('حذف الحساب');
+    await expect(page.locator('body')).toContainText('privacy@');
+  });
+
   test('the login screen links to the engineer app', async ({ page }) => {
     await page.goto('/');
     const link = page.getByRole('link', { name: /تطبيق المهندس/ });

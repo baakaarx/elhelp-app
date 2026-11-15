@@ -6,6 +6,8 @@ export interface Outbox {
   remove(key: string): Promise<void>;
   bump(key: string): Promise<void>;
   count(): Promise<number>;
+  /** Drops everything queued on the device (used when an account is erased). */
+  clear(): Promise<void>;
 }
 /**
  * Metro resolves `./queue` to `queue.native.ts` (expo-sqlite) on iOS/Android and to

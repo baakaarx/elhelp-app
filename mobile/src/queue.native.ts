@@ -28,5 +28,6 @@ export async function createQueue(): Promise<Outbox> {
     async count() {
       return db.getFirstSync<{ c: number }>('SELECT COUNT(*) AS c FROM outbox')?.c ?? 0;
     },
+    async clear() { db.runSync('DELETE FROM outbox'); },
   };
 }

@@ -12,6 +12,7 @@ import { createSession, hashPassword, publicUser, requireAuth, sessionUser, veri
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
+import { privacyPage } from './privacy.js';
 import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 
@@ -248,6 +249,52 @@ export function createApp(overrides: Partial<Config> = {}) {
     broadcast();
     res.json({ ok: true });
   });
+  // ---- Public privacy policy: both app stores require a reachable URL for it ----
+  app.get('/privacy', (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.type('html').send(privacyPage(config));
+  });
+
+  // ---- Right to erasure, from inside the app ----
+  // The stores require a real in-app deletion path, not an email address. The typed email is
+  // the confirmation step: it cannot be triggered by a stray tap or a replayed request.
+  const deleteAccountSchema = z.object({
+    confirm: z.literal(true),
+    email: z.email().max(254).transform(value => value.toLowerCase().trim()),
+  }).strict();
+  app.delete('/api/me', auth, (req, res) => {
+    const parsed = deleteAccountSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'أكّد الحذف بكتابة بريد حسابك.', code: 'CONFIRM_REQUIRED' }); return; }
+    const user = res.locals.user;
+    if (parsed.data.email !== String(user.email).toLowerCase()) {
+      res.status(422).json({ error: 'البريد المكتوب لا يطابق بريد الحساب.', code: 'EMAIL_MISMATCH' }); return;
+    }
+    if (user.role === 'admin') {
+      const admins = Number(store.get("SELECT COUNT(*) AS c FROM users WHERE role='admin' AND active=1")?.c || 0);
+      // Deleting the only manager would leave an installation nobody can administer.
+      if (admins <= 1) {
+        res.status(409).json({ error: 'هذا آخر حساب مدير. أضف مديرًا آخر أو احذف الحساب من قاعدة البيانات على السيرفر.', code: 'LAST_ADMIN' }); return;
+      }
+    }
+    const snapshot = { id: user.id, role: user.role };
+    // One transaction: a half-deleted account (sessions gone, rows left behind) is worse than
+    // none, and SQLite does not support nesting them.
+    store.transaction(() => {
+      endShift(user.id);
+      store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+      // Every table that holds personal data references users(id) ON DELETE CASCADE.
+      store.run('DELETE FROM users WHERE id=?', user.id);
+      // The audit trail outlives the account on purpose: it records that the deletion happened
+      // without keeping anything that identifies the person beyond a short opaque prefix.
+      store.run('INSERT INTO audit_log(user_id,action,created_at,metadata) VALUES (?,?,?,?)',
+        `deleted:${String(snapshot.id).slice(0, 8)}`, 'account.delete', Date.now(), JSON.stringify({ role: snapshot.role }));
+    });
+    io.in(`user:${snapshot.id}`).disconnectSockets(true);
+    clearSessionCookies(req, res);
+    broadcast();
+    res.json({ ok: true });
+  });
+
   app.get('/api/overview', adminOnly, (_req, res) => res.json(overview()));
   app.get('/api/reps', adminOnly, (_req, res) => res.json({ reps: overview().reps }));
   app.post('/api/reps', adminOnly, (req, res) => {

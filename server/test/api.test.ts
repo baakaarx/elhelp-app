@@ -38,6 +38,7 @@ const xlsxEntries = (body: Buffer): Map<string, string> => {
 const config = {
   dbPath: ':memory:', production: false, retentionDays: 30, timezone: 'Africa/Cairo',
   adminEmail: 'admin@mandoub.test', adminPassword: 'TestPassword123!', allowedOrigins: [], port: 0,
+  privacyContact: 'privacy@mandoub.test',
 };
 const instance = createApp(config);
 const { app, store, httpServer } = instance;
@@ -653,3 +654,56 @@ test('logout invalidates the session token', async () => {
 });
 
 // Kept for parity with the production database guard: a session must never outlive an active flag flip.
+test('the privacy policy is public and states the live retention window', async () => {
+  const res = await request(app).get('/privacy');
+  assert.equal(res.status, 200);
+  assert.match(String(res.headers['content-type']), /text\/html/);
+  assert.match(res.text, /سياسة الخصوصية/);
+  // The page is generated from the running configuration, so the numbers cannot drift.
+  assert.match(res.text, /30<\/b> يومًا/);
+  assert.match(res.text, /privacy@mandoub\.test/);
+  assert.match(res.text, /حذف الحساب/);
+});
+
+test('a representative can erase their own account and everything it produced', async () => {
+  const email = `erase.${Date.now()}@mandoub.test`;
+  const password = 'ErasePassword123!';
+  const created = await admin.post('/api/reps').set(auth(adminToken)).send({ name: 'مهندس حذف', email, password });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.user.id;
+
+  const signedIn = await request(app).post('/api/auth/login').send({ email, password });
+  const token = signedIn.body.token;
+  const started = await request(app).post('/api/shifts/start').set(auth(token)).send({
+    consentVersion: '1.0', deviceId: 'erase-device-1', location: { lat: 31.2, lng: 29.9, accuracy: 5 },
+  });
+  assert.equal(started.status, 200);
+  assert.ok(Number(store.get('SELECT COUNT(*) AS c FROM locations WHERE user_id=?', id)?.c) > 0);
+
+  // Two deliberate guards: a mistyped address and a missing confirmation both change nothing.
+  const wrongEmail = await request(app).delete('/api/me').set(auth(token)).send({ confirm: true, email: 'someone@else.test' });
+  assert.equal(wrongEmail.status, 422);
+  assert.equal(wrongEmail.body.code, 'EMAIL_MISMATCH');
+  const noConfirm = await request(app).delete('/api/me').set(auth(token)).send({ email });
+  assert.equal(noConfirm.status, 400);
+  assert.ok(store.get('SELECT id FROM users WHERE id=?', id));
+
+  const erased = await request(app).delete('/api/me').set(auth(token)).send({ confirm: true, email: email.toUpperCase() });
+  assert.equal(erased.status, 200, JSON.stringify(erased.body));
+  assert.equal(store.get('SELECT id FROM users WHERE id=?', id), undefined);
+  for (const table of ['shifts', 'locations', 'sessions']) {
+    assert.equal(Number(store.get(`SELECT COUNT(*) AS c FROM ${table} WHERE user_id=?`, id)?.c), 0, table);
+  }
+  // The audit trail keeps the fact, not the person.
+  assert.ok(store.get("SELECT id FROM audit_log WHERE action='account.delete'"));
+  assert.equal((await request(app).get('/api/auth/me').set(auth(token))).status, 401);
+  assert.equal((await request(app).post('/api/auth/login').send({ email, password })).status, 401);
+});
+
+test('the only administrator cannot delete the last manager account', async () => {
+  const signedIn = await request(app).post('/api/auth/login').send({ email: 'admin@mandoub.test', password: 'TestPassword123!' });
+  const res = await request(app).delete('/api/me').set(auth(signedIn.body.token)).send({ confirm: true, email: 'admin@mandoub.test' });
+  assert.equal(res.status, 409);
+  assert.equal(res.body.code, 'LAST_ADMIN');
+  assert.ok(store.get('SELECT id FROM users WHERE email=?', 'admin@mandoub.test'));
+});

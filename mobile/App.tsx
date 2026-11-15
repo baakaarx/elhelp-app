@@ -99,7 +99,13 @@ function Root() {
           {tab === 'reports' && <ReportScreen onPending={() => void field.refresh()} />}
           {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} />}
           {tab === 'settings' && (
-            <SettingsScreen user={user} field={field} onLogout={async () => { await stopTracking(); await logout(); setUser(null); }} />
+            <SettingsScreen
+              user={user}
+              field={field}
+              onLogout={async () => { await stopTracking(); await logout(); setUser(null); }}
+              // The account is already gone on the server, so there is nothing left to log out of.
+              onDeleted={async () => { await stopTracking(); setUser(null); }}
+            />
           )}
         </View>
       </SafeAreaView>

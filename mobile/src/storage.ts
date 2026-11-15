@@ -27,11 +27,20 @@ export async function getConsentAt(): Promise<number | null> {
     return raw ? Number(raw) : null;
   } catch { return null; }
 }
-export async function setConsentAt(value: number): Promise<void> {
+export async function setConsentAt(value: number | null): Promise<void> {
   try {
-    if (web) localStorage.setItem(CONSENT_KEY, String(value));
+    if (web) { if (value === null) localStorage.removeItem(CONSENT_KEY); else localStorage.setItem(CONSENT_KEY, String(value)); return; }
+    if (value === null) await SecureStore.deleteItemAsync(CONSENT_KEY);
     else await SecureStore.setItemAsync(CONSENT_KEY, String(value));
   } catch { /* non-fatal */ }
+}
+
+/**
+ * Removes everything this device keeps about the signed-in engineer: token, consent stamp and
+ * the active shift. Used by logout and by account deletion (the store-mandated path).
+ */
+export async function clearDeviceData(): Promise<void> {
+  await Promise.all([setToken(null), setActiveShift(null), setConsentAt(null)]);
 }
 
 export async function getActiveShift(): Promise<string | null> {

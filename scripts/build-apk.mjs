@@ -5,6 +5,7 @@
  *   npm run build:apk -- http://55.0.55.70:3000
  *   npm run build:apk -- https://tracking.company.com --clean
  *   npm run build:apk -- --debug            (dev build that needs Metro)
+ *   npm run build:aab -- https://…          (Play Store bundle, needs `npm run keystore`)
  *
  * Why Node and not PowerShell: Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI, so every
  * Arabic string in the script was mangled into syntax errors. Node reads UTF-8 everywhere.
@@ -16,13 +17,12 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fail, isWindows, resolveAndroidHome, resolveJavaHome, step } from './lib/android.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
 const mobile = join(root, 'mobile');
 const androidDir = join(mobile, 'android');
 const envFile = join(mobile, '.env');
-const isWindows = process.platform === 'win32';
-
 /* ── arguments ─────────────────────────────────────────────────────────────── */
 const args = process.argv.slice(2);
 const flags = new Set(args.filter(arg => arg.startsWith('--')));
@@ -31,13 +31,8 @@ const apiUrlFlag = args.find(arg => arg.startsWith('--api-url='));
 
 const clean = flags.has('--clean');
 const debugBuild = flags.has('--debug');
-
-function fail(message, hint) {
-  console.error(`\n\u2716 ${message}`);
-  if (hint) console.error(`  ${hint}`);
-  process.exit(1);
-}
-const step = message => console.log(`\n\u25b8 ${message}`);
+/** `--aab` produces the Play Store bundle instead of an APK; it requires a real keystore. */
+const appBundle = flags.has('--aab');
 
 /* ── 1. the API address the phone will talk to ─────────────────────────────── */
 let apiUrl = (apiUrlFlag ? apiUrlFlag.slice('--api-url='.length) : positional[0]) || process.env.EXPO_PUBLIC_API_URL || '';
@@ -68,39 +63,12 @@ if (!existsSync(join(root, 'node_modules'))) {
 }
 
 /* ── 3. JDK and Android SDK ────────────────────────────────────────────────── */
-function firstExisting(candidates, marker) {
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    if (marker) {
-      if (existsSync(join(candidate, marker))) return candidate;
-    } else if (existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return undefined;
-}
-const javaHome = firstExisting([
-  process.env.JAVA_HOME,
-  'C:\\Program Files\\Android\\Android Studio\\jbr',
-  process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs', 'Android Studio', 'jbr'),
-  process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'JetBrains', 'Toolbox', 'apps', 'AndroidStudio', 'ch-0', 'jbr'),
-  '/Applications/Android Studio.app/Contents/jbr/Contents/Home',
-  '/usr/lib/jvm/java-17-openjdk-amd64',
-  '/usr/lib/jvm/default-java',
-], isWindows ? 'bin\\java.exe' : 'bin/java');
+const javaHome = resolveJavaHome();
 if (!javaHome) {
   fail('No Java runtime found (JDK 17).',
     'Install Android Studio (it bundles the JBR) or point JAVA_HOME at a JDK 17.');
 }
-
-const androidHome = firstExisting([
-  process.env.ANDROID_HOME,
-  process.env.ANDROID_SDK_ROOT,
-  process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Android', 'Sdk'),
-  process.env.HOME && join(process.env.HOME, 'Android', 'Sdk'),
-  process.env.HOME && join(process.env.HOME, 'Library', 'Android', 'sdk'),
-  '/usr/lib/android-sdk',
-], 'platform-tools');
+const androidHome = resolveAndroidHome();
 if (!androidHome) {
   fail('Android SDK not found.',
     'Open Android Studio > Settings > Languages & Frameworks > Android SDK, install a platform + build-tools, or set ANDROID_HOME.');
@@ -132,29 +100,40 @@ if (!existsSync(join(androidDir, isWindows ? 'gradlew.bat' : 'gradlew'))) {
 }
 
 /* ── 5. gradle ─────────────────────────────────────────────────────────────── */
+if (appBundle && !existsSync(join(mobile, 'keystore.properties'))) {
+  fail('An .aab for Google Play must be signed with your own key.',
+    'Run `npm run keystore` first (it creates mobile/elhelp-release.keystore and keystore.properties).');
+}
 const variant = debugBuild ? 'debug' : 'release';
-const task = debugBuild ? 'assembleDebug' : 'assembleRelease';
-step(`Building the ${variant} APK (first run downloads Gradle: 5-15 minutes)`);
+const task = appBundle ? 'bundleRelease' : debugBuild ? 'assembleDebug' : 'assembleRelease';
+step(`Building the ${appBundle ? 'AAB' : `${variant} APK`} (first run downloads Gradle: 5-15 minutes)`);
 const gradle = spawnSync(isWindows ? 'gradlew.bat' : './gradlew', [task, '--no-daemon'], {
   cwd: androidDir, stdio: 'inherit', env, shell: isWindows,
 });
 if (gradle.status !== 0) fail(`Gradle failed (exit ${gradle.status}).`, 'The first error above names the missing SDK or JDK piece.');
 
 /* ── 6. result ─────────────────────────────────────────────────────────────── */
-const apk = join(androidDir, 'app', 'build', 'outputs', 'apk', variant, `app-${variant}.apk`);
-if (!existsSync(apk)) fail(`The build finished but ${apk} is missing.`);
+const built = appBundle
+  ? join(androidDir, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab')
+  : join(androidDir, 'app', 'build', 'outputs', 'apk', variant, `app-${variant}.apk`);
+if (!existsSync(built)) fail(`The build finished but ${built} is missing.`);
 
 const version = (readFileSync(join(mobile, 'app.config.ts'), 'utf8').match(/version:\s*'([^']+)'/) || [])[1] || '1.0.0';
 const outDir = join(mobile, 'dist-android');
 mkdirSync(outDir, { recursive: true });
-const target = join(outDir, `elhelp-engineer-${version}-${variant}.apk`);
-copyFileSync(apk, target);
+const extension = appBundle ? 'aab' : 'apk';
+const target = join(outDir, `elhelp-engineer-${version}-${variant}.${extension}`);
+copyFileSync(built, target);
 try { chmodSync(target, 0o644); } catch { /* windows */ }
 
 const megabytes = (statSync(target).size / 1024 / 1024).toFixed(1);
-console.log(`\n\u2714 APK ready (${megabytes} MB)`);
+console.log(`\n\u2714 ${appBundle ? 'AAB' : 'APK'} ready (${megabytes} MB)`);
 console.log(`  ${target}\n`);
-console.log(`  install on a USB-connected phone:  adb install -r "${target}"`);
+if (appBundle) {
+  console.log('  upload this .aab in Google Play Console > Internal testing (or `eas submit`).');
+} else {
+  console.log(`  install on a USB-connected phone:  adb install -r "${target}"`);
+}
 if (/^http:\/\//i.test(apiUrl)) {
   console.log('\n  note: plain HTTP, so this build allows cleartext traffic. HTTPS is recommended.');
 }

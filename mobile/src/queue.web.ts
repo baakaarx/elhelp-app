@@ -21,5 +21,6 @@ export async function createQueue(): Promise<Outbox> {
     async remove(key: string) { write(read().filter(item => item.key !== key)); },
     async bump(key: string) { write(read().map(item => (item.key === key ? { ...item, attempts: item.attempts + 1 } : item))); },
     async count() { return read().length; },
+    async clear() { write([]); },
   };
 }

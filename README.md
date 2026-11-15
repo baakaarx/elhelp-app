@@ -147,8 +147,9 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 - التطبيق يقدّم `dashboard/dist` من نفس السيرفر (مسار واحد، بلا CORS).
 - استخدم HTTPS ونطاق ثابت؛ الكوكيز تصبح `Secure; SameSite=None` تلقائيًا خلف TLS.
 - `ALLOWED_ORIGINS` قائمة صريحة — لا تستخدم `*`.
+- `/privacy` صفحة سياسة خصوصية عامة (مطلوبة للمتاجر) تُولَّد من إعداد السيرفر، والبريد الظاهر عليها من `PRIVACY_CONTACT`.
 - انسخ نسخة احتياطية من ملف SQLite (أو استخدم قرصًا دائمًا) — البيانات كلها هناك.
-- تطبيق الموبايل (APK): `npm run build:apk -- https://your-domain` (نفس الأمر على ويندوز/لينكس/ماك)، والتفاصيل في [`docs/BUILD-APK.md`](docs/BUILD-APK.md).
+- تطبيق الموبايل (APK): `npm run build:apk -- https://your-domain` (نفس الأمر على ويندوز/لينكس/ماك)، وللنشر على Google Play: `npm run keystore` ثم `npm run build:aab -- https://your-domain` — التفاصيل في [`docs/BUILD-APK.md`](docs/BUILD-APK.md) و[`docs/PUBLISH.md`](docs/PUBLISH.md).
 
 ### النشر على VPS
 

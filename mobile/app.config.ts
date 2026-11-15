@@ -32,6 +32,7 @@ const config: ExpoConfig = {
       isAndroidForegroundServiceEnabled: true,
     }],
     './plugins/withApiTraffic',
+    './plugins/withReleaseSigning',
     'expo-secure-store',
     'expo-sqlite',
     'expo-font',

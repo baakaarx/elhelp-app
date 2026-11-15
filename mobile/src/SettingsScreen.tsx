@@ -1,15 +1,46 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Location from 'expo-location';
 import { useState } from 'react';
+import { API_BASE, deleteMyAccount } from './api';
+import { clearDeviceData } from './storage';
+import { createQueue } from './queue';
 import { flushOutbox } from './reports';
 import { colors, fonts, space } from './theme';
 import { Body, Button, Card, Heading, Pill, Row, SectionTitle } from './ui';
 import type { User } from './types';
 import type { FieldBundle } from './useField';
 
-export default function SettingsScreen({ user, field, onLogout }: { user: User; field: FieldBundle; onLogout: () => void }) {
+export default function SettingsScreen({ user, field, onLogout, onDeleted }: { user: User; field: FieldBundle; onLogout: () => void; onDeleted: () => void }) {
   const [syncing, setSyncing] = useState(false);
   const [permission, setPermission] = useState<string | null>(null);
+  const [confirmEmail, setConfirmEmail] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  // Typing the account address is the confirmation step: the stores require a real in-app
+  // deletion path, and an accidental tap must never erase a field engineer's history.
+  const canDelete = !deleting && confirmEmail.trim().toLowerCase() === user.email.toLowerCase();
+
+  async function eraseAccount() {
+    setDeleting(true);
+    try {
+      await deleteMyAccount(user.email);
+      await (await createQueue()).clear();
+      await clearDeviceData();
+      onDeleted();
+    } catch (error) {
+      Alert.alert('تعذر حذف الحساب', error instanceof Error ? error.message : 'حاول مرة أخرى.');
+    } finally { setDeleting(false); }
+  }
+
+  function askConfirmDelete() {
+    Alert.alert(
+      'حذف الحساب نهائيًا',
+      'هيتحذف حسابك وكل بياناتك: الموقع، الورديات، الزيارات، والتقارير. الخطوة دي مش ممكن التراجع عنها.',
+      [
+        { text: 'إلغاء', style: 'cancel' },
+        { text: 'حذف نهائي', style: 'destructive', onPress: () => void eraseAccount() },
+      ],
+    );
+  }
 
   async function checkPermissions() {
     const foreground = await Location.getForegroundPermissionsAsync();
@@ -73,6 +104,36 @@ export default function SettingsScreen({ user, field, onLogout }: { user: User; 
           موقعك يُسجَّل أثناء الوردية فقط وبعد موافقتك الصريحة، ويُستخدم لمتابعة خط السير وإعداد التقارير.
           البيانات تُحذف تلقائيًا بعد ٣٠ يومًا، وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
         </Body>
+        <Pressable onPress={() => void Linking.openURL(`${API_BASE}/privacy`)} accessibilityRole="link">
+          <Text style={styles.link}>سياسة الخصوصية الكاملة ←</Text>
+        </Pressable>
+      </Card>
+
+      <Card>
+        <SectionTitle title="حذف الحساب" action={<Pill label="نهائي" tone="warn" />} />
+        <Body muted>
+          حذف الحساب يمسح كل بياناتك من السيرفر فورًا (الموقع، الورديات، الزيارات، التقارير) ويلغي كل الجلسات.
+          اكتب بريدك للتأكيد، أو راسل مسؤول الخصوصية لو محتاج مساعدة.
+        </Body>
+        <TextInput
+          value={confirmEmail}
+          onChangeText={setConfirmEmail}
+          placeholder={user.email}
+          placeholderTextColor={colors.muted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="email-address"
+          editable={!deleting}
+          style={styles.confirmInput}
+          accessibilityLabel="تأكيد البريد الإلكتروني"
+        />
+        <Button
+          variant="danger"
+          label={deleting ? 'جارٍ الحذف…' : 'حذف حسابي نهائيًا'}
+          disabled={!canDelete}
+          loading={deleting}
+          onPress={askConfirmDelete}
+        />
       </Card>
 
       <Pressable onPress={onLogout} style={styles.logout} accessibilityRole="button">
@@ -91,6 +152,11 @@ const styles = StyleSheet.create({
   avatarText: { fontFamily: fonts.bold, fontSize: 22, color: '#fdf8ec' },
   meta: { fontFamily: fonts.regular, fontSize: 11.5, color: colors.muted, textAlign: 'right' },
   mono: { fontFamily: fonts.regular, fontSize: 12, color: colors.ink, textAlign: 'right', lineHeight: 20 },
+  link: { fontFamily: fonts.bold, fontSize: 13, color: colors.green700, textAlign: 'right', paddingVertical: 6 },
+  confirmInput: {
+    borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
+    fontFamily: fonts.regular, fontSize: 14, color: colors.ink, textAlign: 'left', direction: 'ltr',
+  },
   logout: { borderWidth: 1, borderColor: '#e6c9c9', backgroundColor: colors.dangerSoft, borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   logoutText: { fontFamily: fonts.bold, fontSize: 14, color: colors.danger },
   footer: { fontFamily: fonts.regular, fontSize: 11, color: colors.muted, textAlign: 'center' },
