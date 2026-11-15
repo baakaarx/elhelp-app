@@ -81,7 +81,7 @@ npm run preview     # بناء + تصدير الموبايل + تقديم كل �
 | `NODE_ENV` | `development` | `production` يفعّل CSP وقيود الكوكيز |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | — | مطلوبان للإنتاج، كلمة المرور ١٢ حرفًا على الأقل، وبريد المدير ليس بريد القالب |
 | `DB_PATH` | `server/data/mandoub.db` | استخدم قرصًا دائمًا في الإنتاج |
-| `RETENTION_DAYS` | `30` | ١–٣٦٥، حذف تلقائي كل ساعة |
+| `RETENTION_DAYS` | `365` | ١–٣٦٥٠، حذف تلقائي كل ساعة (سنة كاملة تغطي السجل الشهري) |
 | `STALE_GPS_MINUTES` | `10` | ٣–١٢٠، نفس الحد في التنبيهات ونص الخريطة |
 | `TIMEZONE` | `Africa/Cairo` | حدود اليوم والمسارات والتقارير |
 | `ALLOWED_ORIGINS` | — | أصول HTTPS مفصولة بفواصل (لا `*`) |

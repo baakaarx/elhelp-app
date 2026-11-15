@@ -69,9 +69,13 @@ export function readConfig(): Config {
   }
   const timezone = process.env.TIMEZONE || 'Africa/Cairo';
   new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
-  const retentionDays = Number(process.env.RETENTION_DAYS || 30);
-  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
-    throw new Error('RETENTION_DAYS must be an integer from 1 to 365.');
+  // A month was too short for the product's own monthly register: the previous month was
+  // already gone when the manager went to export it, and the collections it holds are the
+  // company's record. A year covers every report the register can ask for; raise it further
+  // (up to ten years) when the archive has to be read further back.
+  const retentionDays = Number(process.env.RETENTION_DAYS || 365);
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    throw new Error('RETENTION_DAYS must be an integer from 1 to 3650 (days).');
   }
   const staleGpsMinutes = Number(process.env.STALE_GPS_MINUTES || DEFAULT_STALE_GPS_MINUTES);
   if (!Number.isInteger(staleGpsMinutes) || staleGpsMinutes < 3 || staleGpsMinutes > 120) {

@@ -13,7 +13,11 @@ export function summarizeDay(store: Store, opts: { repId?: string; date?: string
 
   const results = reps.map(rep => {
     const repId = String(rep.id);
-    const shift = store.get('SELECT id, started_at, ended_at FROM shifts WHERE user_id=? AND started_at>=? AND started_at<? ORDER BY started_at DESC LIMIT 1', repId, bounds.start, bounds.end);
+    // A shift that began before local midnight (a night visit) is still the shift this day
+    // belongs to: without the fallback the summary said "no shift" while the engineer was
+    // tracking, and the "shift without GPS" suggestion never fired for them.
+    const shift = store.get('SELECT id, started_at, ended_at FROM shifts WHERE user_id=? AND started_at>=? AND started_at<? ORDER BY started_at DESC LIMIT 1', repId, bounds.start, bounds.end)
+      || store.get('SELECT id, started_at, ended_at FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', repId);
     const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at', repId, bounds.start, bounds.end);
     const visits = store.all('SELECT id, customer_name, status, checked_in_at, checked_out_at, duration_seconds FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<? ORDER BY checked_in_at', repId, bounds.start, bounds.end);
     const reports = store.all('SELECT id, title, type FROM reports WHERE user_id=? AND created_at>=? AND created_at<?', repId, bounds.start, bounds.end);
