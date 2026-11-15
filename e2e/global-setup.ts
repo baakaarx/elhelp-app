@@ -1,6 +1,8 @@
 import { request } from '@playwright/test';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { MANAGER_STATE } from './helpers';
 import { E2E_ADMIN, E2E_API, E2E_DB_PATH, E2E_REPS, E2E_REP_PASSWORD } from './fixtures';
 
 /**
@@ -15,6 +17,10 @@ export default async function globalSetup() {
   if (!login.ok()) throw new Error(`e2e: manager login failed (${login.status()}) ${await login.text()}`);
   const { token } = await login.json();
   const admin = { Authorization: `Bearer ${token}` };
+  // The manager session is saved once and reused by every browser test, so the suite never
+  // exhausts the login rate limit (15 attempts per 15 minutes) while it runs.
+  mkdirSync('e2e/.auth', { recursive: true });
+  await api.storageState({ path: MANAGER_STATE });
 
   // The daily report is filed against the operator's local day, not the server's UTC date.
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(new Date());
@@ -27,11 +33,18 @@ export default async function globalSetup() {
     repIds.push((await created.json()).user.id);
   }
 
+  const repTokens = new Map<string, string>();
+  async function repAuth(email: string) {
+    if (!repTokens.has(email)) {
+      const session = await api.post('/api/auth/login', { data: { email, password: E2E_REP_PASSWORD } });
+      if (!session.ok()) throw new Error(`e2e: ${email} login failed (${session.status()})`);
+      repTokens.set(email, (await session.json()).token);
+    }
+    return { Authorization: `Bearer ${repTokens.get(email)}` };
+  }
+
   for (const [index, rep] of E2E_REPS.entries()) {
-    const session = await api.post('/api/auth/login', { data: { email: rep.email, password: E2E_REP_PASSWORD } });
-    if (!session.ok()) throw new Error(`e2e: ${rep.email} login failed`);
-    const { token: repToken } = await session.json();
-    const auth = { Authorization: `Bearer ${repToken}` };
+    const auth = await repAuth(rep.email);
     const location = { lat: 31.2001 + index * 0.01, lng: 29.9187 + index * 0.01, accuracy: 12 };
 
     const started = await api.post('/api/shifts/start', {
@@ -56,9 +69,7 @@ export default async function globalSetup() {
 
   // Engineer 1: a closed visit, a field report and the signed daily report.
   const first = E2E_REPS[0];
-  const firstLogin = await api.post('/api/auth/login', { data: { email: first.email, password: E2E_REP_PASSWORD } });
-  const firstToken = (await firstLogin.json()).token;
-  const firstAuth = { Authorization: `Bearer ${firstToken}` };
+  const firstAuth = await repAuth(first.email);
   const visit = await api.post('/api/visits/check-in', {
     data: { id: randomUUID(), customerName: 'مزرعة النور', purpose: 'visit', governorate: 'البحيرة', district: 'إيتاي البارود', location: { lat: 31.21, lng: 29.93, accuracy: 9 } },
     headers: firstAuth,
@@ -86,8 +97,7 @@ export default async function globalSetup() {
 
   // Engineer 2: a visit left open for hours, so the manager sees the unclosed check-in.
   const second = E2E_REPS[1];
-  const secondLogin = await api.post('/api/auth/login', { data: { email: second.email, password: E2E_REP_PASSWORD } });
-  const secondAuth = { Authorization: `Bearer ${(await secondLogin.json()).token}` };
+  const secondAuth = await repAuth(second.email);
   await api.post('/api/visits/check-in', {
     data: { id: randomUUID(), customerName: 'مزرعة الدلتا', purpose: 'visit', location: { lat: 31.05, lng: 30.47, accuracy: 14 } },
     headers: secondAuth,

@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 import { resolve } from 'node:path';
 import { E2E_ADMIN, E2E_DB_PATH } from './e2e/fixtures';
+import { MANAGER_STATE } from './e2e/helpers';
 
 // A separate, disposable database: the suite never touches the operator's own data file.
 // `scripts/reset-e2e-db.mjs` clears it once per run, before this file is loaded.
@@ -19,6 +20,9 @@ export default defineConfig({
     headless: true,
     viewport: { width: 1440, height: 1000 },
     trace: 'retain-on-failure',
+    // Global setup signs in once and saves the manager session; specs start signed in so the
+    // run stays well under the 15-attempts-per-15-minutes login limit.
+    storageState: MANAGER_STATE,
     launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined },
   },
   // A private server on its own ports: the browser suite must not consume the live preview's
