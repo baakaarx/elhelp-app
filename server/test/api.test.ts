@@ -7,6 +7,7 @@ import { createApp } from '../src/app.js';
 import { hashPassword } from '../src/auth.js';
 import { dayBounds, localDate } from '../src/geo.js';
 import { dailyReportPdf } from '../src/dailyPdf.js';
+import { readTrustProxy } from '../src/config.js';
 
 // CSV helpers: read the body as raw bytes (the BOM matters) and split it into lines.
 const csvParser = (r: request.Response, done: (err: Error | null, body?: Buffer) => void) => {
@@ -38,7 +39,10 @@ const xlsxEntries = (body: Buffer): Map<string, string> => {
 const config = {
   dbPath: ':memory:', production: false, retentionDays: 30, timezone: 'Africa/Cairo',
   adminEmail: 'admin@mandoub.test', adminPassword: 'TestPassword123!', allowedOrigins: [], port: 0,
-  privacyContact: 'privacy@mandoub.test',
+  privacyContact: 'privacy@mandoub.test', trustProxy: false,
+  // The suite signs in dozens of times from one address; the shipped limits are exercised by
+  // the dedicated tests that build their own instance.
+  loginAccountLimit: 10, loginRateLimit: { windowMs: 60000, limit: 1000 },
 };
 const instance = createApp(config);
 const { app, store, httpServer } = instance;
@@ -706,4 +710,153 @@ test('the only administrator cannot delete the last manager account', async () =
   assert.equal(res.status, 409);
   assert.equal(res.body.code, 'LAST_ADMIN');
   assert.ok(store.get('SELECT id FROM users WHERE email=?', 'admin@mandoub.test'));
+});
+
+// ---- Hardening regressions -------------------------------------------------------------
+// Earlier tests deliberately disable and erase the original representative, so these build
+// their own account instead of depending on the shared session.
+let freshSeq = 0;
+async function freshRep(label: string) {
+  freshSeq += 1;
+  const email = `${label}.${freshSeq}.${Date.now()}@mandoub.test`;
+  const password = 'FreshPassword123!';
+  const created = await admin.post('/api/reps').set(auth(adminToken)).send({ name: `مهندس ${label}`, email, password });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const session = await login(request(app), email, password);
+  return { email, token: session.body.token as string, id: created.body.user.id as string };
+}
+
+test('TRUST_PROXY trusts only a local proxy unless configured otherwise', () => {
+  assert.equal(readTrustProxy(undefined, true), 'loopback');
+  assert.equal(readTrustProxy(undefined, false), false);
+  assert.equal(readTrustProxy('1', true), 1);
+  assert.equal(readTrustProxy('false', true), false);
+  assert.equal(readTrustProxy('10.0.0.0/8', true), '10.0.0.0/8');
+});
+
+test('the session cookie is HttpOnly, Lax and never cross-site', async () => {
+  const created = await admin.post('/api/reps').set(auth(adminToken))
+    .send({ name: 'مهندس الكوكيز', email: `cookie.${Date.now()}@mandoub.test`, password: 'CookiePassword123!' });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const res = await request(app).post('/api/auth/login').send({ email: created.body.user.email, password: 'CookiePassword123!' });
+  assert.equal(res.status, 200);
+  const cookies = ([] as string[]).concat(res.headers['set-cookie'] || []);
+  const session = cookies.find(cookie => cookie.startsWith('mandoub_rep_session='));
+  assert.ok(session, 'the representative cookie must be set');
+  assert.match(String(session), /HttpOnly/i);
+  assert.match(String(session), /SameSite=Lax/i);
+  assert.ok(!/SameSite=None/i.test(String(session)));
+});
+
+test('a representative changes their password and the other devices are signed out', async () => {
+  const email = `pw.${Date.now()}@mandoub.test`;
+  const created = await admin.post('/api/reps').set(auth(adminToken))
+    .send({ name: 'مهندس كلمة المرور', email, password: 'StartPassword1!' });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+
+  const first = await login(request(app), email, 'StartPassword1!');
+  const second = await login(request(app), email, 'StartPassword1!');
+  const current = first.body.token as string;
+  const other = second.body.token as string;
+
+  const wrong = await request(app).post('/api/me/password').set(auth(current)).send({ currentPassword: 'not-it', newPassword: 'BrandNewPassword1!' });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.body.code, 'WRONG_PASSWORD');
+
+  assert.equal((await request(app).post('/api/me/password').set(auth(current)).send({ currentPassword: 'StartPassword1!', newPassword: 'short' })).status, 400);
+  assert.equal((await request(app).post('/api/me/password').set(auth(current)).send({ currentPassword: 'StartPassword1!', newPassword: 'StartPassword1!' })).status, 400);
+
+  const changed = await request(app).post('/api/me/password').set(auth(current)).send({ currentPassword: 'StartPassword1!', newPassword: 'BrandNewPassword1!' });
+  assert.equal(changed.status, 200, JSON.stringify(changed.body));
+
+  // The device that changed it keeps working; the other session is gone.
+  assert.equal((await request(app).get('/api/auth/me').set(auth(current))).status, 200);
+  assert.equal((await request(app).get('/api/auth/me').set(auth(other))).status, 401);
+  // The old password is dead, the new one signs in.
+  assert.equal((await request(app).post('/api/auth/login').send({ email, password: 'StartPassword1!' })).status, 401);
+  assert.equal((await request(app).post('/api/auth/login').send({ email, password: 'BrandNewPassword1!' })).status, 200);
+  assert.ok(store.get("SELECT id FROM audit_log WHERE action='auth.password_change' ORDER BY id DESC LIMIT 1"));
+});
+
+test('repeated wrong passwords freeze the account, and a success clears the misses', async () => {
+  const isolated = createApp({ ...config, dbPath: ':memory:', loginAccountLimit: 3 });
+  try {
+    const client = request(isolated.app);
+    const email = config.adminEmail;
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await client.post('/api/auth/login').send({ email, password: 'wrong' })).status, 401);
+    }
+    // A correct sign-in wipes the two misses: mistyping twice is not an attack.
+    assert.equal((await client.post('/api/auth/login').send({ email, password: config.adminPassword })).status, 200);
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await client.post('/api/auth/login').send({ email, password: 'wrong' })).status, 401);
+    }
+    const frozen = await client.post('/api/auth/login').send({ email, password: config.adminPassword });
+    assert.equal(frozen.status, 429);
+    assert.equal(frozen.body.code, 'ACCOUNT_THROTTLED');
+    // The freeze is per account: an unrelated address still gets a normal answer.
+    assert.equal((await client.post('/api/auth/login').send({ email: 'nobody@mandoub.test', password: 'anything' })).status, 401);
+  } finally { await isolated.close(); }
+});
+
+test('the assistant scopes a representative to their own day', async () => {
+  const engineer = await freshRep('agent-scope');
+  const own = await request(app).post('/api/agent/run').set(auth(engineer.token)).send({ task: 'summarize-day' });
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+  const reps = own.body.result.details.reps as Array<{ repId: string }>;
+  assert.equal(reps.length, 1, 'a missing repId must not aggregate the whole team');
+  assert.equal(reps[0].repId, engineer.id);
+
+  const second = await freshRep('agent-scope-other');
+  const other = await request(app).post('/api/agent/run').set(auth(engineer.token)).send({ task: 'summarize-day', repId: second.id });
+  assert.equal(other.status, 403);
+});
+
+test('the assistant internals are for the manager only', async () => {
+  const engineer = await freshRep('agent-internals');
+  assert.equal((await request(app).get('/api/agent/status').set(auth(engineer.token))).status, 403);
+  assert.equal((await request(app).get('/api/agent/skills').set(auth(engineer.token))).status, 403);
+
+  const manager = await request(app).get('/api/agent/status').set(auth(adminToken));
+  assert.equal(manager.status, 200);
+  for (const skill of manager.body.skills as Array<Record<string, unknown>>) {
+    assert.equal(skill.filePath, undefined, 'the filesystem path must not leave the server');
+    assert.equal(skill.content, undefined, 'the skill body must not leave the server');
+    assert.ok(typeof skill.name === 'string');
+  }
+});
+
+test('an exported CSV never runs a name as a spreadsheet formula', async () => {
+  const email = `formula.${Date.now()}@mandoub.test`;
+  const name = '=HYPERLINK("http://attacker.test","x")';
+  assert.equal((await admin.post('/api/reps').set(auth(adminToken)).send({ name, email, password: 'FormulaPassword1!' })).status, 201);
+
+  const today = localDate(config.timezone);
+  const res = await request(app).get(`/api/kpis.csv?from=${today}&to=${today}`).set(auth(adminToken)).buffer(true).parse(csvParser).expect(200);
+  const rows = csvLines(res.body as unknown as Buffer).filter(line => line.includes('HYPERLINK'));
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].startsWith('"\'=HYPERLINK'), rows[0]);
+});
+
+test('the retention sweep also deletes stillness justifications', async () => {
+  const insert = (id: string, createdAt: number) => store.run(
+    `INSERT INTO idle_reports(id,user_id,shift_id,lat,lng,accuracy,reason,duration_minutes,device_id,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`, id, repId, null, 31.2, 29.9, 8, 'وقوف قديم', 15, 'retention-probe', createdAt,
+  );
+  insert('idle-old-probe', Date.now() - 40 * 86400000);
+  insert('idle-new-probe', Date.now());
+  store.cleanup(config.retentionDays);
+  assert.equal(store.get("SELECT id FROM idle_reports WHERE id='idle-old-probe'"), undefined, 'expired rows must be swept');
+  assert.ok(store.get("SELECT id FROM idle_reports WHERE id='idle-new-probe'"), 'recent rows stay');
+  store.run("DELETE FROM idle_reports WHERE id='idle-new-probe'");
+});
+
+test('the privacy page escapes the operator supplied contact address', async () => {
+  const isolated = createApp({ ...config, dbPath: ':memory:', privacyContact: 'x"><script>alert(1)</script>' });
+  try {
+    const res = await request(isolated.app).get('/privacy').expect(200);
+    const html = String(res.text);
+    assert.ok(!html.includes('<script>alert(1)</script>'));
+    assert.ok(html.includes('&lt;script&gt;'));
+  } finally { await isolated.close(); }
 });

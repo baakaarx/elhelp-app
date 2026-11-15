@@ -39,6 +39,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS locations_user_time ON locations(user_id, recorded_at);
       CREATE INDEX IF NOT EXISTS shifts_user_start ON shifts(user_id, started_at);
       CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
       CREATE TABLE IF NOT EXISTS audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
         action TEXT NOT NULL, created_at INTEGER NOT NULL, metadata TEXT NOT NULL DEFAULT '{}'
@@ -169,6 +170,9 @@ export class Store {
     this.run('DELETE FROM reports WHERE created_at < ?', cutoff);
     this.run('DELETE FROM daily_reports WHERE created_at < ?', cutoff);
     this.run('DELETE FROM visits WHERE created_at < ?', cutoff);
+    // Stillness justifications carry a GPS fix and a free-text reason, so they are covered by
+    // the same retention window the privacy policy promises. They used to be kept forever.
+    this.run('DELETE FROM idle_reports WHERE created_at < ?', cutoff);
   }
   close() { this.db.close(); }
 }

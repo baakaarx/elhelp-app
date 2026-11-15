@@ -1,7 +1,7 @@
 import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Location from 'expo-location';
 import { useState } from 'react';
-import { API_BASE, deleteMyAccount } from './api';
+import { API_BASE, changeMyPassword, deleteMyAccount } from './api';
 import { clearDeviceData } from './storage';
 import { createQueue } from './queue';
 import { flushOutbox } from './reports';
@@ -13,6 +13,9 @@ import type { FieldBundle } from './useField';
 export default function SettingsScreen({ user, field, onLogout, onDeleted }: { user: User; field: FieldBundle; onLogout: () => void; onDeleted: () => void }) {
   const [syncing, setSyncing] = useState(false);
   const [permission, setPermission] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [nextPassword, setNextPassword] = useState('');
+  const [changing, setChanging] = useState(false);
   const [confirmEmail, setConfirmEmail] = useState('');
   const [deleting, setDeleting] = useState(false);
   // Typing the account address is the confirmation step: the stores require a real in-app
@@ -40,6 +43,21 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         { text: 'حذف نهائي', style: 'destructive', onPress: () => void eraseAccount() },
       ],
     );
+  }
+
+  // The manager hands out the first password, so the owner needs a way to replace it without
+  // asking anyone to touch the server. Every other device is signed out by the server.
+  const canChangePassword = !changing && currentPassword.length > 0 && nextPassword.length >= 10;
+
+  async function savePassword() {
+    setChanging(true);
+    try {
+      await changeMyPassword(currentPassword, nextPassword);
+      setCurrentPassword(''); setNextPassword('');
+      Alert.alert('تم تغيير كلمة المرور', 'استخدم كلمة المرور الجديدة في المرة القادمة. الأجهزة الأخرى تم تسجيل خروجها.');
+    } catch (error) {
+      Alert.alert('تعذر تغيير كلمة المرور', error instanceof Error ? error.message : 'حاول مرة أخرى.');
+    } finally { setChanging(false); }
   }
 
   async function checkPermissions() {
@@ -107,6 +125,36 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         <Pressable onPress={() => void Linking.openURL(`${API_BASE}/privacy`)} accessibilityRole="link">
           <Text style={styles.link}>سياسة الخصوصية الكاملة ←</Text>
         </Pressable>
+      </Card>
+
+      <Card>
+        <SectionTitle title="كلمة المرور" action={nextPassword.length >= 10 ? <Pill label="جاهزة" tone="mint" /> : <Pill label="١٠ أحرف على الأقل" />} />
+        <Body muted>كلمة المرور الأولى يجعلها مدير المتابعة؛ غيّرها من هنا في أي وقت. الأجهزة الأخرى هتتسجّل خروجها تلقائيًا.</Body>
+        <TextInput
+          value={currentPassword}
+          onChangeText={setCurrentPassword}
+          placeholder="كلمة المرور الحالية"
+          placeholderTextColor={colors.muted}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!changing}
+          style={styles.confirmInput}
+          accessibilityLabel="كلمة المرور الحالية"
+        />
+        <TextInput
+          value={nextPassword}
+          onChangeText={setNextPassword}
+          placeholder="كلمة المرور الجديدة"
+          placeholderTextColor={colors.muted}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          editable={!changing}
+          style={styles.confirmInput}
+          accessibilityLabel="كلمة المرور الجديدة"
+        />
+        <Button variant="soft" label={changing ? 'جارٍ الحفظ…' : 'تغيير كلمة المرور'} loading={changing} disabled={!canChangePassword} onPress={() => void savePassword()} />
       </Card>
 
       <Card>

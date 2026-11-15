@@ -42,6 +42,9 @@ export const get = <T>(path: string) => request<T>(path, { method: 'GET' });
  * Erases the signed-in account on the server. The email acts as the confirmation step the
  * stores expect, exactly like the dashboard form.
  */
+export const changeMyPassword = (currentPassword: string, newPassword: string) =>
+  request<{ ok: true }>('/api/me/password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) });
+
 export const deleteMyAccount = (email: string) =>
   request<{ ok: true }>('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: true, email }) });
 

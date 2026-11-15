@@ -421,6 +421,48 @@ function DeleteAccountPanel({ user, onDeleted }: { user: User; onDeleted: () => 
   );
 }
 
+function ChangePasswordPanel() {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
+  const ready = !busy && current.length > 0 && next.length >= 12;
+
+  async function save() {
+    setBusy(true); setMessage(null);
+    try {
+      await api('/api/me/password', { method: 'POST', body: JSON.stringify({ currentPassword: current, newPassword: next }) });
+      setCurrent(''); setNext('');
+      setMessage({ tone: 'ok', text: 'تم تغيير كلمة المرور. كل الأجهزة الأخرى تم تسجيل خروجها.' });
+    } catch (e) {
+      setMessage({ tone: 'error', text: e instanceof Error ? e.message : 'تعذر تغيير كلمة المرور.' });
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="panel">
+      <h3 className="panel-title">كلمة المرور</h3>
+      <p className="muted small">
+        كلمة مرور المدير ١٢ حرفًا على الأقل. بعد التغيير تُلغى جلسات كل الأجهزة الأخرى، وتبقى هذه الجلسة مفتوحة.
+      </p>
+      <div className="filters">
+        <label className="field inline">
+          <span>الحالية</span>
+          <input type="password" dir="ltr" value={current} onChange={event => setCurrent(event.target.value)} autoComplete="current-password" />
+        </label>
+        <label className="field inline">
+          <span>الجديدة</span>
+          <input type="password" dir="ltr" value={next} onChange={event => setNext(event.target.value)} autoComplete="new-password" />
+        </label>
+        <button className="btn primary sm" disabled={!ready} onClick={() => void save()}>
+          {busy ? 'جارٍ الحفظ…' : 'تغيير كلمة المرور'}
+        </button>
+      </div>
+      {message && <p className={message.tone === 'ok' ? 'muted small' : 'error'} role="status">{message.text}</p>}
+    </div>
+  );
+}
+
 function Account({ user, overview, onDeleted }: { user: User; overview: Overview | null; onDeleted: () => void }) {
   return (
     <section className="page">
@@ -448,6 +490,7 @@ function Account({ user, overview, onDeleted }: { user: User; overview: Overview
           <p><a className="btn ghost sm" href="/privacy" target="_blank" rel="noreferrer">سياسة الخصوصية المنشورة (رابط عام)</a></p>
         </div>
       </div>
+      <ChangePasswordPanel />
       <DeleteAccountPanel user={user} onDeleted={onDeleted} />
     </section>
   );

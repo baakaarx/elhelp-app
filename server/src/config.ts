@@ -20,6 +20,20 @@ export const MIN_ADMIN_PASSWORD_LENGTH = 12;
  */
 export const DEFAULT_STALE_GPS_MINUTES = 10;
 
+/**
+ * `TRUST_PROXY` accepts what Express accepts (`loopback`, `1`, `10.0.0.0/8`, `true`, `false`).
+ * The default trusts only a loopback proxy, which is exactly Caddy on the same machine, and
+ * cannot be abused by a remote client that forges `X-Forwarded-For`.
+ */
+export function readTrustProxy(raw: string | undefined, production: boolean): string | number | boolean {
+  const value = (raw ?? '').trim();
+  if (!value) return production ? 'loopback' : false;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value;
+}
+
 export interface Config {
   port: number;
   production: boolean;
@@ -33,6 +47,16 @@ export interface Config {
   staleGpsMinutes: number;
   /** Public contact address printed on the privacy policy page the stores link to. */
   privacyContact: string;
+  /**
+   * Which proxy hops may set `X-Forwarded-For`. Behind Caddy the socket peer is always
+   * 127.0.0.1, so without this every request shares one rate-limit bucket: fifteen failed
+   * logins anywhere would lock the whole team out for fifteen minutes.
+   */
+  trustProxy: string | number | boolean;
+  /** Failed sign-ins tolerated for one address before that account is frozen for the window. */
+  loginAccountLimit: number;
+  /** Sign-in attempts allowed per client address inside one window. */
+  loginRateLimit: { windowMs: number; limit: number };
 }
 
 export function readConfig(): Config {
@@ -73,5 +97,8 @@ export function readConfig(): Config {
     // A privacy contact is required by both stores. It defaults to privacy@<domain of the
     // manager address> so an installation never publishes the manager's own login address.
     privacyContact: (process.env.PRIVACY_CONTACT || '').trim() || `privacy@${adminEmail.split('@')[1] || 'example.com'}`,
+    trustProxy: readTrustProxy(process.env.TRUST_PROXY, production),
+    loginAccountLimit: 10,
+    loginRateLimit: { windowMs: 15 * 60000, limit: 15 },
   };
 }

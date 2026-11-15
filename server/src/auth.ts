@@ -46,7 +46,12 @@ const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 function cookieSecure(req: Request): boolean {
   return req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
 }
-function cookieSameSite(req: Request): 'none' | 'lax' { return cookieSecure(req) ? 'none' : 'lax'; }
+/**
+ * `Lax` in every environment. The dashboard and the engineer web build are served by the same
+ * origin as the API, so a cross-site cookie buys nothing — while `SameSite=None` would let any
+ * sibling subdomain drive the session for state-changing requests.
+ */
+function cookieSameSite(_req: Request): 'lax' { return 'lax'; }
 function readCookie(req: Request, name: string): string | undefined {
   const raw = req.headers.cookie;
   if (!raw) return undefined;
