@@ -7,6 +7,8 @@ export type Row = Record<string, any>;
 const STALE_SHIFT_MS = 18 * 3600000;
 /** The value `users.color` defaults to, shared by every account created before this migration. */
 const DEFAULT_REP_COLOR = '#28745b';
+/** Written into `visits.outcome` when the system closed a visit nobody ended. */
+export const AUTO_CLOSED_OUTCOME = 'أُغلقت تلقائيًا: انتهت الوردية قبل تسجيل النتيجة';
 export class Store {
   db: DatabaseSync;
   constructor(path: string) {
@@ -104,6 +106,9 @@ export class Store {
         checked_in_at INTEGER NOT NULL,
         checked_out_at INTEGER,
         duration_seconds INTEGER,
+        -- 1 when the shift ended (or the cleanup ran) before the engineer recorded a result,
+        -- so the row is a real check-in but its duration is an artifact, not a measured visit.
+        auto_closed INTEGER NOT NULL DEFAULT 0,
         in_lat REAL, in_lng REAL, in_accuracy REAL,
         out_lat REAL, out_lng REAL,
         created_at INTEGER NOT NULL
@@ -173,6 +178,7 @@ export class Store {
       "ALTER TABLE users ADD COLUMN oauth_subject TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
       "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
     ]) { try { this.db.exec(sql); } catch {} }
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
@@ -210,6 +216,14 @@ export class Store {
       WHERE ended_at IS NULL AND started_at < ?
         AND COALESCE((SELECT MAX(recorded_at) FROM locations WHERE locations.shift_id = shifts.id), started_at) < ?`,
     staleBefore, staleBefore);
+    // A visit left open when the app was killed (or the phone died) blocked the next check-in
+    // with "لديك زيارة مفتوحة" and kept a stopwatch running for days on both screens. It is
+    // closed here at zero duration, marked as automatic, and keeps the result if one was typed.
+    // The duration is not measured, so the KPI average ignores it (`auto_closed`).
+    this.run(`UPDATE visits SET status='closed', auto_closed=1,
+        checked_out_at = checked_in_at, duration_seconds = 0,
+        outcome = CASE WHEN TRIM(COALESCE(outcome,''))='' THEN ? ELSE outcome END
+      WHERE status='open' AND checked_in_at < ?`, AUTO_CLOSED_OUTCOME, staleBefore);
   }
   close() { this.db.close(); }
 }

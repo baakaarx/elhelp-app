@@ -185,6 +185,14 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [refresh]);
 
   const finishShift = useCallback(async () => {
+    // Ending the shift with a customer visit still open left the server to close it without a
+    // result, and the visit's duration became "when the shift happened to stop". The engineer
+    // records the result first — one button away in the visits tab.
+    if (summary?.openVisit) {
+      const message = 'فيه زيارة مفتوحة. سجّل نتيجتها من تبويب «الزيارات» الأول، وبعدها أنهِ الوردية.';
+      setError(message);
+      throw new Error(message);
+    }
     setBusy(true); setError('');
     try {
       await stopShift();
@@ -194,7 +202,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh]);
+  }, [refresh, summary]);
 
   const checkIn = useCallback(async (input: VisitInput) => {
     setBusy(true); setError('');

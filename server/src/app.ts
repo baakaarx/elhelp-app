@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import { z } from 'zod';
-import { Store } from './db.js';
+import { AUTO_CLOSED_OUTCOME, Store } from './db.js';
 import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js';
 import { createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
@@ -195,7 +195,15 @@ export function createApp(overrides: Partial<Config> = {}) {
   function endShift(userId: string) {
     const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', userId);
     if (shift) {
-      store.run('UPDATE shifts SET ended_at=? WHERE id=?', Date.now(), shift.id);
+      const now = Date.now();
+      store.run('UPDATE shifts SET ended_at=? WHERE id=?', now, shift.id);
+      // The visit still running belongs to this shift. Leaving it open made the next check-in
+      // fail with "لديك زيارة مفتوحة" — on a phone that only shows it in another tab — and kept
+      // a stopwatch alive on both screens for the rest of the day.
+      store.run(`UPDATE visits SET status='closed', auto_closed=1, checked_out_at=?,
+          duration_seconds = MAX(0, (? - checked_in_at) / 1000),
+          outcome = CASE WHEN TRIM(COALESCE(outcome,''))='' THEN ? ELSE outcome END
+        WHERE user_id=? AND status='open'`, now, now, AUTO_CLOSED_OUTCOME, userId);
       store.audit(userId, 'shift.stop');
     }
   }
@@ -995,7 +1003,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       const distance = rangeDistance(rep.id, start, end);
       const visits = store.get(`SELECT COUNT(*) AS total,
         SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed,
-        AVG(CASE WHEN status='closed' THEN duration_seconds END) AS avgDuration
+        AVG(CASE WHEN status='closed' AND auto_closed=0 THEN duration_seconds END) AS avgDuration
         FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?`, rep.id, start, end)!;
       const reportsRow = store.get("SELECT COUNT(*) AS c, COALESCE(SUM(CASE WHEN type='collection' THEN amount ELSE 0 END),0) AS collected FROM reports WHERE user_id=? AND created_at>=? AND created_at<?", rep.id, start, end)!;
       // The daily report belongs to the day it *covers* (`report_date`), not the moment it was
