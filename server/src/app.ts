@@ -12,7 +12,7 @@ import { createSession, hashPassword, publicUser, requestToken, requireAuth, ses
 import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
-import { privacyPage } from './privacy.js';
+import { deleteAccountPage, privacyPage } from './privacy.js';
 import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 
@@ -397,6 +397,12 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.setHeader('Cache-Control', 'public, max-age=600');
     res.type('html').send(privacyPage(config));
   });
+  // ---- Public deletion page: the web link Google Play asks for in Data safety ----
+  // It has to open without the app and without a login, and say exactly what is erased.
+  app.get('/delete-account', (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.type('html').send(deleteAccountPage(config));
+  });
 
   // ---- Right to erasure, from inside the app ----
   // The stores require a real in-app deletion path, not an email address. The typed email is
@@ -697,6 +703,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
     res.json({
       date, timezone: config.timezone, shift: shift || null,
+      // The app tells the engineer how long the data is kept; it has to ask, because the
+      // number lives in the server config (and used to be hard-coded as "30 days" in the UI).
+      retentionDays: config.retentionDays,
       distanceMeters: distance.meters, pointCount: distance.points, firstFixAt: distance.first, lastFixAt: distance.last, lastFixAccuracy: distance.lastAccuracy,
       visitsTotal: visits.length, visitsCompleted: completed.length, openVisit: open, avgVisitSeconds,
       collectionsCount: Number(collections?.c || 0), collectionAmount: Number(collections?.total || 0),

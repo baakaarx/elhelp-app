@@ -120,7 +120,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         <SectionTitle title="الخصوصية" />
         <Body>
           موقعك يُسجَّل أثناء الوردية فقط وبعد موافقتك الصريحة، ويُستخدم لمتابعة خط السير وإعداد التقارير.
-          البيانات تُحذف تلقائيًا بعد ٣٠ يومًا، وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
+          البيانات تُحذف تلقائيًا بعد {field.summary?.retentionDays ?? 365} يومًا، وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
         </Body>
         <Pressable onPress={() => void Linking.openURL(`${API_BASE}/privacy`)} accessibilityRole="link">
           <Text style={styles.link}>سياسة الخصوصية الكاملة ←</Text>

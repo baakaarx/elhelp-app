@@ -81,6 +81,7 @@ export interface Visit {
 export interface RepSummary {
   date: string;
   timezone: string;
+  retentionDays: number;
   shift: Shift | null;
   distanceMeters: number;
   pointCount: number;
