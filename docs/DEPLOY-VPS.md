@@ -126,6 +126,16 @@ sudo crontab -e    # 30 2 * * * DB_PATH=/var/lib/elhelp/mandoub.db /usr/local/bi
 ```
 
 النسخ تُحفظ مضغوطة في `/var/lib/elhelp/backups` ويُحذف ما تخطى ١٤ يومًا.
+
+> **اتأكد من النسخة الأولى بعينك** بعد ما تسطّب السكربت (الإصدار القديم من السكربت كان مكسورًا
+> وما كانش بيكتب أي نسخة):
+>
+> ```bash
+> sudo ls -lh /var/lib/elhelp/backups        # لازم تلاقي ملف mandoub-*.db.gz
+> sudo zcat /var/lib/elhelp/backups/mandoub-*.db.gz > /tmp/check.db && ls -lh /tmp/check.db
+> ```
+>
+> السكربت بقى بيفتح النسخة ويتحقق منها بنفسه قبل ما يحتفظ بيها، وبيقفل `/tmp/check.db` بعد الفحص.
 **لا تنسخ ملف SQLite بـ`cp` أثناء العمل** — استخدم السكربت (`VACUUM INTO`) لضمان نسخة متسقة.
 
 ## ٩) التحديث

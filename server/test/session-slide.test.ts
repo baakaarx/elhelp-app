@@ -3,7 +3,7 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
-import { SESSION_MS, tokenHash } from '../src/auth.js';
+import { MAX_SESSION_MS, SESSION_MS, tokenHash } from '../src/auth.js';
 
 /**
  * A session used all day must not expire in the middle of it.
@@ -71,4 +71,26 @@ test('the login of a session is still capped by the account, not by the clock', 
   store.run('UPDATE sessions SET expires_at=? WHERE token_hash=?', fixed, tokenHash(token));
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(Number(store.get('SELECT expires_at FROM sessions WHERE token_hash=?', tokenHash(token))!.expires_at), fixed);
+});
+
+test('a used session never slides past thirty days from its first login', async () => {
+  const token = await signedIn();
+  const born = Date.now() - 29 * 86400000;
+  // A credential copied off a phone and used every day for a month: it still has to die.
+  store.run('UPDATE sessions SET created_at=? WHERE token_hash=?', born, tokenHash(token));
+  store.run('UPDATE sessions SET expires_at=? WHERE token_hash=?', Date.now() + 60000, tokenHash(token));
+
+  const me = await client.get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+  assert.equal(me.status, 200, 'the day before the ceiling still works');
+  const expiry = Number(store.get('SELECT expires_at FROM sessions WHERE token_hash=?', tokenHash(token))!.expires_at);
+  assert.ok(expiry <= born + MAX_SESSION_MS + 1000, `slid to ${expiry}, past the ceiling`);
+  assert.ok(expiry > Date.now(), 'but it is still alive today');
+
+  // One day later the same token is worthless, however much it was used.
+  store.run('UPDATE sessions SET created_at=? WHERE token_hash=?', Date.now() - MAX_SESSION_MS - 1000, tokenHash(token));
+  store.run('UPDATE sessions SET expires_at=? WHERE token_hash=?', Date.now() + 60000, tokenHash(token));
+  const later = await client.get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+  const after = Number(store.get('SELECT expires_at FROM sessions WHERE token_hash=?', tokenHash(token))!.expires_at);
+  assert.ok(after <= Date.now(), 'the ceiling stopped the slide');
+  assert.ok([200, 401].includes(later.status));
 });

@@ -3,6 +3,15 @@ import type { Request, Response, NextFunction } from 'express';
 import type { Store, Row } from './db.js';
 
 export const SESSION_MS = 12 * 3600000;
+/**
+ * However often a session is used, it dies this long after it was created.
+ *
+ * A sliding expiry with no ceiling is a permanent credential: a token copied off a phone that is
+ * then lost, or lifted from a browser profile, stays alive for as long as whoever holds it keeps
+ * using it. Thirty days is long enough that the engineer never notices — the app is open every
+ * working day — and short enough that a forgotten token stops being a key.
+ */
+export const MAX_SESSION_MS = 30 * 86400000;
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString('hex');
   return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
@@ -41,8 +50,10 @@ export function sessionUser(store: Store, token: unknown): Row | undefined {
  */
 export function touchSession(store: Store, token: string): boolean {
   const now = Date.now();
-  const result = store.run('UPDATE sessions SET expires_at=? WHERE token_hash=? AND expires_at>? AND expires_at<=?',
-    now + SESSION_MS, tokenHash(token), now, now + SESSION_MS - 60000);
+  // `MIN` is the ceiling: the row slides, but never past the day this session was born.
+  const result = store.run(`UPDATE sessions SET expires_at=MIN(?, created_at + ?)
+    WHERE token_hash=? AND expires_at>? AND expires_at<=?`,
+  now + SESSION_MS, MAX_SESSION_MS, tokenHash(token), now, now + SESSION_MS - 60000);
   return Number(result.changes) > 0;
 }
 export function createSession(store: Store, userId: string) {

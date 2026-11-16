@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import { z } from 'zod';
-import { AUTO_CLOSED_OUTCOME, Store } from './db.js';
+import { AUTO_CLOSED_OUTCOME, runCleanup, Store } from './db.js';
 import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js';
 import { createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, haversine, localDate, type GeoPoint } from './geo.js';
@@ -1318,13 +1318,17 @@ export function createApp(overrides: Partial<Config> = {}) {
     const start = dayBounds(from, config.timezone).start;
     const end = dayBounds(to, config.timezone).end;
     const rows = store.all(`${VISIT_SELECT} WHERE v.checked_in_at>=? AND v.checked_in_at<? ORDER BY v.checked_in_at`, start, end);
+    // Built once, not once per row: a year of visits is tens of thousands of rows, and each
+    // `new Intl.DateTimeFormat` in the old loop cost tens of microseconds inside a request that
+    // blocked the whole server (single process) for seconds.
+    const clock = new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: config.timezone });
     return rows.map((row: any) => [
       localDate(config.timezone, Number(row.checkedInAt)),
       row.repName,
       row.customerName,
       row.purpose,
-      new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: config.timezone }).format(Number(row.checkedInAt)),
-      row.checkedOutAt ? new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: config.timezone }).format(Number(row.checkedOutAt)) : '',
+      clock.format(Number(row.checkedInAt)),
+      row.checkedOutAt ? clock.format(Number(row.checkedOutAt)) : '',
       row.durationSeconds === null ? '' : Math.round(Number(row.durationSeconds) / 60),
       row.outcome,
       row.notes,
@@ -1552,7 +1556,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.status(500).json({ error: 'حدث خطأ في الخادم. حاول مرة أخرى.' });
   });
   store.cleanup(config.retentionDays);
-  const cleanupTimer = setInterval(() => { store.cleanup(config.retentionDays); dayStatsCache.clear(); }, 3600000);
+  const cleanupTimer = setInterval(() => { runCleanup(store, config.retentionDays); dayStatsCache.clear(); }, 3600000);
   cleanupTimer.unref();
   async function close() {
     closing = true;

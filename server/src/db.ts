@@ -9,6 +9,20 @@ const STALE_SHIFT_MS = 18 * 3600000;
 const DEFAULT_REP_COLOR = '#28745b';
 /** Written into `visits.outcome` when the system closed a visit nobody ended. */
 export const AUTO_CLOSED_OUTCOME = 'أُغلقت تلقائيًا: انتهت الوردية قبل تسجيل النتيجة';
+/**
+ * The hourly sweep, and the reason it may fail.
+ *
+ * `cleanup` runs unattended at three in the morning inside a timer: a full disk, a lock held past
+ * `busy_timeout`, or a corrupt index makes it throw — and an exception inside a timer is an
+ * uncaught exception, so Node exits and the whole installation goes dark until someone notices.
+ * Losing one sweep costs nothing (the next one is an hour later); losing the process costs the
+ * manager the day's trail. So the error is logged and the server keeps serving.
+ */
+export function runCleanup(store: Pick<Store, 'cleanup'>, retentionDays: number): boolean {
+  try { store.cleanup(retentionDays); return true; }
+  catch (error) { console.error('[cleanup] the sweep failed, the server keeps running:', error); return false; }
+}
+
 export class Store {
   db: DatabaseSync;
   constructor(path: string) {

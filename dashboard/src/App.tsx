@@ -230,7 +230,19 @@ export default function App() {
                           {visits.slice(0, 6).map(visit => (
                             <li key={visit.id}>
                               <span className="dot" style={{ background: visit.status === 'open' ? '#b45309' : '#2f7a5f' }} aria-hidden="true" />
-                              <span className="grow"><strong>{visit.customerName}</strong><small>{visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}{visit.status === 'open' ? ' · مفتوحة' : ` · ${durationText(visit.durationSeconds)}`}</small></span>
+                              <span className="grow">
+                                <strong>{visit.customerName}</strong>
+                                <small>{visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}{visit.status === 'open' ? ' · مفتوحة' : ` · ${durationText(visit.durationSeconds)}`}</small>
+                                {/* The two marks a manager has to be able to see without exporting:
+                                    a visit typed with no signal, and one that ended without a result. */}
+                                {(visit.recordedOffline || visit.pendingResult) && (
+                                  <small className="visit-marks">
+                                    {visit.recordedOffline ? 'من غير شبكة' : ''}
+                                    {visit.recordedOffline && visit.pendingResult ? ' · ' : ''}
+                                    {visit.pendingResult ? 'بدون نتيجة' : ''}
+                                  </small>
+                                )}
+                              </span>
                             </li>
                           ))}
                         </ul>
