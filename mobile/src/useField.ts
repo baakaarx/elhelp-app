@@ -45,6 +45,15 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [error, setError] = useState('');
   const [syncNotice, setSyncNotice] = useState('');
   const mounted = useRef(true);
+  /**
+   * True while one sync tick is still running.
+   *
+   * Four requests per refresh on a slow field connection can take longer than the 15-second
+   * interval, so a second tick used to start on top of the first: two answers raced to set the
+   * same state (an older summary could overwrite a newer one) and the phone kept twice the
+   * requests going while the tower was weak. The timer now skips a tick instead of piling up.
+   */
+  const syncing = useRef(false);
 
   useEffect(() => () => { mounted.current = false; }, []);
 
@@ -91,15 +100,19 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   useEffect(() => {
     if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setRoute(null); setError(''); return; }
     void refresh();
-    const timer = setInterval(async () => {
-      const result = await flushOutbox().catch(() => null);
-      if (result && mounted.current) {
-        setPending(result.pending);
-        // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
-        // leave a stale warning pinned to the screen all day.
-        setSyncNotice(result.notice ?? '');
-      }
-      void refresh();
+    const timer = setInterval(() => {
+      if (syncing.current) return;
+      syncing.current = true;
+      void (async () => {
+        const result = await flushOutbox().catch(() => null);
+        if (result && mounted.current) {
+          setPending(result.pending);
+          // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
+          // leave a stale warning pinned to the screen all day.
+          setSyncNotice(result.notice ?? '');
+        }
+        await refresh();
+      })().catch(() => undefined).finally(() => { syncing.current = false; });
     }, 15000);
     void flushOutbox().then(result => {
       if (mounted.current) { setPending(result.pending); setSyncNotice(result.notice ?? ''); }

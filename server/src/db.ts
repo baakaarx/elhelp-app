@@ -200,11 +200,15 @@ export class Store {
     // An app that is killed (or a phone that dies) never sends "stop shift", so a shift could
     // stay open for days: the manager saw an engineer "in the field" at 3 a.m. and the phone
     // kept re-attaching to a shift from last week. A shift with no fixes for a day is over.
+    // The lookup is scoped to the shift itself. Asking for the representative's newest fix at all
+    // meant a shift from last week was never closed as long as the same person still drove on a
+    // newer one: the manager kept seeing an engineer "in the field" on the old shift, and the app
+    // kept re-attaching to it. A shift's own last fix (or its start) is what decides it is over.
     const staleBefore = Date.now() - STALE_SHIFT_MS;
     this.run(`UPDATE shifts SET ended_at = MAX(started_at, COALESCE(
-        (SELECT MAX(recorded_at) FROM locations WHERE locations.user_id = shifts.user_id), started_at))
+        (SELECT MAX(recorded_at) FROM locations WHERE locations.shift_id = shifts.id), started_at))
       WHERE ended_at IS NULL AND started_at < ?
-        AND COALESCE((SELECT MAX(recorded_at) FROM locations WHERE locations.user_id = shifts.user_id), started_at) < ?`,
+        AND COALESCE((SELECT MAX(recorded_at) FROM locations WHERE locations.shift_id = shifts.id), started_at) < ?`,
     staleBefore, staleBefore);
   }
   close() { this.db.close(); }
