@@ -98,11 +98,14 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
 
   if (!visit) return null;
   const isMoney = visit.purpose === 'collection' || visit.purpose === 'order';
+  // A visit the system closed (the shift ended, or the phone died) never got its result. The
+  // same sheet records it now — the row is already closed, so only the text and the amount go.
+  const late = visit.status === 'closed' && Boolean(visit.pendingResult || visit.autoClosed);
 
   async function submit() {
     // The label already says "*": closing a visit with no result leaves the manager's timeline
     // with a visit that has no outcome, which is the one thing the audit trail needs.
-    if (outcome.trim().length < 2) { setError('اكتب نتيجة الزيارة قبل الإنهاء.'); return; }
+    if (outcome.trim().length < 2) { setError(late ? 'اكتب نتيجة الزيارة.' : 'اكتب نتيجة الزيارة قبل الإنهاء.'); return; }
     setSaving(true); setError('');
     try {
       const location = await captureOnce();
@@ -119,12 +122,12 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
   }
 
   return (
-    <Sheet visible={Boolean(visit)} onClose={onClose} title={`إنهاء زيارة · ${visit.customerName}`}>
+    <Sheet visible={Boolean(visit)} onClose={onClose} title={`${late ? 'تسجيل نتيجة الزيارة' : 'إنهاء زيارة'} · ${visit.customerName}`}>
       <Field label="نتيجة الزيارة *" value={outcome} onChangeText={setOutcome} multiline placeholder="اتفقنا على توريد ٢٠ كرتونة الأسبوع القادم" style={{ minHeight: 80 }} />
       {isMoney && <Field label="المبلغ المحصَّل (ج.م)" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" style={styles.ltr} hint="يُضاف تلقائيًا إلى تقارير التحصيل في لوحة المدير." />}
       <Field label="ملاحظات إضافية" value={notes} onChangeText={setNotes} multiline style={{ minHeight: 60 }} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      <Button label={saving ? 'جارٍ الإنهاء…' : 'إنهاء الزيارة وإرسال النتيجة'} onPress={submit} loading={saving} />
+      <Button label={saving ? 'جارٍ الحفظ…' : late ? 'حفظ النتيجة' : 'إنهاء الزيارة وإرسال النتيجة'} onPress={submit} loading={saving} />
     </Sheet>
   );
 }

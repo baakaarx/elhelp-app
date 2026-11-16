@@ -189,9 +189,15 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     // result, and the visit's duration became "when the shift happened to stop". The engineer
     // records the result first — one button away in the visits tab.
     if (summary?.openVisit) {
-      const message = 'فيه زيارة مفتوحة. سجّل نتيجتها من تبويب «الزيارات» الأول، وبعدها أنهِ الوردية.';
-      setError(message);
-      throw new Error(message);
+      // The poll's copy can be up to fifteen seconds old, and the server closes a visit when the
+      // shift ends. Ask once before telling the engineer he cannot leave.
+      const fresh = await myVisits().catch(() => null);
+      const stillOpen = fresh ? fresh.visits.some(visit => visit.status === 'open') : true;
+      if (stillOpen) {
+        const message = 'فيه زيارة مفتوحة. سجّل نتيجتها من تبويب «الزيارات» الأول، وبعدها أنهِ الوردية.';
+        setError(message);
+        throw new Error(message);
+      }
     }
     setBusy(true); setError('');
     try {

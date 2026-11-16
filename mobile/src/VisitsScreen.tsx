@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { colors, fonts, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle } from './ui';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
-import { hhmmss, timeText } from './format';
+import { dayText, hhmmss, isToday, timeText } from './format';
 import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
 
@@ -31,6 +31,10 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   const open = field.summary?.openVisit ?? null;
   const closed = field.visits.filter(v => v.status === 'closed');
   const avgMinutes = closed.length ? Math.round(closed.reduce((sum, v) => sum + (v.durationSeconds ?? 0), 0) / closed.length / 60) : 0;
+  // The list also carries visits from the last two weeks whose result is still missing (the
+  // system closed them), so the header counts today's only — the rest are flagged per row.
+  const todayCount = field.visits.filter(visit => isToday(visit.checkedInAt, timeZone)).length;
+  const pendingCount = field.visits.filter(visit => visit.pendingResult).length;
 
   return (
     <>
@@ -38,9 +42,9 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>زيارات اليوم</Text>
-            <Text style={styles.sub}>{field.visits.length} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{closed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}</Text>
+            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{closed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}</Text>
           </View>
-          <View style={styles.count}><Text style={styles.countText}>{field.visits.length}</Text></View>
+          <View style={styles.count}><Text style={styles.countText}>{todayCount}</Text></View>
         </View>
 
         {!shift && (
@@ -90,13 +94,20 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
                 <View style={{ flex: 1, gap: 2 }}>
                   <Text style={styles.name}>{visit.customerName}</Text>
                   <Text style={styles.meta}>
-                    {visitPurposeLabels[visit.purpose]} · {timeText(visit.checkedInAt, timeZone)}
+                    {visitPurposeLabels[visit.purpose]} · {isToday(visit.checkedInAt, timeZone) ? '' : `${dayText(visit.checkedInAt, timeZone)} · `}{timeText(visit.checkedInAt, timeZone)}
                     {visit.status === 'closed' && visit.durationSeconds !== null ? ` ← ${timeText(visit.checkedOutAt ?? visit.checkedInAt, timeZone)} · ${Math.max(1, Math.round(visit.durationSeconds / 60))} د` : ' · جارية'}
                   </Text>
                   {visit.outcome ? <Text style={styles.outcome} numberOfLines={2}>{visit.outcome}</Text> : null}
                   {visit.village || visit.district ? <Text style={styles.meta}>{[visit.governorate, visit.district, visit.village].filter(Boolean).join(' · ')}</Text> : null}
+                  {/* Closed by the system, not by the engineer: the result is still missing and
+                      he is the only one who knows it. */}
+                  {visit.pendingResult ? (
+                    <Pressable onPress={() => setCheckOutVisit(visit)} accessibilityRole="button" style={styles.lateButton}>
+                      <Text style={styles.lateText}>سجّل نتيجة الزيارة</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
-                <Pill label={visit.status === 'open' ? 'مفتوحة' : 'منتهية'} tone={visit.status === 'open' ? 'warn' : 'mint'} />
+                <Pill label={visit.status === 'open' ? 'مفتوحة' : visit.pendingResult ? 'بدون نتيجة' : visit.autoClosed ? 'تلقائي' : 'منتهية'} tone={visit.status === 'open' || visit.pendingResult ? 'warn' : visit.autoClosed ? 'warn' : 'mint'} />
               </View>
             ))}
           </Card>
@@ -129,6 +140,8 @@ const styles = StyleSheet.create({
   markerText: { color: '#fdf8ec', fontSize: 11, fontFamily: fonts.bold },
   name: { fontFamily: fonts.bold, fontSize: 14, color: colors.ink, textAlign: 'right' },
   meta: { fontFamily: fonts.regular, fontSize: 11.5, color: colors.muted, textAlign: 'right' },
+  lateButton: { alignSelf: 'flex-end', marginTop: 4, borderWidth: 1, borderColor: colors.green700, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 5 },
+  lateText: { fontFamily: fonts.medium, fontSize: 11.5, color: colors.green700 },
   outcome: { fontFamily: fonts.regular, fontSize: 12, color: colors.green900, textAlign: 'right', lineHeight: 19 },
   footnote: { fontFamily: fonts.regular, fontSize: 11, color: colors.muted, textAlign: 'center' },
 });
