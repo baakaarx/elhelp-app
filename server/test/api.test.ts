@@ -1204,3 +1204,65 @@ test('a fix taken right at the shift start is still accepted', async () => {
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.accepted, 4);
 });
+
+test("a representative's visit list is today's field log, not every visit ever", async () => {
+  const engineer = await freshRep('visitlog');
+  const started = await request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId: 'visitlog-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const older = crypto.randomUUID();
+  const visit = await request(app).post('/api/visits/check-in').set(auth(engineer.token))
+    .send({ id: older, customerName: 'مزرعة الأمس', purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 9 } });
+  assert.equal(visit.status, 201, JSON.stringify(visit.body));
+  const yesterday = localDate(config.timezone, Date.now() - 86400000);
+  const bounds = dayBounds(yesterday, config.timezone);
+  store.run('UPDATE visits SET checked_in_at=?, created_at=? WHERE id=?', bounds.start + 3600000, bounds.start + 3600000, older);
+
+  const today = await request(app).get('/api/visits').set(auth(engineer.token));
+  assert.equal(today.status, 200);
+  assert.equal(today.body.visits.length, 0, 'yesterday\'s visit must not count as today\'s');
+  const past = await request(app).get(`/api/visits?date=${yesterday}`).set(auth(engineer.token));
+  assert.equal(past.status, 200);
+  assert.equal(past.body.visits.length, 1);
+  assert.equal(past.body.visits[0].id, older);
+});
+
+test('a shift left open by a killed app is closed instead of showing the engineer at work for days', async () => {
+  const engineer = await freshRep('stale');
+  const started = await request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId: 'stale-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const shiftId = started.body.shift.id as string;
+  // Two days old, last fix two days ago: the app was killed, nothing ever ended the shift.
+  const old = Date.now() - 2 * 86400000;
+  store.run('UPDATE shifts SET started_at=? WHERE id=?', old, shiftId);
+  store.run('UPDATE locations SET recorded_at=? WHERE shift_id=?', old + 3600000, shiftId);
+  store.cleanup(config.retentionDays);
+  const closed = store.get('SELECT ended_at FROM shifts WHERE id=?', shiftId)!;
+  assert.ok(Number(closed.ended_at) > 0, 'the stale shift must be closed');
+  assert.ok(Number(closed.ended_at) <= old + 3600001);
+
+  // A shift that is genuinely running right now must be left alone.
+  const running = await request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId: 'stale-device', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(running.status, 200);
+  store.cleanup(config.retentionDays);
+  assert.equal(store.get('SELECT ended_at FROM shifts WHERE id=?', running.body.shift.id)!.ended_at, null);
+});
+
+test('old unreviewed reports stay reachable beyond the feed limit', async () => {
+  const engineer = await freshRep('backlog');
+  const base = Date.now() - 400 * 3600000;
+  store.transaction(() => {
+    for (let index = 0; index < 305; index += 1) {
+      store.run('INSERT INTO reports(id,user_id,type,title,status,created_at) VALUES (?,?,?,?,?,?)',
+        `backlog-${index}`, engineer.id, 'note', `تقرير ${index}`, index < 5 ? 'new' : 'reviewed', base + index * 60000);
+    }
+  });
+  const list = await request(app).get('/api/reports').set(auth(adminToken));
+  assert.equal(list.status, 200);
+  assert.equal(list.body.reports.length, 300);
+  const ids = list.body.reports.map((report: any) => report.id);
+  assert.ok(ids.includes('backlog-0'), 'the oldest unreviewed report must still be listed');
+  assert.equal(list.body.reports[0].status, 'new');
+});

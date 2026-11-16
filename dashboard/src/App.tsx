@@ -73,11 +73,19 @@ export default function App() {
     socket.on('report', () => refresh());
     socket.on('daily-report', () => refresh());
     socket.on('visit', () => refresh());
-    const poll = setInterval(refresh, connected ? 30000 : 2000);
-    return () => { clearInterval(poll); socket.close(); socketRef.current = null; };
-    // `connected` is intentionally excluded: re-creating the socket on every connect event would churn connections.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { socket.close(); socketRef.current = null; };
+    // `connected` is intentionally excluded: re-creating the socket on every connect event would
+    // churn connections. The poll below has its own effect precisely so it can follow it.
   }, [user, refresh]);
+
+  // The polling rate depends on the live socket, and the value read when the socket effect ran
+  // was always the initial `false` — so a connected dashboard kept asking three endpoints every
+  // two seconds instead of every thirty. Re-creating only the timer keeps the socket untouched.
+  useEffect(() => {
+    if (!user || user.role !== 'admin') return;
+    const poll = setInterval(refresh, connected ? 30000 : 2000);
+    return () => clearInterval(poll);
+  }, [user, refresh, connected]);
 
   const reps = overview?.reps ?? [];
   const selected = useMemo(() => reps.find(r => r.id === selectedId) ?? null, [reps, selectedId]);
@@ -94,19 +102,22 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) { setRoute(null); setVisits([]); return; }
     let cancelled = false;
-    const query = routeDate ? `?date=${routeDate}` : '';
+    // The panel is labelled "زيارات اليوم" when no date is picked, so it has to ask for that day:
+    // without it the list showed every visit the engineer ever made under a "today" heading.
+    const day = routeDate || localDay(overview?.timezone);
+    const query = `?date=${day}`;
     const load = () => {
       api<RouteResponse>(`/api/reps/${selectedId}/route${query}`)
         .then(res => { if (!cancelled) setRoute(res); })
         .catch(() => { if (!cancelled) setRoute(null); });
-      api<{ visits: Visit[] }>(`/api/visits?repId=${selectedId}${query.replace('?', '&')}`)
+      api<{ visits: Visit[] }>(`/api/visits${query}&repId=${selectedId}`)
         .then(res => { if (!cancelled) setVisits(res.visits); })
         .catch(() => { if (!cancelled) setVisits([]); });
     };
     load();
     const timer = setInterval(load, 30000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [selectedId, routeDate]);
+  }, [selectedId, routeDate, overview?.timezone]);
 
   if (user === undefined) return <div className="boot">جارٍ التحقق من الجلسة…</div>;
   if (!user) return <Login onLogin={setUser} />;

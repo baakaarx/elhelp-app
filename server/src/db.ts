@@ -3,6 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export type Row = Record<string, any>;
+/** An open shift with no fixes for this long is treated as left behind, not as still running. */
+const STALE_SHIFT_MS = 18 * 3600000;
 /** The value `users.color` defaults to, shared by every account created before this migration. */
 const DEFAULT_REP_COLOR = '#28745b';
 export class Store {
@@ -195,6 +197,15 @@ export class Store {
     // Stillness justifications carry a GPS fix and a free-text reason, so they are covered by
     // the same retention window the privacy policy promises. They used to be kept forever.
     this.run('DELETE FROM idle_reports WHERE created_at < ?', cutoff);
+    // An app that is killed (or a phone that dies) never sends "stop shift", so a shift could
+    // stay open for days: the manager saw an engineer "in the field" at 3 a.m. and the phone
+    // kept re-attaching to a shift from last week. A shift with no fixes for a day is over.
+    const staleBefore = Date.now() - STALE_SHIFT_MS;
+    this.run(`UPDATE shifts SET ended_at = MAX(started_at, COALESCE(
+        (SELECT MAX(recorded_at) FROM locations WHERE locations.user_id = shifts.user_id), started_at))
+      WHERE ended_at IS NULL AND started_at < ?
+        AND COALESCE((SELECT MAX(recorded_at) FROM locations WHERE locations.user_id = shifts.user_id), started_at) < ?`,
+    staleBefore, staleBefore);
   }
   close() { this.db.close(); }
 }

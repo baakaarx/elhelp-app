@@ -284,7 +284,9 @@ export function createApp(overrides: Partial<Config> = {}) {
       r.lat, r.lng, r.accuracy, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt,
       u.name AS repName, u.color AS repColor
       FROM reports r JOIN users u ON u.id=r.user_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY r.created_at DESC LIMIT 300`;
+      -- Unreviewed first: the feed is capped, and a backlog of more than 300 reports used to hide
+      -- the oldest ones forever, so the manager could never clear it.
+      ORDER BY (r.status='new') DESC, r.created_at DESC LIMIT 300`;
     return store.all(sql, ...params);
   }
   let broadcastTimer: NodeJS.Timeout | undefined;
@@ -661,7 +663,11 @@ export function createApp(overrides: Partial<Config> = {}) {
     const status = req.query.status === 'open' || req.query.status === 'closed' ? req.query.status : undefined;
     const repId = isAdmin && typeof req.query.repId === 'string' ? req.query.repId : undefined;
     if (date) { try { dayBounds(date, config.timezone); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; } }
-    res.json({ visits: listVisits({ userId: isAdmin ? repId : res.locals.user.id, date, status }) });
+    // The engineer app's screen is titled "زيارات اليوم" and asks without a date, so it used to
+    // list — and count — every visit the account ever recorded. Yesterday's visits belong to
+    // `?date=`, and the manager's feed still spans everything unless a date is given.
+    const scopeDate = date ?? (isAdmin ? undefined : localDate(config.timezone));
+    res.json({ visits: listVisits({ userId: isAdmin ? repId : res.locals.user.id, date: scopeDate, status }) });
   });
   app.get('/api/me/summary', repOnly, (req, res) => {
     const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : localDate(config.timezone);
