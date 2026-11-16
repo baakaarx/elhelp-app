@@ -97,6 +97,11 @@ function Root() {
     <View style={styles.screen}>
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
         {shift ? <LiveBanner since={shift.started_at} pending={field.pending} trackingActive={field.trackingActive} /> : null}
+        {/* The sync warning is app-wide (a phone clock the server refuses), so it lives in the
+            top bar where every tab shows it — not inside one screen's card. */}
+        {field.syncNotice ? (
+          <View style={[styles.errorBar, styles.noticeBar]}><Text style={styles.noticeText}>⚠ {field.syncNotice}</Text></View>
+        ) : null}
         {field.error && <View style={styles.errorBar}><Text style={styles.errorText}>{field.error}</Text></View>}
         <View style={styles.body}>
           {tab === 'home' && (
@@ -178,6 +183,8 @@ const styles = StyleSheet.create({
   livePending: { fontFamily: fonts.regular, fontSize: 11, color: '#f5e6c8' },
   errorBar: { backgroundColor: colors.dangerSoft, paddingHorizontal: space.lg, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#efcaca' },
   errorText: { fontFamily: fonts.regular, fontSize: 12, color: colors.danger, textAlign: 'right' },
+  noticeBar: { backgroundColor: '#fdf3d7', borderBottomColor: '#e8d08a' },
+  noticeText: { fontFamily: fonts.regular, fontSize: 12, color: '#7a5a12', textAlign: 'right', lineHeight: 19 },
   tabBar: {
     flexDirection: 'row-reverse', backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line,
     paddingBottom: 8, paddingTop: 8, paddingHorizontal: 6,

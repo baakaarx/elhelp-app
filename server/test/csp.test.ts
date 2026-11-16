@@ -20,6 +20,11 @@ test('the manager dashboard loads no third-party script', () => {
   assert.ok(!script.includes('google'), `unexpected Google script origin: ${script}`);
   assert.ok(!script.includes('apple'), `unexpected Apple script origin: ${script}`);
   assert.ok(!script.includes('unsafe-eval'), 'the dashboard bundle needs no eval');
+  assert.ok(!script.includes('unsafe-inline'), 'no page on the manager surface has an inline script');
+});
+
+test('the engineer web build keeps the inline-script exception it needs', () => {
+  assert.match(directive(engineer, 'script-src'), /'unsafe-inline'/, 'Metro inlines its bootstrap');
 });
 
 test('the dashboard loads no remote font or stylesheet', () => {

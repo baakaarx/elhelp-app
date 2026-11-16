@@ -5,6 +5,7 @@ import * as Haptics from 'expo-haptics';
 import { sendDailyReport } from './api';
 import { captureOnce } from './location';
 import { enqueueDailyReport, flushOutbox } from './reports';
+import { shouldQueue } from './retry';
 import { randomUUID } from './tracking';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Field, Pill, Row, SectionTitle } from './ui';
@@ -80,10 +81,9 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
       setVisits([emptyVisit()]); setCircumstances(''); setLeftAt(''); setReturnedAt(''); setSignedName(''); setConfirmed(false); setFix(null);
       onDone?.();
     } catch (e) {
-      const status = (e as { status?: number }).status ?? 0;
-      if (status === 0) {
+      if (shouldQueue(e)) {
         await enqueueDailyReport(payload);
-        setMessage('لا يوجد اتصال. حفظنا التقرير وسيُرسل تلقائيًا.');
+        setMessage('تعذّر الإرسال الآن. حفظنا التقرير وسيُرسل تلقائيًا.');
         setConfirmed(false);
       } else setError((e as Error).message);
     } finally { setBusy(false); }

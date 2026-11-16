@@ -15,9 +15,16 @@
  *
  * `wss:` stays in `connect-src`: Socket.IO upgrades the same origin, and a handful of browsers
  * do not treat the websocket scheme as covered by `'self'`.
+ *
+ * `script-src 'unsafe-inline'` is kept for the engineer build only. The manager dashboard ships a
+ * Vite bundle plus three HTML pages built here (`/privacy`, `/delete-account`, the `/app`
+ * placeholder) and none of them contains an inline `<script>` — only inline `<style>`, which
+ * `style-src` still allows. Leaving the exception in place would have let any HTML injection on
+ * the manager surface run as a script.
  */
 const BASE = {
-  script: "script-src 'self' 'unsafe-inline'",
+  script: "script-src 'self'",
+  engineerScript: "script-src 'self' 'unsafe-inline'",
   style: "style-src 'self' 'unsafe-inline'",
   // Map tiles come from one keyless provider (`dashboard/src/MapView.tsx`).
   img: "img-src 'self' data: blob: https://server.arcgisonline.com",
@@ -28,7 +35,7 @@ const BASE = {
 export function contentSecurityPolicy(engineerApp: boolean): string {
   return [
     "default-src 'self'",
-    engineerApp ? `${BASE.script} 'unsafe-eval'` : BASE.script,
+    engineerApp ? `${BASE.engineerScript} 'unsafe-eval'` : BASE.script,
     BASE.style,
     engineerApp ? "font-src 'self' data: https://fonts.gstatic.com" : "font-src 'self' data:",
     BASE.img,

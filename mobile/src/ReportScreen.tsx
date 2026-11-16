@@ -5,6 +5,7 @@ import { get, sendReport } from './api';
 import { captureOnce } from './location';
 import { parseNumberText } from './format';
 import { enqueueReport, flushOutbox } from './reports';
+import { shouldQueue } from './retry';
 import { randomUUID } from './tracking';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Field, Pill, Row, SectionTitle } from './ui';
@@ -61,12 +62,11 @@ export default function ReportScreen({ onPending }: { onPending?: (value: number
       setTitle(''); setBody(''); setCustomer(''); setAmount('');
       await loadRecent();
     } catch (e) {
-      const status = (e as { status?: number }).status ?? 0;
-      if (status === 0) {
+      if (shouldQueue(e)) {
         await enqueueReport(payload);
         const result = await flushOutbox().catch(() => null);
         onPending?.(result?.pending ?? 0);
-        setMessage('لا يوجد اتصال. حفظناه وسيُرسل تلقائيًا.');
+        setMessage('تعذّر الإرسال الآن. حفظناه وسيُرسل تلقائيًا.');
         setTitle(''); setBody(''); setCustomer(''); setAmount('');
       } else setError((e as Error).message);
     } finally { setBusy(false); }
