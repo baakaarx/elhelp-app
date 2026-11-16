@@ -67,6 +67,10 @@ export interface Visit {
   notes: string;
   outcome: string;
   status: 'open' | 'closed';
+  /** True when the shift ended (or the cleanup ran) before a result was recorded. */
+  autoClosed?: boolean;
+  /** Still shows the automatic text: the engineer has not written what happened yet. */
+  pendingResult?: boolean;
   checkedInAt: number;
   checkedOutAt: number | null;
   durationSeconds: number | null;

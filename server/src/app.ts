@@ -255,14 +255,22 @@ export function createApp(overrides: Partial<Config> = {}) {
     const step = (points.length - 1) / (max - 1);
     return Array.from({ length: max }, (_, index) => points[Math.round(index * step)]);
   }
+  // A visit the system closed still shows the automatic text until the engineer writes the real
+  // result. That comparison is the only thing standing between him and a lost record.
+  const PENDING_RESULT_SQL = `(v.auto_closed=1 AND v.outcome='${AUTO_CLOSED_OUTCOME.replace(/'/g, "''")}')`;
   const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
     v.village, v.phone, v.purpose, v.notes, v.outcome, v.status, v.checked_in_at AS checkedInAt,
     v.checked_out_at AS checkedOutAt, v.duration_seconds AS durationSeconds,
-    v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
+    v.auto_closed AS autoClosed, ${PENDING_RESULT_SQL} AS pendingResult, v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
     v.out_lat AS outLat, v.out_lng AS outLng,
     u.name AS repName, u.color AS repColor
     FROM visits v JOIN users u ON u.id = v.user_id`;
-  function visitRow(id: string) { return store.get(`${VISIT_SELECT} WHERE v.id=?`, id); }
+  // SQLite has no boolean: the two flags come back as 0/1. They are booleans on the wire so a
+  // client can compare with `=== true` instead of guessing (`mobile/src/VisitSheets.tsx` did,
+  // and a closed visit was labelled as if it were still running).
+  const asVisit = <T extends Record<string, any> | undefined>(row: T): T =>
+    (row ? { ...row, autoClosed: Boolean(row.autoClosed), pendingResult: Boolean(row.pendingResult) } : row) as T;
+  function visitRow(id: string) { return asVisit(store.get(`${VISIT_SELECT} WHERE v.id=?`, id)); }
   function listVisits(filter: { userId?: string; repId?: string; date?: string; status?: string }) {
     const where: string[] = []; const params: any[] = [];
     if (filter.userId) { where.push('v.user_id=?'); params.push(filter.userId); }
@@ -272,7 +280,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       const bounds = dayBounds(filter.date, config.timezone);
       where.push('v.checked_in_at>=? AND v.checked_in_at<?'); params.push(bounds.start, bounds.end);
     }
-    return store.all(`${VISIT_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY v.checked_in_at DESC LIMIT 300`, ...params);
+    return store.all(`${VISIT_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY v.checked_in_at DESC LIMIT 300`, ...params).map(asVisit);
   }
   function dayDistance(userId: string, start: number, end: number) {
     const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at', userId, start, end) as unknown as GeoPoint[];
@@ -753,7 +761,35 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات إنهاء الزيارة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const visit = visitRow(String(req.params.id));
     if (!visit || visit.userId !== res.locals.user.id) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
-    if (visit.status === 'closed') { res.json({ visit, duplicate: true }); return; }
+    if (visit.status === 'closed') {
+      /*
+       * A visit the system closed because the shift ended (or the app was killed) never got its
+       * result. The row is closed, so the normal path answered "duplicate" and the engineer had
+       * no way to say what happened — the one field the audit trail exists for. Writing the
+       * result now is allowed; the duration stays unknown, so `auto_closed` stays set and the
+       * KPI average keeps ignoring it.
+       */
+      // Only while the result is still the automatic text: once it is written it is not
+      // rewritten by a retry (the queued request may arrive twice), exactly like a normal visit.
+      if (Number(visit.autoClosed) !== 1 || visit.outcome !== AUTO_CLOSED_OUTCOME) {
+        res.json({ visit, duplicate: true });
+        return;
+      }
+      const late = parsed.data;
+      store.run('UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=?',
+        late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id);
+      if (late.amount !== null && late.amount > 0) {
+        store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
+          `تحصيل - ${visit.customerName}`, late.outcome || visit.notes, visit.customerName, late.amount,
+          late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, Date.now());
+      }
+      store.audit(res.locals.user.id, 'visit.result_recorded_late', { visitId: visit.id });
+      io.to('admins').emit('visit', visitRow(visit.id));
+      invalidateKpis(); broadcast();
+      res.json({ visit: visitRow(visit.id), duplicate: false, recordedLate: true });
+      return;
+    }
     const data = parsed.data;
     const now = Date.now();
     const duration = Math.max(0, Math.round((now - Number(visit.checkedInAt)) / 1000));
@@ -782,7 +818,22 @@ export function createApp(overrides: Partial<Config> = {}) {
     // list — and count — every visit the account ever recorded. Yesterday's visits belong to
     // `?date=`, and the manager's feed still spans everything unless a date is given.
     const scopeDate = date ?? (isAdmin ? undefined : localDate(config.timezone));
-    res.json({ visits: listVisits({ userId: isAdmin ? repId : res.locals.user.id, date: scopeDate, status }) });
+    const visits = listVisits({ userId: isAdmin ? repId : res.locals.user.id, date: scopeDate, status });
+    if (isAdmin || date || status === 'open') { res.json({ visits }); return; }
+    /*
+     * The engineer's screen is titled "today", but a visit the system closed — because the app
+     * was killed and the cleanup ran the next morning — belongs to yesterday and simply vanished
+     * from the app. It is the only place the missing result can be typed, so the last two weeks
+     * of those come along, flagged with `pendingResult`.
+     */
+    const pending = store.all(`${VISIT_SELECT} WHERE v.user_id=? AND ${PENDING_RESULT_SQL} AND v.checked_in_at>=? ORDER BY v.checked_in_at DESC LIMIT 50`,
+      res.locals.user.id, Date.now() - 14 * 86400000) as Array<Record<string, any>>;
+    const seen = new Set(visits.map(visit => String(visit.id)));
+    const missing = pending.filter(visit => !seen.has(String(visit.id)));
+    const merged: Array<Record<string, any>> = missing.length
+      ? [...missing, ...(visits as Array<Record<string, any>>)].sort((a, b) => Number(b.checkedInAt) - Number(a.checkedInAt))
+      : (visits as Array<Record<string, any>>);
+    res.json({ visits: merged });
   });
   app.get('/api/me/summary', repOnly, (req, res) => {
     const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : localDate(config.timezone);

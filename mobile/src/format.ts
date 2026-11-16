@@ -37,6 +37,14 @@ export const clockText = (now = Date.now(), timeZone = DEFAULT_TIMEZONE) =>
 /** `HH:MM` for one timestamp, on the installation's clock. */
 export const timeText = (at: number, timeZone = DEFAULT_TIMEZONE) =>
   new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone }).format(at);
+/** `D/M` on the installation's clock — a row from another day must not read as today's. */
+export const dayText = (at: number, timeZone = DEFAULT_TIMEZONE) =>
+  new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'numeric', timeZone }).format(at);
+/** Is this timestamp on today's date, on the installation's clock? */
+export function isToday(at: number, timeZone = DEFAULT_TIMEZONE, now = Date.now()) {
+  const format = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone });
+  return format.format(at) === format.format(now);
+}
 export function agoText(ts: number | null, now = Date.now()) {
   if (!ts) return 'لا يوجد';
   const seconds = Math.max(0, Math.round((now - ts) / 1000));
