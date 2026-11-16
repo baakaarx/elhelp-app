@@ -14,7 +14,9 @@ export function fieldAlerts(store: Store, opts: { timezone: string }) {
     const repId = String(rep.id);
     const shift = store.get('SELECT id, started_at FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', repId);
     const lastPoint = store.get('SELECT recorded_at FROM locations WHERE user_id=? ORDER BY recorded_at DESC LIMIT 1', repId);
-    const visitsToday = store.all('SELECT id FROM visits WHERE user_id=? AND checked_in_at>=? ', repId, now - 86400000); // approx
+    // Counted against the *current* shift, not a rolling 24h window: yesterday's check-ins
+    // used to mask a shift that opened hours ago and still has no visit.
+    const shiftVisits = shift ? store.all('SELECT id FROM visits WHERE user_id=? AND checked_in_at>=?', repId, Number(shift.started_at)) : [];
     const dailyToday = store.get('SELECT id FROM daily_reports WHERE user_id=? AND report_date=?', repId, today);
     const pendingReviews = store.get("SELECT COUNT(*) as c FROM reports WHERE user_id=? AND status='new' AND created_at < ?", repId, now - 86400000);
 
@@ -28,7 +30,7 @@ export function fieldAlerts(store: Store, opts: { timezone: string }) {
           alerts.push({ repId, repName: String(rep.name), code: 'stale_gps', level: 'warn', title: 'انقطاع GPS', detail: `آخر إشارة منذ ${Math.round(staleMin)} دقيقة` });
         }
       }
-      if (visitsToday.length === 0 && shiftAgeMin > 60) {
+      if (shiftVisits.length === 0 && shiftAgeMin > 60) {
         alerts.push({ repId, repName: String(rep.name), code: 'no_visits', level: 'info', title: 'بلا زيارات', detail: `وردية ${Math.round(shiftAgeMin)} دقيقة بدون تسجيل زيارة` });
       }
       if (!dailyToday && shiftAgeMin > 240) {

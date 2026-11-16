@@ -27,8 +27,12 @@ async function flushOnce(): Promise<{ sent: number; pending: number }> {
   const locations: GeoPoint[] = [];
   for (const item of items) {
     try {
-      if (item.kind === 'location') { locations.push(JSON.parse(item.payload) as GeoPoint); continue; }
-      const payload = JSON.parse(item.payload) as ReportInput | DailyReportInput;
+      // Parsed separately: a truncated payload is not a network error, and bumping it would
+      // keep the same dead row at the head of the queue for the life of the install.
+      let payload: GeoPoint | ReportInput | DailyReportInput;
+      try { payload = JSON.parse(item.payload) as GeoPoint | ReportInput | DailyReportInput; }
+      catch { await queue.remove(item.key); continue; }
+      if (item.kind === 'location') { locations.push(payload as GeoPoint); continue; }
       if (item.kind === 'report') await sendReport(payload as ReportInput);
       else await sendDailyReport(payload as DailyReportInput);
       await queue.remove(item.key);

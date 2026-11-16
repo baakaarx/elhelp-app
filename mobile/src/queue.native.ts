@@ -27,8 +27,11 @@ export async function createQueue(): Promise<Outbox> {
       db.runSync('INSERT OR IGNORE INTO outbox(key,kind,payload,created_at,attempts) VALUES (?,?,?,?,0)', key, kind, JSON.stringify(payload), Date.now());
     },
     async list(limit = 200) {
+      // Reports before fixes: an hour of GPS backlog is thousands of rows, and ordering by
+      // time alone meant a queued collection report waited behind every one of them.
       const rows = db.getAllSync<{ key: string; kind: string; payload: string; created_at: number; attempts: number }>(
-        'SELECT key,kind,payload,created_at,attempts FROM outbox ORDER BY created_at LIMIT ?', limit);
+        `SELECT key,kind,payload,created_at,attempts FROM outbox
+         ORDER BY CASE WHEN kind='location' THEN 1 ELSE 0 END, created_at LIMIT ?`, limit);
       return rows.map(row => ({ key: row.key, kind: row.kind as OutboxKind, payload: row.payload, createdAt: row.created_at, attempts: row.attempts }));
     },
     async remove(key: string) { db.runSync('DELETE FROM outbox WHERE key=?', key); },

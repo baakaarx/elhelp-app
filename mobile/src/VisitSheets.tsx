@@ -100,6 +100,9 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
   const isMoney = visit.purpose === 'collection' || visit.purpose === 'order';
 
   async function submit() {
+    // The label already says "*": closing a visit with no result leaves the manager's timeline
+    // with a visit that has no outcome, which is the one thing the audit trail needs.
+    if (outcome.trim().length < 2) { setError('اكتب نتيجة الزيارة قبل الإنهاء.'); return; }
     setSaving(true); setError('');
     try {
       const location = await captureOnce();
