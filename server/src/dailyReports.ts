@@ -69,7 +69,8 @@ export function listDailyReports(store: Store, filter: { userId?: string; repId?
   if (filter.date) { where.push('d.report_date=?'); params.push(filter.date); }
   if (filter.from) { where.push('d.report_date>=?'); params.push(filter.from); }
   if (filter.to) { where.push('d.report_date<=?'); params.push(filter.to); }
-  const rows = store.all(`${SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY d.report_date DESC, d.created_at DESC LIMIT 300`, ...params);
+  // Same rule as the field reports: an unreviewed day is never pushed out of the capped list.
+  const rows = store.all(`${SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY (d.status='new') DESC, d.report_date DESC, d.created_at DESC LIMIT 300`, ...params);
   return rows.map(row => ({ ...row, version: DAILY_REPORT_VERSION, visits: visits(store, String(row.id)) })) as DailyReport[];
 }
 export function insertDailyReport(store: Store, userId: string, shiftId: string | null, data: NewDailyReport, now: number, timezone: string) {
