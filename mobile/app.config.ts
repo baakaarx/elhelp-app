@@ -53,7 +53,8 @@ const config: ExpoConfig = {
     // Play rejects a bundle whose versionCode was already used; `npm run build:aab -- ...
     // --version-code=7` (or ANDROID_VERSION_CODE) raises it without hand-editing Gradle.
     versionCode: Number(process.env.ANDROID_VERSION_CODE || '1') || 1,
-    adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#0a1f33' },
+    // Matches the artwork's own corner colour, so the mask edge never shows a different navy.
+    adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#020305' },
     // No POST_NOTIFICATIONS: the app ships no push/local notifications, and asking for a
     // permission the code never uses is a Play "unnecessary permissions" flag.
     permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'ACCESS_BACKGROUND_LOCATION', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_LOCATION'],
@@ -72,7 +73,7 @@ const config: ExpoConfig = {
     'expo-secure-store',
     'expo-sqlite',
     'expo-font',
-    ['expo-splash-screen', { image: './assets/splash-icon.png', resizeMode: 'contain', backgroundColor: '#0a1f33' }],
+    ['expo-splash-screen', { image: './assets/splash-icon.png', resizeMode: 'contain', backgroundColor: '#020305' }],
   ],
   experiments: { baseUrl: process.env.EXPO_BASE_URL || undefined },
   extra: {

@@ -1418,3 +1418,26 @@ test('the app is told which social sign-ins the server can verify', async () => 
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, { google: true, apple: true });
 });
+
+test('the first phone to start a shift owns the account, and the agent refresh exposes no paths', async () => {
+  const engineer = await freshRep('device');
+  const start = (deviceId: string) => request(app).post('/api/shifts/start').set(auth(engineer.token))
+    .send({ consentVersion: '1.0', deviceId, location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+
+  const first = await start('phone-one');
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(store.get('SELECT device_id FROM users WHERE id=?', engineer.id)!.device_id, 'phone-one');
+
+  const second = await start('phone-two');
+  assert.equal(second.status, 403);
+  assert.equal(second.body.code, 'DEVICE_MISMATCH');
+  assert.equal(store.get('SELECT device_id FROM users WHERE id=?', engineer.id)!.device_id, 'phone-one',
+    'a second phone must never take the binding over');
+
+  const refresh = await request(app).post('/api/agent/refresh').set(auth(adminToken));
+  assert.equal(refresh.status, 200, JSON.stringify(refresh.body));
+  for (const skill of refresh.body.skills as Array<Record<string, unknown>>) {
+    assert.deepEqual(Object.keys(skill).sort(), ['description', 'id', 'name'],
+      'skill files carry a body and an absolute path; neither belongs in an API response');
+  }
+});
