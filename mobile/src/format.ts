@@ -25,8 +25,18 @@ export const hhmmss = (ms: number) => {
   const s = String(total % 60).padStart(2, '0');
   return `${h}:${m}:${s}`;
 };
-export const clockText = (now = Date.now()) =>
-  new Intl.DateTimeFormat('ar-EG', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' }).format(now);
+/**
+ * The installation's timezone, sent by the server with every summary. A phone whose own clock
+ * zone is wrong (travel, a manual change, a roaming SIM) used to label its visits and its shift
+ * start in that wrong zone, so the times on the engineer's screen disagreed with the ones the
+ * manager saw for the very same record.
+ */
+export const DEFAULT_TIMEZONE = 'Africa/Cairo';
+export const clockText = (now = Date.now(), timeZone = DEFAULT_TIMEZONE) =>
+  new Intl.DateTimeFormat('ar-EG', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone }).format(now);
+/** `HH:MM` for one timestamp, on the installation's clock. */
+export const timeText = (at: number, timeZone = DEFAULT_TIMEZONE) =>
+  new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone }).format(at);
 export function agoText(ts: number | null, now = Date.now()) {
   if (!ts) return 'لا يوجد';
   const seconds = Math.max(0, Math.round((now - ts) / 1000));
@@ -37,4 +47,3 @@ export function agoText(ts: number | null, now = Date.now()) {
   if (hours < 24) return `قبل ${hours} ساعة`;
   return `قبل ${Math.round(hours / 24)} يوم`;
 }
-export const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(Date.now());

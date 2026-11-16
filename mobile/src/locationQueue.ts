@@ -15,6 +15,10 @@ export async function sendLocationChunks(
       return true;
     } catch (error) {
       const status = (error as { status?: number }).status ?? 0;
+      // A fast phone clock rejects the whole batch until the clock is fixed, and splitting it
+      // down to single fixes then deleting each one threw the engineer's entire track away
+      // without a word. The fixes are all valid; the message goes to the engineer instead.
+      if ((error as { code?: string }).code === 'CLOCK_SKEW') throw error;
       if (status !== 400 && status !== 422) return false;
       if (chunk.length === 1) { await remove(chunk[0].id); return true; }
       const middle = Math.floor(chunk.length / 2);

@@ -14,13 +14,20 @@ export async function enqueueLocation(point: GeoPoint) { await (await outbox()).
 export async function enqueueReport(report: ReportInput) { await (await outbox()).add('report', report); }
 export async function enqueueDailyReport(report: DailyReportInput) { await (await outbox()).add('daily-report', report); }
 
-let flushing: Promise<{ sent: number; pending: number }> | null = null;
-export function flushOutbox(): Promise<{ sent: number; pending: number }> {
+/**
+ * `notice` carries a message the engineer has to act on (today: the phone clock is ahead, so
+ * the server refuses every fix). It is not an error of ours — nothing is lost — so the caller
+ * shows it and keeps the queue intact instead of splitting and dropping the batches.
+ */
+export interface FlushResult { sent: number; pending: number; notice?: string }
+
+let flushing: Promise<FlushResult> | null = null;
+export function flushOutbox(): Promise<FlushResult> {
   if (!flushing) flushing = flushOnce().finally(() => { flushing = null; });
   return flushing;
 }
 
-async function flushOnce(): Promise<{ sent: number; pending: number }> {
+async function flushOnce(): Promise<FlushResult> {
   const queue = await outbox();
   const items = await queue.list(200);
   let sent = 0;
@@ -58,6 +65,14 @@ async function flushOnce(): Promise<{ sent: number; pending: number }> {
     else await queue.remove(point.id);
   }
   // Preserve unsent fixes on transient errors and isolate invalid points.
-  sent += await sendLocationChunks(fresh, pushLocations, id => queue.remove(id));
-  return { sent, pending: await queue.count() };
+  let notice: string | undefined;
+  try {
+    sent += await sendLocationChunks(fresh, pushLocations, id => queue.remove(id));
+  } catch (error) {
+    // The clock is the engineer's to fix, and every fix in the queue is still good.
+    if ((error as { code?: string }).code !== 'CLOCK_SKEW') throw error;
+    notice = (error as Error).message;
+  }
+  const pending = await queue.count();
+  return notice ? { sent, pending, notice } : { sent, pending };
 }

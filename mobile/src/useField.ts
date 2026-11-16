@@ -22,6 +22,8 @@ export interface FieldBundle {
   loading: boolean;
   busy: boolean;
   trackingActive: boolean;
+  /** An actionable message from the sync loop (e.g. the phone clock is ahead of the server). */
+  syncNotice: string;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -41,6 +43,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [busy, setBusy] = useState(false);
   const [trackingActive, setTrackingActive] = useState(false);
   const [error, setError] = useState('');
+  const [syncNotice, setSyncNotice] = useState('');
   const mounted = useRef(true);
 
   useEffect(() => () => { mounted.current = false; }, []);
@@ -90,10 +93,17 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     void refresh();
     const timer = setInterval(async () => {
       const result = await flushOutbox().catch(() => null);
-      if (result && mounted.current) setPending(result.pending);
+      if (result && mounted.current) {
+        setPending(result.pending);
+        // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
+        // leave a stale warning pinned to the screen all day.
+        setSyncNotice(result.notice ?? '');
+      }
       void refresh();
     }, 15000);
-    void flushOutbox().then(result => { if (mounted.current) setPending(result.pending); }).catch(() => undefined);
+    void flushOutbox().then(result => {
+      if (mounted.current) { setPending(result.pending); setSyncNotice(result.notice ?? ''); }
+    }).catch(() => undefined);
     return () => clearInterval(timer);
   }, [user, refresh]);
 
@@ -192,7 +202,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [refresh]);
 
   return {
-    summary, visits, route, pending, loading, busy, trackingActive, error,
+    summary, visits, route, pending, loading, busy, trackingActive, syncNotice, error,
     clearError: () => setError(''),
     refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };
