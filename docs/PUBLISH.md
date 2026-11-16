@@ -155,6 +155,7 @@ eas build -p ios --profile production         # يحتاج Apple Developer
 - [ ] `/privacy` و`/delete-account` بيفتحوا من غير تسجيل دخول ومن شبكة برّه، وفيها بريد تواصل صحيح.
 - [ ] حساب مراجعة شغّال (بريد + كلمة مرور) متسجّل في Play «App access» وApple «App Review Information».
 - [ ] حساب فردي؟ ١٢ مختبِر × ١٤ يوم خلصوا قبل طلب Production.
+- [ ] `GOOGLE_CLIENT_IDS` / `APPLE_CLIENT_IDS` مضبوطة في `server/.env` (أو الأزرار مخفية عن قصد).
 - [ ] حذف الحساب مُختبَر فعليًا على حساب تجريبي (والمدير الأخير مرفوض بحكمة).
 - [ ] الـAPK/الـAAB مبني على العنوان النهائي (مش IP مؤقت).
 - [ ] أيقونة 512 + صورة عرض + لقطات شاشة بالعربي.
@@ -166,9 +167,46 @@ eas build -p ios --profile production         # يحتاج Apple Developer
 
 | # | كان | بقى |
 | --- | --- | --- |
-| ١ | زرارَي «المتابعة بـ Google/Apple» موجودين وبيقولوا «غير مفعّل حالياً» | اتشالوا لحد ما يتنفّذ تسجيل الدخول الاجتماعي فعليًا — زرار مش شغّال = رفض من المتجرين |
+| ١ | زرارَي «المتابعة بـ Google/Apple» موجودين وبيقولوا «غير مفعّل حالياً» | اتشالوا، وبقى لهم تنفيذ حقيقي (الجولة التامنة): بيظهروا بس لما السيرفر يعرف يتحقق منهم والنسخة معاها client id |
 | ٢ | بناء EAS بيطلع من غير عنوان السيرفر (`.env` مش بيتنمّى) والتطبيق يفضل يقول «لا يوجد اتصال» | البناء بيفشل فورًا لو `EXPO_PUBLIC_API_URL` ناقص، والتطبيق بيعرض شاشة «النسخة مش مربوطة بسيرفر» بدل ما يدّعي انقطاع شبكة |
 | ٣ | مفيش رابط حذف حساب على الويب | `/delete-account` — صفحة عربية عامة، بطلب حذف من غير التطبيق |
 | ٤ | التطبيق بيقول للمهندس «البيانات بتتحذف بعد ٣٠ يوم» والسيرفر بيحتفظ بسنة | النص بقى بيقرأ `retentionDays` من السيرفر |
 | ٥ | «سكون ${minutes} دقيقة» بتظهر حرفيًا في بانر السكون | الأرقام ظاهرة صح |
 | ٦ | `supportsTablet` + `POST_NOTIFICATIONS` + سؤال التشفير في كل رفع | iPhone فقط · صلاحية مش مستخدمة اتشالت · `ITSAppUsesNonExemptEncryption` |
+
+---
+
+## ٩) تسجيل الدخول بـ Google وApple — التفعيل
+
+التنفيذ كامل في الكود (سيرفر + تطبيق). الأزرار **مش بتظهر** إلا لما الشرطين يتوفروا مع بعض:
+السيرفر عنده client ids يتحقق بيها، والنسخة المبنية معاها client id للمنصة. يعني مفيش زرار
+هيفشل لما تدوس عليه.
+
+### Google
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) ← **Create OAuth client ID**:
+   - **iOS**: bundle id = `com.elhelb.mandoub`، ومعاه redirect `elhelbmandoob://oauth`.
+   - **Android**: package = `com.elhelb.mandoub` + بصمة **SHA-1** بتاعت مفتاح التوقيع
+     (`keytool -list -v -keystore mobile/elhelp-release.keystore -alias elhelp`).
+   - **Web** (لو هتجرّب من المتصفح).
+2. في `server/.env` حط الثلاثة مفصولين بفاصلة:
+   ```
+   GOOGLE_CLIENT_IDS=123-ios.apps.googleusercontent.com,456-android.apps.googleusercontent.com,789-web.apps.googleusercontent.com
+   ```
+3. في بناء التطبيق: `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` و`EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`
+   و`EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` (في `mobile/.env` للبناء المحلي، أو `eas.json`/`eas env` للسحابي).
+
+### Apple
+1. Apple Developer ← **Identifiers** ← App ID `com.elhelb.mandoub` ← فعّل **Sign In with Apple**.
+2. في `server/.env`: `APPLE_CLIENT_IDS=com.elhelb.mandoub`.
+3. المكوّن الأصلي iOS فقط؛ على أندرويد زر Apple مش بيظهر.
+4. Apple 4.8: أي تطبيق على iOS فيه دخول اجتماعي تاني لازم يوفّر Sign in with Apple — المكوّن
+   مضاف في `app.config.ts` (`usesAppleSignIn` + `expo-apple-authentication`).
+
+### إزاي بيتحقق السيرفر
+- التطبيق بيجيب **ID token** من SDK المزوّد، والسيرفر (`server/src/oauth.ts`) بيتحقق من
+  التوقيع بمفاتيح المزوّد المنشورة (RS256 فقط — أي `alg: none` أو توقيع مزيّف بيترفض)، ومن
+  `iss` و`aud` (قائمة كل الـclients) و`exp`.
+- **مفيش إنشاء حسابات تلقائي**: بريد مش مسجّل ⇒ `403 ACCOUNT_NOT_FOUND` («اطلب من المدير يضيفك»).
+- أول دخول بيربط `oauth_provider`/`oauth_subject` بالحساب؛ بعد كده الدخول بيتم بالـ`sub`
+  (لأن Apple مش بتبعت البريد غير أول مرة).
+- `GET /api/auth/providers` هو اللي بيقول للتطبيق يعرض أي زرار — مش فلاج في البناء.

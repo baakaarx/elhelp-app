@@ -53,12 +53,25 @@ export interface Config {
    * logins anywhere would lock the whole team out for fifteen minutes.
    */
   trustProxy: string | number | boolean;
+  /**
+   * Client ids whose Google ID tokens this server accepts. One installation usually has three
+   * (iOS, Android, web), and each of them shows up as `aud` in the token it produces.
+   * Empty means "Google sign-in is off" and the app hides the button.
+   */
+  oauthGoogleClientIds?: string[];
+  /** Same for Apple: the app bundle id for native, the Services ID for the web flow. */
+  oauthAppleClientIds?: string[];
   /** Failed sign-ins tolerated for one address before that account is frozen for the window. */
   loginAccountLimit: number;
   /** Sign-in attempts allowed per client address inside one window. */
   loginRateLimit: { windowMs: number; limit: number };
   /** General API budget: per session token when signed in, per address otherwise. */
   apiRateLimit: { windowMs: number; limit: number };
+}
+
+/** Comma-separated env value → trimmed list, keeping only plausible OAuth client ids. */
+function splitList(raw: string | undefined): string[] {
+  return String(raw ?? '').split(',').map(value => value.trim()).filter(value => /^[\w.\-:/]{5,200}$/.test(value));
 }
 
 export function readConfig(): Config {
@@ -104,6 +117,8 @@ export function readConfig(): Config {
     // manager address> so an installation never publishes the manager's own login address.
     privacyContact: (process.env.PRIVACY_CONTACT || '').trim() || `privacy@${adminEmail.split('@')[1] || 'example.com'}`,
     trustProxy: readTrustProxy(process.env.TRUST_PROXY, production),
+    oauthGoogleClientIds: splitList(process.env.GOOGLE_CLIENT_IDS),
+    oauthAppleClientIds: splitList(process.env.APPLE_CLIENT_IDS),
     loginAccountLimit: 10,
     loginRateLimit: { windowMs: 15 * 60000, limit: 15 },
     apiRateLimit: { windowMs: 60000, limit: 600 },

@@ -8,6 +8,8 @@ import { hashPassword } from '../src/auth.js';
 import { dayBounds, localDate } from '../src/geo.js';
 import { dailyReportPdf } from '../src/dailyPdf.js';
 import { readTrustProxy } from '../src/config.js';
+import { setKeySource } from '../src/oauth.js';
+import { createSign, generateKeyPairSync } from 'node:crypto';
 
 // CSV helpers: read the body as raw bytes (the BOM matters) and split it into lines.
 const csvParser = (r: request.Response, done: (err: Error | null, body?: Buffer) => void) => {
@@ -40,6 +42,8 @@ const config = {
   dbPath: ':memory:', production: false, retentionDays: 30, timezone: 'Africa/Cairo',
   adminEmail: 'admin@mandoub.test', adminPassword: 'TestPassword123!', allowedOrigins: [], port: 0,
   privacyContact: 'privacy@mandoub.test', trustProxy: false,
+  oauthGoogleClientIds: ['google-ios-client', 'google-android-client'],
+  oauthAppleClientIds: ['com.elhelb.mandoub'],
   // The suite signs in dozens of times from one address; the shipped limits are exercised by
   // the dedicated tests that build their own instance.
   loginAccountLimit: 10, loginRateLimit: { windowMs: 60000, limit: 1000 },
@@ -1286,4 +1290,131 @@ test("a representative's day summary carries the retention period the UI prints"
   const res = await request(app).get('/api/me/summary').set(auth(engineer.token));
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.equal(res.body.retentionDays, config.retentionDays);
+});
+
+/* ── Sign in with Google / Apple ────────────────────────────────────────────────
+   The key source is replaced with a keypair generated here, so verification runs for real
+   (signature, issuer, audience, expiry) without a network call to Google. */
+const providerKeys = (() => {
+  const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: 'jwk' }) as Record<string, unknown>;
+  const kid = 'test-key';
+  const sign = (claims: Record<string, unknown>, header: Record<string, unknown> = {}) => {
+    const head = Buffer.from(JSON.stringify({ alg: 'RS256', kid, typ: 'JWT', ...header })).toString('base64url');
+    const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    const signer = createSign('RSA-SHA256');
+    signer.update(`${head}.${body}`);
+    return `${head}.${body}.${signer.sign(privateKey).toString('base64url')}`;
+  };
+  return { jwk: { ...jwk, kid, alg: 'RS256', use: 'sig' }, sign };
+})();
+
+const googleClaims = (overrides: Record<string, unknown> = {}) => ({
+  iss: 'https://accounts.google.com',
+  aud: 'google-ios-client',
+  sub: 'google-sub-1',
+  email: 'rep@mandoub.test',
+  email_verified: true,
+  exp: Math.floor(Date.now() / 1000) + 600,
+  iat: Math.floor(Date.now() / 1000) - 10,
+  ...overrides,
+});
+
+test('Google sign-in only works for an account the manager already created', async () => {
+  setKeySource(async () => [providerKeys.jwk as never]);
+  try {
+    const created = await admin.post('/api/reps').set(auth(adminToken))
+      .send({ name: 'مهندس جوجل', email: 'gmail.signer@mandoub.test', password: 'FreshPassword123!' });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const ok = await request(app).post('/api/auth/oauth')
+      .send({ provider: 'google', idToken: providerKeys.sign(googleClaims({ email: 'gmail.signer@mandoub.test' })) });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.user.email, 'gmail.signer@mandoub.test');
+    assert.ok(String(ok.body.token).length > 20);
+    const me = await request(app).get('/api/auth/me').set({ 'x-mandoub-token': ok.body.token });
+    assert.equal(me.status, 200);
+    // The link is stored, so the next sign-in matches on `sub` even without an email.
+    const row = store.get('SELECT oauth_provider, oauth_subject FROM users WHERE email=?', 'gmail.signer@mandoub.test')!;
+    assert.equal(row.oauth_provider, 'google');
+    assert.equal(row.oauth_subject, 'google-sub-1');
+
+    const stranger = await request(app).post('/api/auth/oauth')
+      .send({ provider: 'google', idToken: providerKeys.sign(googleClaims({ email: 'stranger@gmail.com', sub: 'google-sub-9' })) });
+    assert.equal(stranger.status, 403);
+    assert.equal(stranger.body.code, 'ACCOUNT_NOT_FOUND');
+  } finally {
+    setKeySource(null);
+  }
+});
+
+test('a Google/Apple token is refused when it is expired, replayed for another app or unsigned', async () => {
+  setKeySource(async () => [providerKeys.jwk as never]);
+  try {
+    const post = (idToken: string, provider: 'google' | 'apple' = 'google') =>
+      request(app).post('/api/auth/oauth').send({ provider, idToken });
+
+    const expired = await post(providerKeys.sign(googleClaims({ exp: Math.floor(Date.now() / 1000) - 3600 })));
+    assert.equal(expired.status, 401, JSON.stringify(expired.body));
+
+    const otherApp = await post(providerKeys.sign(googleClaims({ aud: 'some-other-client' })));
+    assert.equal(otherApp.status, 401, JSON.stringify(otherApp.body));
+
+    const wrongIssuer = await post(providerKeys.sign(googleClaims({ iss: 'https://evil.example' })));
+    assert.equal(wrongIssuer.status, 401);
+
+    const unsigned = await post(providerKeys.sign(googleClaims(), { alg: 'none' }).replace(/[^.]*$/, ''));
+    assert.equal(unsigned.status, 401, 'alg=none must never be accepted');
+
+    const tampered = await post(providerKeys.sign(googleClaims({ email: 'x@y.z' })).replace(/\.[^.]+$/, '.AAAA'));
+    assert.equal(tampered.status, 401);
+
+    const notOurs = await post('a'.repeat(60));
+    assert.equal(notOurs.status, 401);
+  } finally {
+    setKeySource(null);
+  }
+});
+
+test('Apple signs in on the stored link even when it stops sending the email', async () => {
+  setKeySource(async () => [providerKeys.jwk as never]);
+  try {
+    const created = await admin.post('/api/reps').set(auth(adminToken))
+      .send({ name: 'مهندس أبل', email: 'apple.signer@mandoub.test', password: 'FreshPassword123!' });
+    assert.equal(created.status, 201);
+
+    const appleClaims = (overrides: Record<string, unknown> = {}) => ({
+      iss: 'https://appleid.apple.com',
+      aud: 'com.elhelb.mandoub',
+      sub: 'apple-sub-1',
+      email: 'apple.signer@mandoub.test',
+      email_verified: 'true',
+      exp: Math.floor(Date.now() / 1000) + 600,
+      iat: Math.floor(Date.now() / 1000) - 5,
+      ...overrides,
+    });
+
+    const first = await request(app).post('/api/auth/oauth')
+      .send({ provider: 'apple', idToken: providerKeys.sign(appleClaims()), name: 'مهندس أبل' });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+
+    // Apple only sends the address on the first authorization; later tokens carry just `sub`.
+    const second = await request(app).post('/api/auth/oauth')
+      .send({ provider: 'apple', idToken: providerKeys.sign(appleClaims({ email: undefined })) });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(second.body.user.email, 'apple.signer@mandoub.test');
+
+    // A Google token presented as an Apple one must not slip through.
+    const crossed = await request(app).post('/api/auth/oauth')
+      .send({ provider: 'apple', idToken: providerKeys.sign(googleClaims({ aud: 'com.elhelb.mandoub' })) });
+    assert.equal(crossed.status, 401);
+  } finally {
+    setKeySource(null);
+  }
+});
+
+test('the app is told which social sign-ins the server can verify', async () => {
+  const res = await request(app).get('/api/auth/providers');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { google: true, apple: true });
 });
