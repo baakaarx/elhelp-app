@@ -1,18 +1,26 @@
 import { useState, type FormEvent } from 'react';
+import { ApiError } from './api';
 import { login } from './session';
 import type { User } from './types';
 
 export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  /** The server asked for the second factor: the field only appears once it does. */
+  const [needsCode, setNeedsCode] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError('');
-    try { onLogin(await login(email.trim(), password)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'تعذر تسجيل الدخول.'); }
+    try { onLogin(await login(email.trim(), password, needsCode ? code.trim() : undefined)); }
+    catch (e) {
+      const apiError = e instanceof ApiError ? e : null;
+      if (apiError?.code === 'TOTP_REQUIRED' || apiError?.code === 'TOTP_INVALID') setNeedsCode(true);
+      setError(e instanceof Error ? e.message : 'تعذر تسجيل الدخول.');
+    }
     finally { setBusy(false); }
   }
   return (
@@ -48,6 +56,13 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
               <span>كلمة المرور</span>
               <input type="password" dir="ltr" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
             </label>
+            {needsCode && (
+              <label className="field">
+                <span>رمز المصادقة الثنائية</span>
+                <input type="text" dir="ltr" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                  value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))} placeholder="123456" required={needsCode} />
+              </label>
+            )}
             {error && <p className="error" role="alert">{error}</p>}
             <button className="btn primary" disabled={busy}>{busy ? 'جارٍ الدخول…' : 'دخول →'}</button>
           </form>

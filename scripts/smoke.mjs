@@ -142,6 +142,19 @@ check('sending the same check-out again is a duplicate', (await post(`/api/visit
 const collections = (await get('/api/reports?type=collection', admin)).body?.reports?.filter(report => report.id === `visit:${visitId}`) || [];
 check('a collection reaches the manager feed exactly once', collections.length === 1 && Number(collections[0].amount) === 1500, JSON.stringify(collections.map(item => item.amount)));
 
+section('a visit typed where there is no signal');
+const offlineId = crypto.randomUUID();
+const offline = await post('/api/visits/check-in', rep, {
+  id: offlineId, customerName: 'مزرعة بدون شبكة', purpose: 'visit', location: fix(31.2, 29.9, 9), recordedAt: Date.now(),
+}, 'rep');
+check('the replayed check-in is accepted', offline.status === 201 && offline.body?.recordedOffline === true, JSON.stringify(offline.body).slice(0, 120));
+const offlineClosed = await post(`/api/visits/${offlineId}/check-out`, rep, { outcome: 'اتقفلت من غير شبكة', notes: '', amount: null, location: null, recordedAt: Date.now() }, 'rep');
+check('and its check-out too, with a measured duration', offlineClosed.status === 200 && Number(offlineClosed.body?.visit?.durationSeconds) >= 0, JSON.stringify(offlineClosed.body).slice(0, 100));
+const staleReplay = await post('/api/visits/check-in', rep, {
+  id: crypto.randomUUID(), customerName: 'مزرعة قديمة', location: fix(), recordedAt: Date.now() - 30 * 3600000,
+}, 'rep');
+check('a replay older than a day is refused', staleReplay.status === 422 && staleReplay.body?.code === 'OFFLINE_VISIT_REJECTED', JSON.stringify(staleReplay.body).slice(0, 100));
+
 section('the shift ends, and no visit is left without a result');
 const shifted = await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: 'مزرعة الإقفال', location: fix() }, 'rep');
 check('a new visit opens after the first one is finished', shifted.status === 201, JSON.stringify(shifted.body).slice(0, 90));
@@ -202,6 +215,18 @@ check('the engineer summary carries what the phone draws',
 check('a month that does not exist is refused', (await get('/api/monthly?month=2026-13', admin)).status === 400);
 check('an inverted date range is refused', (await get(`/api/kpis?from=${today}&to=2000-01-01`, admin)).status === 400);
 check('two years at once is refused', (await get('/api/kpis?from=2020-01-01&to=2026-01-01', admin)).status === 400);
+
+section('the registers the owner asks for on paper');
+const visitsCsv = await get(`/api/visits.csv?from=${today}&to=${today}`, admin);
+check('the visits register exports', visitsCsv.status === 200 && visitsCsv.text.includes('مزرعة بدون شبكة'), String(visitsCsv.status));
+const visitsXlsx = await get(`/api/visits.xlsx?from=${today}&to=${today}`, admin);
+check('and as a workbook', visitsXlsx.status === 200 && visitsXlsx.text.startsWith('PK'), visitsXlsx.text.slice(0, 4));
+const idleCsv = await get('/api/idle-reports.csv', admin);
+check('the justifications export', idleCsv.status === 200 && idleCsv.text.includes('مستني'), String(idleCsv.status));
+check('an engineer cannot export them', (await get('/api/visits.csv', rep, 'rep')).status === 403);
+check('a malformed date is refused, not exported as today', (await get('/api/visits.csv?from=nonsense', admin)).status === 400);
+const narrowed = await get(`/api/reports?from=${today}&to=${today}`, admin);
+check('the reports feed narrows by date', narrowed.status === 200 && Array.isArray(narrowed.body?.reports), String(narrowed.status));
 
 section('the escape hatches are closed');
 check('social login says it is unavailable instead of trusting a token', [400, 503].includes((await post('/api/auth/oauth', null, { provider: 'google', idToken: 'x' })).status));

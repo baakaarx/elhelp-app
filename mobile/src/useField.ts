@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { myRoute, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
-import { flushOutbox } from './reports';
+import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce } from './location';
 import { getDeviceId, getDeviceName } from './device';
@@ -24,6 +24,11 @@ export interface FieldBundle {
   trackingActive: boolean;
   /** An actionable message from the sync loop (e.g. the phone clock is ahead of the server). */
   syncNotice: string;
+  /**
+   * A visit was kept on the phone because there was no signal. It is not an error — nothing was
+   * lost — but the engineer must know the manager cannot see it yet.
+   */
+  offlineNotice: string;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -44,6 +49,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [trackingActive, setTrackingActive] = useState(false);
   const [error, setError] = useState('');
   const [syncNotice, setSyncNotice] = useState('');
+  const [offlineNotice, setOfflineNotice] = useState('');
   const mounted = useRef(true);
   /**
    * True while one sync tick is still running.
@@ -110,6 +116,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
           // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
           // leave a stale warning pinned to the screen all day.
           setSyncNotice(result.notice ?? '');
+          if (result.pending === 0) setOfflineNotice('');
         }
         await refresh();
       })().catch(() => undefined).finally(() => { syncing.current = false; });
@@ -209,10 +216,25 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     finally { setBusy(false); }
   }, [refresh]);
 
+  /**
+   * The visit is the one record the whole product exists for, and a farm with no bars used to
+   * make it impossible to record: the sheet answered "لا يوجد اتصال" and the visit was gone.
+   * With no signal it is now kept on the phone, with the time it happened, and sent by the same
+   * outbox that carries the positions.
+   */
   const checkIn = useCallback(async (input: VisitInput) => {
     setBusy(true); setError('');
     try {
-      await checkInVisit(input);
+      try {
+        await checkInVisit(input);
+      } catch (e) {
+        if ((e as { status?: number }).status !== 0) throw e;
+        await enqueueVisitCheckIn({ ...input, recordedAt: Date.now() });
+        setOfflineNotice('الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        const result = await flushOutbox().catch(() => null);
+        if (result && mounted.current) setPending(result.pending);
+        return;
+      }
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
@@ -221,14 +243,23 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const checkOut = useCallback(async (id: string, input: CheckOutInput) => {
     setBusy(true); setError('');
     try {
-      await checkOutVisit(id, input);
+      try {
+        await checkOutVisit(id, input);
+      } catch (e) {
+        if ((e as { status?: number }).status !== 0) throw e;
+        await enqueueVisitCheckOut(id, { ...input, recordedAt: Date.now() });
+        setOfflineNotice('نتيجة الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        const result = await flushOutbox().catch(() => null);
+        if (result && mounted.current) setPending(result.pending);
+        return;
+      }
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
   }, [refresh]);
 
   return {
-    summary, visits, route, pending, loading, busy, trackingActive, syncNotice, error,
+    summary, visits, route, pending, loading, busy, trackingActive, syncNotice, offlineNotice, error,
     clearError: () => setError(''),
     refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };

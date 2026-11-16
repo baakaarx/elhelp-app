@@ -115,7 +115,8 @@ export interface RouteResponse {
 export const visitPurposeLabels: Record<VisitPurpose, string> = {
   visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
-export type OutboxKind = 'location' | 'report' | 'daily-report';
+/** `visit-checkin` / `visit-checkout` are the two halves of a visit typed without a signal. */
+export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout';
 export interface OutboxItem {
   key: string; kind: OutboxKind; payload: string; createdAt: number; attempts: number;
 }

@@ -112,6 +112,16 @@ export const presence = () => post<{ ok: true }>('/api/presence', {});
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);
 export const myRoute = (userId: string, date?: string) => get<RouteResponse>(`/api/reps/${userId}/route${date ? `?date=${date}` : ''}`);
-export const checkInVisit = (visit: VisitInput) => post<{ visit: Visit; duplicate: boolean }>('/api/visits/check-in', visit);
-export const checkOutVisit = (id: string, body: { outcome: string; notes: string; amount: number | null; location: { lat: number; lng: number; accuracy: number | null } | null }) =>
-  post<{ visit: Visit; duplicate: boolean }>(`/api/visits/${id}/check-out`, body);
+/**
+ * `recordedAt` is the instant the visit was recorded. It is only sent when the phone had no
+ * signal and kept the visit: a live request lets the server stamp its own clock.
+ */
+export const checkInVisit = (visit: VisitInput & { recordedAt?: number }) =>
+  post<{ visit: Visit; duplicate: boolean; recordedOffline?: boolean }>('/api/visits/check-in', visit);
+export interface CheckOutBody {
+  outcome: string; notes: string; amount: number | null;
+  location: { lat: number; lng: number; accuracy: number | null } | null;
+  recordedAt?: number;
+}
+export const checkOutVisit = (id: string, body: CheckOutBody) =>
+  post<{ visit: Visit; duplicate: boolean; recordedLate?: boolean }>(`/api/visits/${id}/check-out`, body);

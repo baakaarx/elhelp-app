@@ -1,3 +1,4 @@
+import { outboxKey } from './outboxKey';
 import type { Outbox } from './queue';
 import type { OutboxItem, OutboxKind } from './types';
 
@@ -31,10 +32,10 @@ function write(items: OutboxItem[]) {
 export async function createQueue(): Promise<Outbox> {
   return {
     async add(kind: OutboxKind, payload: unknown) {
-      const item = payload as { id: string };
+      const key = outboxKey(kind, payload);
       const items = read();
-      if (!items.some(existing => existing.key === item.id)) {
-        items.push({ key: item.id, kind, payload: JSON.stringify(payload), createdAt: Date.now(), attempts: 0 });
+      if (!items.some(existing => existing.key === key)) {
+        items.push({ key, kind, payload: JSON.stringify(payload), createdAt: Date.now(), attempts: 0 });
         write(items);
       }
     },

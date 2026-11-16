@@ -30,6 +30,21 @@ export function sessionUser(store: Store, token: unknown): Row | undefined {
   return store.get(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
     WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`, tokenHash(token), Date.now());
 }
+/**
+ * A session in use never dies mid-shift.
+ *
+ * The expiry was fixed at twelve hours from the login, so an engineer who signed in at eight in
+ * the morning was signed out at eight in the evening — in the middle of his day, on a phone that
+ * then stopped reporting his position. A used session now slides forward; the write is skipped
+ * unless the row is at least a minute old, so this costs at most one UPDATE per minute per
+ * session, not one per request.
+ */
+export function touchSession(store: Store, token: string): boolean {
+  const now = Date.now();
+  const result = store.run('UPDATE sessions SET expires_at=? WHERE token_hash=? AND expires_at>? AND expires_at<=?',
+    now + SESSION_MS, tokenHash(token), now, now + SESSION_MS - 60000);
+  return Number(result.changes) > 0;
+}
 export function createSession(store: Store, userId: string) {
   const now = Date.now();
   const expiresAt = now + SESSION_MS;
@@ -145,6 +160,11 @@ export function requireAuth(store: Store, role?: ClientRole) {
     if (role && user.role !== role) { res.status(403).json({ error: 'ليست لديك صلاحية لهذا الإجراء.' }); return; }
     res.locals.user = user;
     res.locals.tokenHash = tokenHash(matched);
+    // Slide the session forward, and keep the browser cookie alive with it: the row and the
+    // cookie must expire together or the dashboard locks itself out while the row is still good.
+    if (touchSession(store, matched) && req.headers.cookie) {
+      setSessionCookie(req, res, user.role as ClientRole, matched, SESSION_MS);
+    }
     next();
   };
 }

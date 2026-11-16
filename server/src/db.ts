@@ -109,6 +109,9 @@ export class Store {
         -- 1 when the shift ended (or the cleanup ran) before the engineer recorded a result,
         -- so the row is a real check-in but its duration is an artifact, not a measured visit.
         auto_closed INTEGER NOT NULL DEFAULT 0,
+        -- 1 when the row was typed on the phone with no signal and sent later, so its times come
+        -- from the engineer's clock: the manager sees the difference instead of guessing.
+        recorded_offline INTEGER NOT NULL DEFAULT 0,
         in_lat REAL, in_lng REAL, in_accuracy REAL,
         out_lat REAL, out_lng REAL,
         created_at INTEGER NOT NULL
@@ -179,6 +182,7 @@ export class Store {
       "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
       "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE visits ADD COLUMN recorded_offline INTEGER NOT NULL DEFAULT 0",
     ]) { try { this.db.exec(sql); } catch {} }
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }

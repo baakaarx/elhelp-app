@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { outboxKey } from './outboxKey';
 import type { Outbox } from './queue';
 import type { OutboxItem, OutboxKind } from './types';
 
@@ -23,7 +24,7 @@ db.runSync("DELETE FROM outbox WHERE kind='location' AND created_at < ?", Date.n
 export async function createQueue(): Promise<Outbox> {
   return {
     async add(kind: OutboxKind, payload: unknown) {
-      const key = (payload as { id: string }).id;
+      const key = outboxKey(kind, payload);
       db.runSync('INSERT OR IGNORE INTO outbox(key,kind,payload,created_at,attempts) VALUES (?,?,?,?,0)', key, kind, JSON.stringify(payload), Date.now());
     },
     async list(limit = 200) {

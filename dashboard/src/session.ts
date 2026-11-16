@@ -18,8 +18,10 @@ async function failureText(res: Response, fallback: string): Promise<string> {
   return `${fallback} (${res.status})`;
 }
 
-export async function login(email: string, password: string) {
-  const res = await post<{ token: string; expiresAt: number; user: User }>('/api/auth/login', { email, password });
+/** `code` is the six-digit second factor, sent only on the second attempt. */
+export async function login(email: string, password: string, code?: string) {
+  const res = await post<{ token: string; expiresAt: number; user: User }>('/api/auth/login',
+    code ? { email, password, code } : { email, password });
   setToken(res.token);
   return res.user;
 }

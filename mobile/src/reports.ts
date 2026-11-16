@@ -1,7 +1,7 @@
-import { pushLocations, sendDailyReport, sendReport } from './api';
+import { checkInVisit, checkOutVisit, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
 import { createQueue, type Outbox } from './queue';
 import { sendLocationChunks } from './locationQueue';
-import type { DailyReportInput, GeoPoint, ReportInput } from './types';
+import type { DailyReportInput, GeoPoint, ReportInput, VisitInput } from './types';
 
 /** Matches the server's window: nothing older than this can still belong to a shift. */
 const STALE_FIX_MS = 24 * 3600000;
@@ -13,6 +13,15 @@ const outbox = () => (queuePromise ??= createQueue());
 export async function enqueueLocation(point: GeoPoint) { await (await outbox()).add('location', point); }
 export async function enqueueReport(report: ReportInput) { await (await outbox()).add('report', report); }
 export async function enqueueDailyReport(report: DailyReportInput) { await (await outbox()).add('daily-report', report); }
+/**
+ * A visit typed in a field with no signal. It is queued with the moment it happened, because by
+ * the time the phone gets a bar the server's clock no longer says anything true about it.
+ */
+export async function enqueueVisitCheckIn(visit: VisitInput & { recordedAt: number }) { await (await outbox()).add('visit-checkin', visit); }
+export async function enqueueVisitCheckOut(visitId: string, body: CheckOutBody & { recordedAt: number }) {
+  // The `id` is the queue key only; it is never part of the body the server sees.
+  await (await outbox()).add('visit-checkout', { id: `checkout:${visitId}`, visitId, body });
+}
 
 /**
  * `notice` carries a message the engineer has to act on (today: the phone clock is ahead, so
@@ -36,11 +45,16 @@ async function flushOnce(): Promise<FlushResult> {
     try {
       // Parsed separately: a truncated payload is not a network error, and bumping it would
       // keep the same dead row at the head of the queue for the life of the install.
-      let payload: GeoPoint | ReportInput | DailyReportInput;
-      try { payload = JSON.parse(item.payload) as GeoPoint | ReportInput | DailyReportInput; }
+      let payload: GeoPoint | ReportInput | DailyReportInput | (VisitInput & { recordedAt: number }) | { id: string; visitId: string; body: CheckOutBody & { recordedAt: number } };
+      try { payload = JSON.parse(item.payload); }
       catch { await queue.remove(item.key); continue; }
       if (item.kind === 'location') { locations.push(payload as GeoPoint); continue; }
-      if (item.kind === 'report') await sendReport(payload as ReportInput);
+      if (item.kind === 'visit-checkin') await checkInVisit(payload as VisitInput & { recordedAt: number });
+      else if (item.kind === 'visit-checkout') {
+        const queued = payload as { id: string; visitId: string; body: CheckOutBody };
+        await checkOutVisit(queued.visitId, queued.body);
+      }
+      else if (item.kind === 'report') await sendReport(payload as ReportInput);
       else await sendDailyReport(payload as DailyReportInput);
       await queue.remove(item.key);
       sent++;

@@ -139,6 +139,20 @@ sudo -u elhelp npm run export:mobile
 sudo systemctl restart elhelp
 ```
 
+### المصادقة الثنائية للمدير (اختياري، مستحسن)
+
+```bash
+cd /opt/elhelp-app
+npm run totp                       # يطبع ADMIN_TOTP_SECRET ولينك للمصادقة
+sudo -u elhelp nano /opt/elhelp-app/server/.env   # الصق المفتاح في ADMIN_TOTP_SECRET
+sudo systemctl restart elhelp
+```
+
+- بعدها دخول المدير من اللوحة بيطلب الستة أرقام من تطبيق المصادقة.
+- **احتفظ بالمفتاح في مدير كلمات المرور:** لو ضاع، الحل الوحيد هو حذفه من `server/.env`
+  وإعادة التشغيل من على السيرفر.
+- الدخول بـGoogle/Apple للمدير مش بيطلب الرمز (حماية جوجل/آبل نفسها هي العامل التاني).
+
 ### التأكد بعد كل تحديث (٩٠ فحصًا على السيرفر الحقيقي)
 
 ```bash

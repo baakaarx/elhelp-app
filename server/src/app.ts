@@ -9,11 +9,12 @@ import { z } from 'zod';
 import { AUTO_CLOSED_OUTCOME, Store } from './db.js';
 import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js';
 import { createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
-import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
+import { dayBounds, distanceMeters, haversine, localDate, type GeoPoint } from './geo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { deleteAccountPage, privacyPage } from './privacy.js';
 import { OauthError, verifyIdToken } from './oauth.js';
+import { verifyTotp } from './totp.js';
 import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 import { contentSecurityPolicy } from './csp.js';
@@ -84,6 +85,11 @@ const newVisit = z.object({
   location: reportLocation,
   deviceId: z.string().trim().min(3).max(120).optional(),
   deviceName: z.string().trim().max(120).optional(),
+  /**
+   * The moment the engineer actually checked in, sent only by the offline queue (a live request
+   * has no reason to name a time the server already knows).
+   */
+  recordedAt: z.number().int().nonnegative().optional(),
 }).strict();
 const closeVisit = z.object({
   /**
@@ -95,7 +101,12 @@ const closeVisit = z.object({
   notes: z.string().trim().max(1000).default(''),
   amount: z.number().finite().min(0).max(1_000_000_000).nullable().default(null),
   location: reportLocation.nullable().default(null),
+  /** Same as a check-in: the instant the phone closed the visit, when it had no signal. */
+  recordedAt: z.number().int().nonnegative().optional(),
 }).strict();
+
+/** How far back a visit typed with no signal may still be accepted. */
+const OFFLINE_WINDOW_MS = 24 * 3600000;
 
 export function createApp(overrides: Partial<Config> = {}) {
   const config = { ...readConfig(), ...overrides };
@@ -261,7 +272,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
     v.village, v.phone, v.purpose, v.notes, v.outcome, v.status, v.checked_in_at AS checkedInAt,
     v.checked_out_at AS checkedOutAt, v.duration_seconds AS durationSeconds,
-    v.auto_closed AS autoClosed, ${PENDING_RESULT_SQL} AS pendingResult, v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
+    v.auto_closed AS autoClosed, v.recorded_offline AS recordedOffline, ${PENDING_RESULT_SQL} AS pendingResult,
+    v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
     v.out_lat AS outLat, v.out_lng AS outLng,
     u.name AS repName, u.color AS repColor
     FROM visits v JOIN users u ON u.id = v.user_id`;
@@ -269,7 +281,12 @@ export function createApp(overrides: Partial<Config> = {}) {
   // client can compare with `=== true` instead of guessing (`mobile/src/VisitSheets.tsx` did,
   // and a closed visit was labelled as if it were still running).
   const asVisit = <T extends Record<string, any> | undefined>(row: T): T =>
-    (row ? { ...row, autoClosed: Boolean(row.autoClosed), pendingResult: Boolean(row.pendingResult) } : row) as T;
+    (row ? {
+      ...row,
+      autoClosed: Boolean(row.autoClosed),
+      pendingResult: Boolean(row.pendingResult),
+      recordedOffline: Boolean(row.recordedOffline),
+    } : row) as T;
   function visitRow(id: string) { return asVisit(store.get(`${VISIT_SELECT} WHERE v.id=?`, id)); }
   function listVisits(filter: { userId?: string; repId?: string; date?: string; status?: string }) {
     const where: string[] = []; const params: any[] = [];
@@ -320,12 +337,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     return { meters: Math.round(meters), points };
   }
-  function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string }) {
+  function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string; from?: string; to?: string }) {
     const where: string[] = []; const params: any[] = [];
     if (filter.userId) { where.push('r.user_id=?'); params.push(filter.userId); }
     if (filter.repId) { where.push('r.user_id=?'); params.push(filter.repId); }
     if (filter.type) { where.push('r.type=?'); params.push(filter.type); }
     if (filter.status) { where.push('r.status=?'); params.push(filter.status); }
+    // The feed is capped at 300 rows; a range is the only way to see an older page of it.
+    if (filter.from) { where.push('r.created_at>=?'); params.push(dayBounds(filter.from, config.timezone).start); }
+    if (filter.to) { where.push('r.created_at<?'); params.push(dayBounds(filter.to, config.timezone).end); }
     const sql = `SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
       r.lat, r.lng, r.accuracy, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt,
       u.name AS repName, u.color AS repColor
@@ -352,8 +372,23 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
   io.on('connection', socket => {
     const user = socket.data.user;
-    const expiryTimer = setTimeout(() => socket.disconnect(true), Math.max(0, socket.data.expiresAt - Date.now()));
-    expiryTimer.unref();
+    /*
+     * A live socket outlives its own expiry when the session keeps sliding (the engineer's app
+     * polls every fifteen seconds), so the timer re-reads the row instead of dropping a working
+     * connection at the twelve-hour mark.
+     */
+    let expiryTimer: NodeJS.Timeout;
+    const scheduleExpiry = () => {
+      const delay = Math.max(1000, socket.data.expiresAt - Date.now());
+      expiryTimer = setTimeout(() => {
+        const session = store.get('SELECT expires_at FROM sessions WHERE token_hash=?', tokenHash(socket.handshake.auth.token));
+        if (!session || Number(session.expires_at) <= Date.now()) { socket.disconnect(true); return; }
+        socket.data.expiresAt = Number(session.expires_at);
+        scheduleExpiry();
+      }, delay);
+      expiryTimer.unref();
+    };
+    scheduleExpiry();
     socket.once('disconnect', () => clearTimeout(expiryTimer));
     socket.join(`user:${user.id}`);
     if (user.role === 'admin') { socket.join('admins'); socket.emit('overview', overview()); }
@@ -376,6 +411,22 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!user || !valid) {
       noteLoginFailure(parsed.data.email);
       res.status(401).json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' }); return;
+    }
+    /*
+     * A second factor for the manager account, asked for after the password so a wrong password
+     * never reveals whether two-factor is on. Reps are unaffected: a phone is already bound to one
+     * device, and a field engineer typing a code before every shift was not worth it. Social
+     * sign-in for a manager keeps the provider's own second factor, which is why this lives on the
+     * password route only.
+     */
+    if (user.role === 'admin' && config.adminTotpSecret) {
+      const code = typeof req.body?.code === 'string' ? req.body.code : '';
+      if (!code.trim()) { res.status(401).json({ error: 'أدخل رمز المصادقة الثنائية من تطبيق المصادقة.', code: 'TOTP_REQUIRED' }); return; }
+      if (!verifyTotp(config.adminTotpSecret, code)) {
+        noteLoginFailure(parsed.data.email);
+        res.status(401).json({ error: 'رمز المصادقة غير صحيح أو انتهت صلاحيته — جرّب الرمز الحالي.', code: 'TOTP_INVALID' });
+        return;
+      }
     }
     if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير — سيتم تفعيله قريبًا.', code: 'PENDING_APPROVAL' }); return; }
     if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
@@ -741,10 +792,33 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (existing.userId !== res.locals.user.id) { res.status(409).json({ error: 'معرّف الزيارة مستخدم بالفعل.' }); return; }
       res.status(200).json({ visit: existing, duplicate: true }); return;
     }
-    const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
-    if (!shift) { res.status(409).json({ error: 'ابدأ الوردية أولًا قبل تسجيل الزيارة.' }); return; }
+    /*
+     * A visit typed in a field with no signal is sent later by the phone's outbox, naming the
+     * moment it was actually recorded. The server cannot see that moment, so the only thing it
+     * can check is that the time falls inside one of this engineer's own shifts and inside the
+     * window a phone may hold a visit. The row is marked `recordedOffline` so the manager can
+     * tell a live record from a replayed one.
+     */
+    const now = Date.now();
+    let checkedInAt = now;
+    let offline = false;
+    if (data.recordedAt !== undefined) {
+      const at = Number(data.recordedAt);
+      const insideShift = store.get('SELECT id FROM shifts WHERE user_id=? AND started_at<=? AND (ended_at IS NULL OR ended_at>=?) ORDER BY started_at DESC LIMIT 1',
+        res.locals.user.id, at, at);
+      const reason = at > now + 60000 ? 'الوقت المرسل في المستقبل.'
+        : at < now - OFFLINE_WINDOW_MS ? 'الزيارة أقدم من ٢٤ ساعة، مش ممكن تتسجل بأثر رجعي.'
+        : !insideShift ? 'مفيش وردية مسجلة في الوقت ده.'
+        : '';
+      if (reason) { res.status(422).json({ error: `الزيارة المتأخرة مرفوضة: ${reason}`, code: 'OFFLINE_VISIT_REJECTED' }); return; }
+      checkedInAt = at;
+      offline = true;
+    } else {
+      const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+      if (!shift) { res.status(409).json({ error: 'ابدأ الوردية أولًا قبل تسجيل الزيارة.' }); return; }
+    }
     const open = store.get('SELECT id, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status=?', res.locals.user.id, 'open');
-    if (open) {
+    if (open && !offline) {
       // Saying "لديك زيارة مفتوحة" while the visit is not on this screen is how an engineer
       // gets stuck: name the day so he knows where to look (it is listed under "الزيارات").
       const fromEarlier = localDate(config.timezone, Number(open.checkedInAt)) !== localDate(config.timezone);
@@ -756,15 +830,25 @@ export function createApp(overrides: Partial<Config> = {}) {
       });
       return;
     }
-    const now = Date.now();
-    store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,in_lat,in_lng,in_accuracy,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
-      data.district, data.village, data.phone, data.purpose, data.notes, now,
+    /*
+     * A replayed visit that arrives while another visit is open is already over: it is stored
+     * closed with the automatic marker, which is exactly the "missing result" row the engineer
+     * can finish from the visits screen. Refusing it would silently delete a customer visit that
+     * really happened.
+     */
+    const closedOnArrival = Boolean(open);
+    store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
+      data.district, data.village, data.phone, data.purpose, data.notes,
+      closedOnArrival ? 'closed' : 'open', checkedInAt, closedOnArrival ? checkedInAt : null,
+      closedOnArrival ? 0 : null, closedOnArrival ? 1 : 0, offline ? 1 : 0,
+      closedOnArrival ? AUTO_CLOSED_OUTCOME : '',
       data.location.lat, data.location.lng, data.location.accuracy ?? null, now);
-    store.audit(res.locals.user.id, 'visit.check_in', { visitId: data.id, purpose: data.purpose });
+    store.audit(res.locals.user.id, offline ? 'visit.check_in_offline' : 'visit.check_in',
+      { visitId: data.id, purpose: data.purpose, ...(offline ? { recordedAt: checkedInAt } : {}) });
     io.to('admins').emit('visit', visitRow(data.id));
     invalidateKpis(); broadcast();
-    res.status(201).json({ visit: visitRow(data.id), duplicate: false });
+    res.status(201).json({ visit: visitRow(data.id), duplicate: false, ...(offline ? { recordedOffline: true } : {}) });
   });
   app.post('/api/visits/:id/check-out', repOnly, (req, res) => {
     const parsed = closeVisit.safeParse(req.body ?? {});
@@ -787,13 +871,21 @@ export function createApp(overrides: Partial<Config> = {}) {
         return;
       }
       const late = parsed.data;
+      // A visit replayed from the outbox knows both ends: the check-in it was queued with and the
+      // moment the phone closed it. The duration stays out of the KPI average (`auto_closed`),
+      // but the record is no longer blank.
+      const lateAt = late.recordedAt !== undefined ? Math.min(Date.now(), Math.max(Number(visit.checkedInAt), Number(late.recordedAt))) : null;
+      const lateDuration = lateAt === null ? null : Math.max(0, Math.round((lateAt - Number(visit.checkedInAt)) / 1000));
       store.run('UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=?',
         late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id);
+      if (lateAt !== null) {
+        store.run('UPDATE visits SET checked_out_at=?, duration_seconds=?, recorded_offline=1 WHERE id=?', lateAt, lateDuration, visit.id);
+      }
       if (late.amount !== null && late.amount > 0) {
         store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
           `تحصيل - ${visit.customerName}`, late.outcome || visit.notes, visit.customerName, late.amount,
-          late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, Date.now());
+          late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, lateAt ?? Date.now());
       }
       store.audit(res.locals.user.id, 'visit.result_recorded_late', { visitId: visit.id });
       io.to('admins').emit('visit', visitRow(visit.id));
@@ -803,18 +895,36 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     const data = parsed.data;
     const now = Date.now();
-    const duration = Math.max(0, Math.round((now - Number(visit.checkedInAt)) / 1000));
+    /*
+     * The outbox sends the instant the visit was closed on the phone. It has to be inside the
+     * visit itself, inside the window a phone may hold, and never in the future — otherwise the
+     * duration would be negative or invented, and a negative duration is worse than none.
+     */
+    let closedAt = now;
+    let offline = false;
+    if (data.recordedAt !== undefined) {
+      const at = Number(data.recordedAt);
+      const reason = at > now + 60000 ? 'الوقت المرسل في المستقبل.'
+        : at < now - OFFLINE_WINDOW_MS ? 'الإنهاء أقدم من ٢٤ ساعة، مش ممكن يتسجل بأثر رجعي.'
+        : at < Number(visit.checkedInAt) - 60000 ? 'وقت الإنهاء قبل وقت الزيارة.'
+        : '';
+      if (reason) { res.status(422).json({ error: `الإنهاء المتأخر مرفوض: ${reason}`, code: 'OFFLINE_VISIT_REJECTED' }); return; }
+      closedAt = Math.max(Number(visit.checkedInAt), at);
+      offline = true;
+    }
+    const duration = Math.max(0, Math.round((closedAt - Number(visit.checkedInAt)) / 1000));
     store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
-      out_lat=?, out_lng=? WHERE id=?`, now, duration, data.outcome, data.notes || visit.notes,
-      data.location?.lat ?? null, data.location?.lng ?? null, visit.id);
+      out_lat=?, out_lng=?, recorded_offline=MAX(recorded_offline, ?) WHERE id=?`, closedAt, duration, data.outcome, data.notes || visit.notes,
+      data.location?.lat ?? null, data.location?.lng ?? null, offline ? 1 : 0, visit.id);
     // A collection is also a financial event: mirror it into the reports feed for the manager.
     if (data.amount !== null && data.amount > 0) {
       store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
         `تحصيل - ${visit.customerName}`, data.outcome || visit.notes, visit.customerName, data.amount,
-        data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, now);
+        data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, closedAt);
     }
-    store.audit(res.locals.user.id, 'visit.check_out', { visitId: visit.id, durationSeconds: duration });
+    store.audit(res.locals.user.id, offline ? 'visit.check_out_offline' : 'visit.check_out',
+      { visitId: visit.id, durationSeconds: duration, ...(offline ? { recordedAt: closedAt } : {}) });
     io.to('admins').emit('visit', visitRow(visit.id));
     invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
@@ -933,6 +1043,47 @@ export function createApp(overrides: Partial<Config> = {}) {
       const hasActivity = !!lastAt && lastAt >= bounds.start;
       if (hasActivity && Number(visitsToday.c) === 0 && now - bounds.start > 2 * 3600000) {
         alerts.push({ id: `${rep.id}:novisit`, level: 'info', code: 'no_visits', repId: rep.id, repName: rep.name, title: 'لا زيارات مسجلة اليوم', detail: 'المهندس في الميدان لكن لم يسجل أي زيارة اليوم.', at: bounds.start });
+      }
+      /*
+       * A visit is a claim about being somewhere. Nothing on the phone stops a mock-location app
+       * from making that claim from the office, and the server cannot ask Android whether the fix
+       * was real — but it can compare the claim with the engineer's own trail. A visit far from
+       * every fix of that morning, or two visits at the same coordinates to five decimals, is
+       * worth a manager's attention even though it is not proof.
+       */
+      const dayVisits = store.all(`SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt,
+          in_lat AS lat, in_lng AS lng, in_accuracy AS accuracy FROM visits
+          WHERE user_id=? AND checked_in_at>=? AND checked_in_at<? ORDER BY checked_in_at`, rep.id, bounds.start, bounds.end) as Array<Record<string, any>>;
+      const offTrail: string[] = [];
+      const seenPlaces = new Map<string, string>();
+      for (const dayVisit of dayVisits) {
+        if (dayVisit.lat === null || dayVisit.lng === null) continue;
+        const place = `${Number(dayVisit.lat).toFixed(5)},${Number(dayVisit.lng).toFixed(5)}`;
+        const twin = seenPlaces.get(place);
+        if (twin) {
+          alerts.push({
+            id: `${rep.id}:sameplace:${dayVisit.id}`, level: 'info', code: 'same_visit_location', repId: rep.id, repName: rep.name,
+            title: 'زيارتان في نفس الإحداثيات',
+            detail: `زيارة «${dayVisit.customerName}» وزيارة «${twin}» مسجلتان على نفس النقطة بالظبط — راجع الموقع لو المسافة بينهم بعيدة.`,
+            at: Number(dayVisit.checkedInAt),
+          });
+        } else seenPlaces.set(place, String(dayVisit.customerName));
+        const near = store.get(`SELECT lat, lng FROM locations WHERE user_id=? AND recorded_at BETWEEN ? AND ?
+            ORDER BY ABS(recorded_at-?) LIMIT 1`,
+        rep.id, Number(dayVisit.checkedInAt) - 10 * 60000, Number(dayVisit.checkedInAt) + 10 * 60000, Number(dayVisit.checkedInAt)) as Record<string, any> | undefined;
+        // No fix within ten minutes of the check-in at all is a gap, not a contradiction: the
+        // phone may have been in a dead spot. Only a fix that *contradicts* the visit is alerted.
+        if (near && haversine({ lat: Number(dayVisit.lat), lng: Number(dayVisit.lng) }, { lat: Number(near.lat), lng: Number(near.lng) }) > 2000) {
+          offTrail.push(String(dayVisit.customerName));
+        }
+      }
+      if (offTrail.length) {
+        alerts.push({
+          id: `${rep.id}:offtrail`, level: 'warn', code: 'visit_off_trail', repId: rep.id, repName: rep.name,
+          title: 'زيارة مسجلة بعيدًا عن المسار',
+          detail: `${offTrail.length} زيارة (${offTrail.slice(0, 3).join('، ')}) اتسجلت على بعد أكثر من ٢ كيلومتر من أقرب إشارة موقع في نفس الوقت — تُراجع مع المهندس.`,
+          at: now,
+        });
       }
       // An open visit is what hides "the engineer forgot to close it": the pair check-in /
       // check-out is the record the manager relies on, so an unclosed one must surface.
@@ -1155,6 +1306,76 @@ export function createApp(overrides: Partial<Config> = {}) {
       sendXlsx(res, `elhelb-kpis-${from}_${to}.xlsx`, 'مؤشرات الأداء', KPI_HEADER, kpiExportRows(from, to), KPI_WIDTHS);
     } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); }
   });
+  /**
+   * The two registers the dashboard shows but could not export.
+   *
+   * A manager who has to justify a month to the owner needs the visits themselves and the
+   * justifications for standing still — not a screenshot of a scrolling list.
+   */
+  const VISIT_HEADER = ['التاريخ', 'المهندس', 'العميل', 'النوع', 'الدخول', 'الخروج', 'المدة (دقيقة)', 'النتيجة', 'ملاحظات', 'من غير شبكة', 'بدون نتيجة'];
+  const VISIT_WIDTHS = [12, 22, 26, 12, 18, 18, 14, 40, 30, 12, 12];
+  function visitExportRows(from: string, to: string): unknown[][] {
+    const start = dayBounds(from, config.timezone).start;
+    const end = dayBounds(to, config.timezone).end;
+    const rows = store.all(`${VISIT_SELECT} WHERE v.checked_in_at>=? AND v.checked_in_at<? ORDER BY v.checked_in_at`, start, end);
+    return rows.map((row: any) => [
+      localDate(config.timezone, Number(row.checkedInAt)),
+      row.repName,
+      row.customerName,
+      row.purpose,
+      new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: config.timezone }).format(Number(row.checkedInAt)),
+      row.checkedOutAt ? new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: config.timezone }).format(Number(row.checkedOutAt)) : '',
+      row.durationSeconds === null ? '' : Math.round(Number(row.durationSeconds) / 60),
+      row.outcome,
+      row.notes,
+      Number(row.recordedOffline) ? 'نعم' : '',
+      Number(row.pendingResult) ? 'نعم' : '',
+    ]);
+  }
+  function exportRange(req: express.Request, res: express.Response, name: string, build: (from: string, to: string) => { header: string[]; rows: unknown[][]; widths?: number[] }) {
+    const today = localDate(config.timezone);
+    // A date that is there but unreadable is a mistake in the request, not an invitation to
+    // export today's file: the manager would print the wrong register and never notice.
+    const badDate = (value: unknown) => value !== undefined && !(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value));
+    if (badDate(req.query.from) || badDate(req.query.to)) { res.status(400).json({ error: 'التاريخ بصيغة YYYY-MM-DD.' }); return; }
+    const from = typeof req.query.from === 'string' ? req.query.from : today;
+    const to = typeof req.query.to === 'string' ? req.query.to : from;
+    let valid = true;
+    try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); } catch { valid = false; }
+    if (!valid) { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
+    if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+    if (rangeTooLong(from, to)) { res.status(400).json(RANGE_ERROR); return; }
+    const table = build(from, to);
+    if (name.endsWith('.xlsx')) {
+      try { sendXlsx(res, `elhelb-${name.replace('.xlsx', '')}-${from}_${to}.xlsx`, 'السجل', table.header, table.rows as CellValue[][], table.widths ?? table.header.map(() => 16)); }
+      catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); }
+      return;
+    }
+    sendCsv(res, `elhelb-${name.replace('.csv', '')}-${from}_${to}.csv`, table.header, table.rows);
+  }
+  app.get('/api/visits.csv', adminOnly, (req, res) => {
+    exportRange(req, res, 'visits.csv', (from, to) => ({ header: VISIT_HEADER, rows: visitExportRows(from, to), widths: VISIT_WIDTHS }));
+  });
+  app.get('/api/visits.xlsx', adminOnly, (req, res) => {
+    exportRange(req, res, 'visits.xlsx', (from, to) => ({ header: VISIT_HEADER, rows: visitExportRows(from, to), widths: VISIT_WIDTHS }));
+  });
+  const IDLE_HEADER = ['التاريخ', 'المهندس', 'السبب', 'مدة السكون (دقيقة)'];
+  app.get('/api/idle-reports.csv', adminOnly, (req, res) => {
+    exportRange(req, res, 'idle-reports.csv', (from, to) => {
+      const start = dayBounds(from, config.timezone).start;
+      const end = dayBounds(to, config.timezone).end;
+      const rows = store.all(`SELECT i.created_at AS createdAt, i.reason, i.duration_minutes AS minutes, u.name AS repName
+        FROM idle_reports i JOIN users u ON u.id = i.user_id
+        WHERE i.created_at>=? AND i.created_at<? ORDER BY i.created_at`, start, end);
+      return {
+        header: IDLE_HEADER,
+        widths: [12, 22, 60, 16],
+        rows: rows.map((row: any) => [
+          localDate(config.timezone, Number(row.createdAt)), row.repName, row.reason, Number(row.minutes),
+        ]),
+      };
+    });
+  });
   // ---- Monthly register: visits + reports per month (international company requirement) ----
   function monthBounds(month: string) {
     if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('الشهر بصيغة YYYY-MM');
@@ -1220,7 +1441,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     const type = typeof req.query.type === 'string' && (REPORT_TYPES as readonly string[]).includes(req.query.type) ? req.query.type : undefined;
     const status = req.query.status === 'new' || req.query.status === 'reviewed' ? req.query.status : undefined;
     const repId = isAdmin && typeof req.query.repId === 'string' ? req.query.repId : undefined;
-    const reports = listReports({ userId: isAdmin ? undefined : res.locals.user.id, type, status, repId });
+    const badDate = (value: unknown) => value !== undefined && !(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value));
+    if (badDate(req.query.from) || badDate(req.query.to)) { res.status(400).json({ error: 'التاريخ بصيغة YYYY-MM-DD.' }); return; }
+    const from = typeof req.query.from === 'string' ? req.query.from : undefined;
+    const to = typeof req.query.to === 'string' ? req.query.to : undefined;
+    if (from && to && to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+    if ((from || to) && rangeTooLong(from ?? to!, to ?? from!)) { res.status(400).json(RANGE_ERROR); return; }
+    try { for (const day of [from, to]) if (day) dayBounds(day, config.timezone); }
+    catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
+    const reports = listReports({ userId: isAdmin ? undefined : res.locals.user.id, type, status, repId, from, to });
     res.json({ reports });
   });
   app.get('/api/reports/:id', auth, (req, res) => {
