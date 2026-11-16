@@ -565,10 +565,23 @@ export function createApp(overrides: Partial<Config> = {}) {
     const snapshot = req.query.snapshot === '0' ? undefined : repSnapshot(res.locals.user);
     res.json({ shift: shift || null, snapshot, consentVersion: CONSENT_VERSION });
   });
+  const deviceTaken = (owner: string) =>
+    `هذا الحساب مرتبط بهاتف آخر (${owner.slice(0, 8)}…). تواصل مع المدير لإعادة الربط.`;
+  /**
+   * Binds the account to the first phone that starts a shift.
+   *
+   * The first write is conditional, so two phones that race the very first start cannot both
+   * believe they own the account: whoever loses the update is told to ask the manager instead
+   * of taking the account over silently.
+   */
   const bindDevice = (user: any, deviceId: string): string | null => {
     const existing = String(user.device_id || '').trim();
-    if (!existing) { store.run('UPDATE users SET device_id=? WHERE id=?', deviceId, user.id); return null; }
-    if (existing !== deviceId) return `هذا الحساب مرتبط بهاتف آخر (${existing.slice(0, 8)}…). تواصل مع المدير لإعادة الربط.`;
+    if (!existing) {
+      store.run("UPDATE users SET device_id=? WHERE id=? AND (device_id IS NULL OR device_id='')", deviceId, user.id);
+      const owner = String(store.get('SELECT device_id FROM users WHERE id=?', user.id)?.device_id || '').trim();
+      return owner === deviceId ? null : deviceTaken(owner);
+    }
+    if (existing !== deviceId) return deviceTaken(existing);
     return null;
   };
   app.post('/api/shifts/start', repOnly, (req, res) => {

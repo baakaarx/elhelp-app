@@ -31,7 +31,9 @@ export function createAgentRouter(store: Store, config: Config) {
   router.post('/refresh', (_req, res) => {
     if ((res.locals as any).user?.role !== 'admin') { res.status(403).json({ error: 'للمدير فقط.' }); return; }
     agent.refreshSkills();
-    res.json({ ok: true, skills: agent.skills });
+    // Same shape as /status and /skills: the raw records carry the Markdown body and the
+    // absolute path on the server's disk, which no client needs.
+    res.json({ ok: true, skills: skillList(), count: agent.skills.length });
   });
 
   const toIsoDate = (s: string): string | undefined => {
