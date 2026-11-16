@@ -14,13 +14,21 @@ const emptyVisit = (): DailyVisitInput => ({
   customerName: '', governorate: '', district: '', village: '', phone: '',
   areaFeddan: null, crops: '', recommendations: '', outcome: '',
 });
-const todayInCairo = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(Date.now());
-const dayName = (date: string) => new Intl.DateTimeFormat('ar-EG', { weekday: 'long', timeZone: 'Africa/Cairo' }).format(new Date(`${date}T12:00:00Z`));
+/**
+ * The server decides which day a report belongs to, and it validates `reportDate` against the
+ * installation's own timezone. Using a hard-coded zone here meant an engineer whose shift ran
+ * past midnight could pick a date the server called "future" and have the whole report refused.
+ */
+const todayIn = (timezone: string) => new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(Date.now());
+const dayName = (date: string, timezone: string) =>
+  new Intl.DateTimeFormat('ar-EG', { weekday: 'long', timeZone: timezone }).format(new Date(`${date}T12:00:00Z`));
+/** The server refuses a report with more than thirty visits; the form refuses it first. */
+const MAX_VISITS = 30;
 const timeOk = (value: string) => value.trim().length === 0 || value.trim().length < 30;
 
-export default function DailyReports({ user, onDone }: { user: User; onDone?: () => void }) {
+export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }: { user: User; onDone?: () => void; timezone?: string }) {
   const [engineerName, setEngineerName] = useState(user.name);
-  const [reportDate, setReportDate] = useState(todayInCairo());
+  const [reportDate, setReportDate] = useState(() => todayIn(timezone));
   const [leftAt, setLeftAt] = useState('');
   const [returnedAt, setReturnedAt] = useState('');
   const [circumstances, setCircumstances] = useState('');
@@ -33,8 +41,8 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
   const [busy, setBusy] = useState(false);
   const [openVisit, setOpenVisit] = useState(0);
   const dateValid = useMemo(
-    () => /^\d{4}-\d{2}-\d{2}$/.test(normalizeDigits(reportDate)) && normalizeDigits(reportDate) <= todayInCairo(),
-    [reportDate],
+    () => /^\d{4}-\d{2}-\d{2}$/.test(normalizeDigits(reportDate)) && normalizeDigits(reportDate) <= todayIn(timezone),
+    [reportDate, timezone],
   );
   const filled = visits.filter(v => v.customerName.trim().length >= 2).length;
 
@@ -46,6 +54,7 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
     if (!dateValid) return 'التاريخ غير صحيح أو في المستقبل.';
     if (!timeOk(leftAt) || !timeOk(returnedAt)) return 'الوقت طويل جداً — اختصره.';
     if (!filled) return 'أضف زيارة واحدة على الأقل مع اسم العميل / المزرعة.';
+    if (visits.length > MAX_VISITS) return `التقرير بياخد ${MAX_VISITS} زيارة كحد أقصى — قسّم الباقي على تقرير تاني.`;
     if (signedName.trim().length < 2) return 'اكتب اسمك في خانة التوقيع.';
     if (!confirmed) return 'أكد صحة البيانات ووقّع إلكترونيًا قبل الإرسال.';
     return null;
@@ -90,7 +99,7 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
       <Card>
         <Row style={{ justifyContent: 'space-between' }}>
           <Pill label={`${filled} زيارة جاهزة`} tone={filled ? 'mint' : 'warn'} />
-          <Text style={styles.datePreview}>{dateValid ? dayName(reportDate) : 'تاريخ غير صحيح'}</Text>
+          <Text style={styles.datePreview}>{dateValid ? dayName(normalizeDigits(reportDate), timezone) : 'تاريخ غير صحيح'}</Text>
         </Row>
         <Field label="اسم المهندس" value={engineerName} onChangeText={setEngineerName} />
         <Row style={{ gap: space.sm }}>
@@ -137,7 +146,12 @@ export default function DailyReports({ user, onDone }: { user: User; onDone?: ()
           </Card>
         );
       })}
-      <Button variant="ghost" label="+ إضافة زيارة للتقرير" onPress={() => { setVisits(list => [...list, emptyVisit()]); setOpenVisit(visits.length); }} />
+      <Button
+        variant="ghost"
+        label={visits.length >= MAX_VISITS ? `وصلت للحد الأقصى (${MAX_VISITS} زيارة)` : '+ إضافة زيارة للتقرير'}
+        disabled={visits.length >= MAX_VISITS}
+        onPress={() => { setVisits(list => (list.length >= MAX_VISITS ? list : [...list, emptyVisit()])); setOpenVisit(Math.min(visits.length, MAX_VISITS - 1)); }}
+      />
 
       <Card tone="mint">
         <SectionTitle title="الموقع والتوقيع" />

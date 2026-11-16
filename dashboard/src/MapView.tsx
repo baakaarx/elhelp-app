@@ -111,9 +111,10 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   // New live points must not reset an in-progress replay.
   useEffect(() => { setProgress(1); setPlaying(false); }, [route?.date, selectedId]);
 
+  // `progress` is deliberately not a dependency: it changes ten times a second while the
+  // replay runs, which tore down and rebuilt the interval on every single tick.
   useEffect(() => {
     if (!playing) return;
-    if (progress >= 1) { setPlaying(false); return; }
     const timer = window.setInterval(() => {
       setProgress(current => {
         const next = current + speed / Math.max(1, path.length);
@@ -121,7 +122,10 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
       });
     }, 100);
     return () => window.clearInterval(timer);
-  }, [playing, progress, speed, path.length]);
+  }, [playing, speed, path.length]);
+
+  // Stop the clock once the head reaches the end instead of spinning an idle interval.
+  useEffect(() => { if (playing && progress >= 1) setPlaying(false); }, [playing, progress]);
 
   useEffect(() => {
     const instance = map.current, group = layer.current;

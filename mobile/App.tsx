@@ -110,7 +110,7 @@ function Root() {
           )}
           {tab === 'visits' && <VisitsScreen user={user} field={field} />}
           {tab === 'reports' && <ReportScreen onPending={() => void field.refresh()} />}
-          {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} />}
+          {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} timezone={field.summary?.timezone} />}
           {tab === 'settings' && (
             <SettingsScreen
               user={user}
