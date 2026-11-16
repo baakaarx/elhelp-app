@@ -13,9 +13,15 @@ function resolveBase(): string {
   if (Platform.OS === 'web') return '';
   // Development: use the same host as the Metro server, on the API port.
   const host = Constants.expoConfig?.hostUri?.split(':')[0];
-  return host ? `http://${host}:3000` : 'http://127.0.0.1:3000';
+  return host ? `http://${host}:3000` : '';
 }
 export const API_BASE = resolveBase();
+/**
+ * A build with no server address is a packaging mistake, not a dropped connection. It used to
+ * fall back to `http://127.0.0.1:3000`, so a released app silently reported "لا يوجد اتصال"
+ * forever; the app now refuses to pretend and says the build is not configured.
+ */
+export const UNCONFIGURED = API_BASE === '' && Platform.OS !== 'web';
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = await getToken();

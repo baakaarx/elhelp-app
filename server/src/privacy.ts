@@ -143,7 +143,109 @@ export function privacyPage(config: Config): string {
 
   <p class="muted">آخر تحديث: ${updated}</p>
 </main>
-<footer>الهلب جروب · هذه الصفحة هي المرجع الرسمي لسياسة الخصوصية المنشورة مع التطبيق.</footer>
+<footer>الهلب جروب · هذه الصفحة هي المرجع الرسمي لسياسة الخصوصية المنشورة مع التطبيق · <a href="/delete-account">حذف الحساب والبيانات</a></footer>
+</body>
+</html>`;
+}
+
+/**
+ * The web half of the store deletion rule.
+ *
+ * Google Play requires two paths for an app that creates accounts: one inside the app and one
+ * on the web for people who already uninstalled it. The in-app path exists (`DELETE /api/me`);
+ * this page is the link that goes into the Play Console "Account deletion" field. It states
+ * what is erased, what is kept and why, and starts the request with one tap (a prefilled mail
+ * to the operator), so it works without the app and without a login.
+ */
+export function deleteAccountPage(config: Config): string {
+  const contact = escapeHtml(config.privacyContact);
+  const days = config.retentionDays;
+  const subject = encodeURIComponent('طلب حذف حساب — مهندس الميدان');
+  const body = encodeURIComponent(
+    'الاسم:\nالبريد الإلكتروني المسجّل في التطبيق:\nرقم الهاتف (اختياري):\n\nأطلب حذف حسابي وكل البيانات المرتبطة به.\n',
+  );
+  return `<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>حذف الحساب · الهلب جروب</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f6f4ee; color: #16241d; font: 16px/1.95 "Noto Naskh Arabic", "Segoe UI", Tahoma, sans-serif; }
+  header { background: #0a1f33; color: #f6f0dd; padding: 26px 20px; }
+  header div, main { max-width: 780px; margin: 0 auto; }
+  header h1 { margin: 0 0 4px; font-size: 24px; }
+  header p { margin: 0; color: #c9b98a; font-size: 13px; }
+  main { padding: 22px 20px 60px; }
+  section { background: #fffdf8; border: 1px solid #e4e0d4; border-radius: 16px; padding: 18px 20px; margin: 0 0 14px; }
+  h2 { font-size: 18px; margin: 0 0 8px; color: #12352a; }
+  ul, ol { margin: 6px 0; padding-inline-start: 22px; }
+  li { margin: 4px 0; }
+  p { margin: 6px 0; }
+  a.cta { display: inline-block; margin-top: 10px; background: #1f513f; color: #fffdf8; text-decoration: none; border-radius: 12px; padding: 12px 22px; font-weight: 700; }
+  .muted { color: #5d6b62; font-size: 13px; }
+  .pill { display: inline-block; background: #e8f1ea; color: #1f513f; border-radius: 999px; padding: 2px 12px; font-size: 13px; }
+  a { color: #1f513f; }
+  footer { text-align: center; color: #6b7a71; font-size: 12px; padding-bottom: 30px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>حذف حسابك وبياناتك</h1>
+    <p>الهلب جروب · تطبيق مهندس الميدان (com.elhelb.mandoub)</p>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>١) من يقدر يطلب الحذف</h2>
+    <p>أي مهندس عنده حساب في التطبيق، سواء التطبيق لسه مثبَّت على موبايله أو شاله. الحذف بيشمل
+    الحساب نفسه وكل البيانات المرتبطة بيه، ومش بيحتاج تفتح التطبيق.</p>
+  </section>
+
+  <section>
+    <h2>٢) إزاي تطلب الحذف — طريقتين</h2>
+    <ol>
+      <li><b>فورًا من داخل التطبيق:</b> تبويب «حسابي» ← «حذف الحساب نهائيًا» ← اكتب بريدك للتأكيد.
+      الحساب بيتمسح في نفس اللحظة.</li>
+      <li><b>من غير التطبيق:</b> ابعت طلب من بريدك المسجّل على الرابط ده، وهننفّذه في مدة أقصاها
+      <b>٧ أيام عمل</b>، وهنبلّغك على نفس البريد لما يخلص.</li>
+    </ol>
+    <a class="cta" href="mailto:${contact}?subject=${subject}&body=${body}">إرسال طلب حذف بالبريد</a>
+    <p class="muted">أو راسلنا مباشرة على <a href="mailto:${contact}">${contact}</a> بعنوان «طلب حذف حساب».</p>
+  </section>
+
+  <section>
+    <h2>٣) إيه اللي بيتمسح</h2>
+    <ul>
+      <li>الحساب: الاسم، البريد الإلكتروني، رقم الهاتف، المنطقة، كلمة المرور المشفّرة، ومعرّف الجهاز المرتبط.</li>
+      <li>سجل الموقع بالكامل: كل نقاط GPS والمسارات والورديات المرتبطة بالحساب.</li>
+      <li>الزيارات والتقارير اليومية والتقارير الميدانية وطلبات التحصيل اللي كتبها المهندس.</li>
+      <li>جلسات الدخول وأي بيانات مؤقتة على السيرفر.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>٤) إيه اللي بيفضل — وليه</h2>
+    <ul>
+      <li><b>سجل التدقيق:</b> بيتحفظ بمعرّف الحساب بدون الاسم أو البريد، للحماية من إساءة الاستخدام
+      وإثبات الإجراءات الحساسة (بدء/إيقاف وردية، حذف حساب).</li>
+      <li><b>البيانات المحاسبية:</b> لو فيه تحصيل نقدي معتمد، ممكن يتحفظ الحد الأدنى اللي بيطلبه
+      القانون التجاري، من غير بيانات الموقع.</li>
+      <li><b>النسخ الاحتياطية:</b> بتتمسح هي كمان مع أول دورة احتفاظ، وأقصى مدة ${days} يومًا.</li>
+    </ul>
+    <p class="muted">مدة الاحتفاظ الحالية بالبيانات العاملة: <span class="pill">${days} يومًا</span></p>
+  </section>
+
+  <section>
+    <h2>٥) قبل ما تحذف</h2>
+    <p>الحذف نهائي ومش ممكن التراجع عنه. لو المدير محتاج سجل زياراتك، نزّل التقرير الشهري (Excel)
+    من لوحة المتابعة قبل تنفيذ الطلب.</p>
+  </section>
+</main>
+<footer>الهلب جروب · <a href="/privacy">سياسة الخصوصية</a> · آخر تحديث: ${escapeHtml(new Intl.DateTimeFormat('ar-EG', { dateStyle: 'long', timeZone: config.timezone }).format(new Date()))}</footer>
 </body>
 </html>`;
 }

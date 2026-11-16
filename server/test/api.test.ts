@@ -1266,3 +1266,24 @@ test('old unreviewed reports stay reachable beyond the feed limit', async () => 
   assert.ok(ids.includes('backlog-0'), 'the oldest unreviewed report must still be listed');
   assert.equal(list.body.reports[0].status, 'new');
 });
+
+test('the account-deletion page is public, Arabic and says what gets erased', async () => {
+  const res = await request(app).get('/delete-account');
+  assert.equal(res.status, 200, String(res.text).slice(0, 120));
+  assert.match(String(res.headers['content-type']), /text\/html/);
+  assert.match(res.text, /dir="rtl"/);
+  assert.match(res.text, /com\.elhelb\.mandoub/);
+  assert.match(res.text, /mailto:/, 'there must be a way to start the request without the app');
+  assert.match(res.text, /إيه اللي بيتمسح/);
+  assert.ok(res.text.includes(`${config.retentionDays} يومًا`), 'the page must quote the real retention period');
+
+  const privacy = await request(app).get('/privacy');
+  assert.match(privacy.text, /href="\/delete-account"/, 'the policy links to the deletion page');
+});
+
+test("a representative's day summary carries the retention period the UI prints", async () => {
+  const engineer = await freshRep('retention');
+  const res = await request(app).get('/api/me/summary').set(auth(engineer.token));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.retentionDays, config.retentionDays);
+});

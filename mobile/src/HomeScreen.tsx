@@ -152,6 +152,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
 
       <ConsentSheet
         mode="resume"
+        retentionDays={field.summary?.retentionDays ?? 365}
         visible={resumeOpen}
         onClose={() => { if (!field.busy) { setResumeOpen(false); field.clearError(); } }}
         onStart={async (background) => { try { await field.resumeTracking({ background }); setResumeOpen(false); } catch { /* keep the sheet open with the reason */ } }}
@@ -159,6 +160,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
         error={field.error}
       />
       <ConsentSheet
+        retentionDays={field.summary?.retentionDays ?? 365}
         visible={consentOpen}
         onClose={() => { if (!field.busy) { setConsentOpen(false); field.clearError(); } }}
         onStart={async (background) => { try { await field.beginShift({ background }); setConsentOpen(false); } catch { /* Keep the sheet open with the error. */ } }}
@@ -193,22 +195,24 @@ function ActionTile({ icon, label, hint, onPress, tone = 'plain' }: { icon: stri
   );
 }
 
-function ConsentSheet({ visible, onClose, onStart, busy, error, mode = 'start' }: {
+function ConsentSheet({ visible, onClose, onStart, busy, error, retentionDays, mode = 'start' }: {
   visible: boolean; onClose: () => void; onStart: (background: boolean) => void;
-  busy: boolean; error: string; mode?: 'start' | 'resume';
+  busy: boolean; error: string; retentionDays: number; mode?: 'start' | 'resume';
 }) {
   const [agreed, setAgreed] = useState(false);
   const [background, setBackground] = useState(true);
   useEffect(() => { if (visible) { setAgreed(false); setBackground(true); } }, [visible]);
   return (
     <ConsentSheetShell mode={mode} visible={visible} onClose={onClose} agreed={mode === 'resume' || agreed} setAgreed={setAgreed}
-      background={background} setBackground={setBackground} onStart={() => onStart(background)} busy={busy} error={error} />
+      background={background} setBackground={setBackground} onStart={() => onStart(background)} busy={busy} error={error}
+      retentionDays={retentionDays} />
   );
 }
 
-function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, setBackground, onStart, busy, error, mode = 'start' }: {
+function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, setBackground, onStart, busy, error, retentionDays, mode = 'start' }: {
   visible: boolean; onClose: () => void; agreed: boolean; setAgreed: (value: boolean) => void;
   background: boolean; setBackground: (value: boolean) => void; onStart: () => void; busy: boolean; error: string;
+  retentionDays: number;
   mode?: 'start' | 'resume';
 }) {
   const resume = mode === 'resume';
@@ -223,7 +227,7 @@ function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, se
         <>
           <Body>
             أثناء الوردية فقط، يسجّل التطبيق موقعك كل ثانية تقريبًا ويُرسله إلى لوحة متابعة الهلب.
-            تُستخدم البيانات لعرض خط سيرك للمدير ولإعداد تقاريرك، وتُحذف تلقائيًا بعد ٣٠ يومًا.
+            تُستخدم البيانات لعرض خط سيرك للمدير ولإعداد تقاريرك، وتُحذف تلقائيًا بعد {retentionDays} يومًا.
           </Body>
           <Body muted>يمكنك إيقاف التتبع في أي لحظة من الزر الأحمر، ويُسجَّل كل بدء/إيقاف في سجل التدقيق.</Body>
         </>
@@ -244,9 +248,9 @@ function IdleBanner({ now, lastFixAt }: { now: number; lastFixAt: number }) {
       <Card tone="mint" style={{ borderColor: '#f0c27a', backgroundColor: '#fff8e6' }}>
         <Row style={{ justifyContent: 'space-between' }}>
           <Pill label="تنبيه" tone="warn" />
-          <Text style={{ fontFamily: fonts.bold, color: colors.amber }}>سكون ${minutes} دقيقة</Text>
+          <Text style={{ fontFamily: fonts.bold, color: colors.amber }}>سكون {minutes} دقيقة</Text>
         </Row>
-        <Body>لم يتحرك هاتفك منذ ${minutes} دقيقة — يجب كتابة سبب الوقوف ليصل للمدير.</Body>
+        <Body>لم يتحرك هاتفك منذ {minutes} دقيقة — يجب كتابة سبب الوقوف ليصل للمدير.</Body>
         <Button label="كتابة سبب الوقوف" variant="primary" onPress={() => setOpen(true)} />
       </Card>
     );

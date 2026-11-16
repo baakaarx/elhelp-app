@@ -10,7 +10,7 @@ import VisitsScreen from './src/VisitsScreen';
 import ReportScreen from './src/ReportScreen';
 import DailyReports from './src/DailyReports';
 import SettingsScreen from './src/SettingsScreen';
-import { me, logout } from './src/api';
+import { UNCONFIGURED, me, logout } from './src/api';
 import { clearDeviceData, getToken } from './src/storage';
 import { createQueue } from './src/queue';
 import { flushOutbox } from './src/reports';
@@ -68,6 +68,17 @@ function Root() {
       finally { setChecking(false); }
     })();
   }, []);
+
+  if (UNCONFIGURED) {
+    return (
+      <View style={styles.loading}>
+        <Text style={[styles.loadingText, { maxWidth: 320, textAlign: 'center', fontSize: 14, lineHeight: 24 }]}>
+          النسخة المثبَّتة دي مش مربوطة بسيرفر الشركة، فمش هينفع تسجّل الدخول.
+          كلّم المسؤول عن نشر التطبيق يعيد بناءها بعنوان السيرفر.
+        </Text>
+      </View>
+    );
+  }
 
   if (checking || user === undefined) {
     return <View style={styles.loading}><ActivityIndicator color={colors.green700} /><Text style={styles.loadingText}>جارٍ التحقق من الجلسة…</Text></View>;
