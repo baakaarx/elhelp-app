@@ -86,7 +86,12 @@ const newVisit = z.object({
   deviceName: z.string().trim().max(120).optional(),
 }).strict();
 const closeVisit = z.object({
-  outcome: z.string().trim().max(1000).default(''),
+  /**
+   * The check-out sheet marks this field required, but the server accepted an empty one: a
+   * visit could close with no result in the manager's timeline. The rule now lives here too,
+   * so an older build (or a direct API call) cannot produce a result-less visit.
+   */
+  outcome: z.string().trim().min(2, 'اكتب نتيجة الزيارة قبل الإنهاء.').max(1000),
   notes: z.string().trim().max(1000).default(''),
   amount: z.number().finite().min(0).max(1_000_000_000).nullable().default(null),
   location: reportLocation.nullable().default(null),
@@ -734,7 +739,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
   app.post('/api/visits/:id/check-out', repOnly, (req, res) => {
     const parsed = closeVisit.safeParse(req.body ?? {});
-    if (!parsed.success) { res.status(400).json({ error: 'بيانات إنهاء الزيارة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    // The first broken rule is the useful sentence ("اكتب نتيجة الزيارة…"), not the generic one.
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات إنهاء الزيارة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const visit = visitRow(String(req.params.id));
     if (!visit || visit.userId !== res.locals.user.id) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
     if (visit.status === 'closed') { res.json({ visit, duplicate: true }); return; }
@@ -996,7 +1002,9 @@ export function createApp(overrides: Partial<Config> = {}) {
         repId: rep.id, name: rep.name, color: rep.color, region: rep.region, active: !!rep.active,
         distanceMeters: distance.meters, pointCount: distance.points,
         visits: Number(visits.total || 0), visitsCompleted: Number(visits.closed || 0),
-        avgVisitSeconds: visits.avgDuration ? Math.round(Number(visits.avgDuration)) : null,
+        // `0` is a real average (a visit closed in the same second), not "no visits": testing
+        // it for truthiness turned it into `null`, and the table printed "—" instead of "أقل من دقيقة".
+        avgVisitSeconds: visits.avgDuration == null ? null : Math.round(Number(visits.avgDuration)),
         reports: Number(reportsRow.c || 0), collected: Number(reportsRow.collected || 0),
         dailyReports: Number(dailyRow.c || 0), daysWithData,
         lastFixAt: lastRow.at ? Number(lastRow.at) : null,

@@ -76,9 +76,6 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
           ) : (
             <Button label="بدء الوردية وتسجيل الموقع" onPress={() => setConsentOpen(true)} loading={field.busy} />
           )}
-          {/* The sync loop's own warning: the server refused the fixes because the phone's
-              clock is ahead, and the engineer is the only one who can fix that. */}
-          {field.syncNotice ? <Text style={styles.notice}>⚠ {field.syncNotice}</Text> : null}
           {field.error ? <Text style={styles.error}>{field.error}</Text> : null}
         </Card>
 
@@ -328,7 +325,6 @@ const styles = StyleSheet.create({
   visitDot: { width: 8, height: 8, borderRadius: 4 },
   visitName: { fontFamily: fonts.medium, fontSize: 13.5, color: colors.ink, textAlign: 'right' },
   error: { fontFamily: fonts.regular, fontSize: 12, color: '#ffd7d7', textAlign: 'right' },
-  notice: { fontFamily: fonts.bold, fontSize: 12, color: '#f6d68a', textAlign: 'right', lineHeight: 19 },
   toggle: { flexDirection: 'row-reverse', alignItems: 'flex-start', gap: space.sm },
   checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: colors.line, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.white },
   checkboxOn: { backgroundColor: colors.green700, borderColor: colors.green700 },

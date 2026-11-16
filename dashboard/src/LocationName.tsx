@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { LocationPoint } from './types';
 
 type Lookup = { label: string; at: number };
@@ -7,6 +7,10 @@ export default function LocationName({ location }: { location: LocationPoint | n
   const [result, setResult] = useState<Lookup | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // The parent refreshes positions every few seconds; without this the label of the previous
+  // fix stayed on screen next to a newer timestamp — a place name that is simply wrong.
+  const fixKey = location ? `${location.lat},${location.lng},${location.recordedAt}` : '';
+  useEffect(() => { setResult(null); setError(''); }, [fixKey]);
   async function lookup() {
     if (!location || loading) return;
     const fix = location;
