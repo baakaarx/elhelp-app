@@ -59,6 +59,7 @@ ADMIN_PASSWORD=<١٢ حرفًا على الأقل، قيمة فريدة>
 DB_PATH=/var/lib/elhelp/mandoub.db
 RETENTION_DAYS=365
 STALE_GPS_MINUTES=10
+IDLE_REASON_MINUTES=60
 TIMEZONE=Africa/Cairo
 ALLOWED_ORIGINS=https://tracking.your-company.com
 PRIVACY_CONTACT=privacy@your-company.com

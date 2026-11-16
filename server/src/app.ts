@@ -126,7 +126,9 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.use((req, res, next) => {
     if (config.production && !req.path.startsWith('/api') && !req.path.startsWith('/socket.io')) {
       const engineerApp = req.path === '/app' || req.path.startsWith('/app/');
-      res.setHeader('Content-Security-Policy', contentSecurityPolicy(engineerApp));
+      // The request's own host is what Socket.IO upgrades to, so the policy names it instead of
+      // allowing a websocket to any host at all.
+      res.setHeader('Content-Security-Policy', contentSecurityPolicy(engineerApp, req.headers.host));
     }
     next();
   });
@@ -344,7 +346,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     socket.on('disconnect', broadcast);
   });
 
-  app.get('/api/health', (_req, res) => { res.json({ ok: true, timezone: config.timezone, retentionDays: config.retentionDays, consentVersion: CONSENT_VERSION, staleGpsMinutes: config.staleGpsMinutes }); });
+  app.get('/api/health', (_req, res) => { res.json({ ok: true, timezone: config.timezone, retentionDays: config.retentionDays, consentVersion: CONSENT_VERSION, staleGpsMinutes: config.staleGpsMinutes, idleReasonMinutes: config.idleReasonMinutes }); });
   app.post('/api/auth/login', rateLimit({ ...config.loginRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ربع ساعة.' } }), (req, res) => {
     const parsed = credentials.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'أدخل بريدًا إلكترونيًا صحيحًا وكلمة مرور.' }); return; }
@@ -805,6 +807,8 @@ export function createApp(overrides: Partial<Config> = {}) {
       // The app tells the engineer how long the data is kept; it has to ask, because the
       // number lives in the server config (and used to be hard-coded as "30 days" in the UI).
       retentionDays: config.retentionDays,
+      // The banner that asks for a stillness reason uses the server's threshold, not its own.
+      idleReasonMinutes: config.idleReasonMinutes,
       distanceMeters: distance.meters, pointCount: distance.points, firstFixAt: distance.first, lastFixAt: distance.last, lastFixAccuracy: distance.lastAccuracy,
       visitsTotal: visits.length, visitsCompleted: completed.length, openVisit: open, avgVisitSeconds,
       collectionsCount: Number(collections?.c || 0), collectionAmount: Number(collections?.total || 0),
@@ -834,10 +838,13 @@ export function createApp(overrides: Partial<Config> = {}) {
           at: lastAt,
         });
       }
-      if (shift && lastAt && now - lastAt > 60 * 60000) {
-        const recentJustification = store.get('SELECT id FROM idle_reports WHERE user_id=? AND created_at>?', rep.id, now - 70 * 60000);
+      // One threshold for the phone banner and this alert (`IDLE_REASON_MINUTES`, default 60).
+      if (shift && lastAt && now - lastAt > config.idleReasonMinutes * 60000) {
+        // A justification covers the window it was written in, so an engineer who explained
+        // himself ten minutes ago is not alerted again straight away.
+        const recentJustification = store.get('SELECT id FROM idle_reports WHERE user_id=? AND created_at>?', rep.id, now - (config.idleReasonMinutes + 10) * 60000);
         if (!recentJustification) {
-          alerts.push({ id: `${rep.id}:idle`, level: 'warn', code: 'idle_without_reason', repId: rep.id, repName: rep.name, title: 'سكون لأكثر من ساعة بدون تبرير', detail: `لا حركة منذ ${Math.round((now - lastAt) / 60000)} دقيقة ولم يُرسل تبرير وقوف.`, at: lastAt });
+          alerts.push({ id: `${rep.id}:idle`, level: 'warn', code: 'idle_without_reason', repId: rep.id, repName: rep.name, title: `سكون ${config.idleReasonMinutes} دقيقة بدون تبرير`, detail: `لا حركة منذ ${Math.round((now - lastAt) / 60000)} دقيقة ولم يُرسل تبرير وقوف.`, at: lastAt });
         }
       }
       if (shift && !lastAt && now - Number(shift.started_at) > 20 * 60000) {

@@ -19,6 +19,14 @@ export const MIN_ADMIN_PASSWORD_LENGTH = 12;
  * beat), thirty minutes hid a real gap; ten minutes is the compromise.
  */
 export const DEFAULT_STALE_GPS_MINUTES = 10;
+/**
+ * Minutes of stillness before the engineer is asked for a reason and the manager sees the alert.
+ *
+ * The same number lived in two places (the phone's banner and the server's alert) with a literal
+ * 60 in both, so changing it meant shipping a new APK. It is one setting now, sent to the app
+ * with the summary.
+ */
+export const DEFAULT_IDLE_REASON_MINUTES = 60;
 
 /**
  * `TRUST_PROXY` accepts what Express accepts (`loopback`, `1`, `10.0.0.0/8`, `true`, `false`).
@@ -45,6 +53,8 @@ export interface Config {
   allowedOrigins: string[];
   /** Minutes without a GPS point before the field is flagged as losing signal. */
   staleGpsMinutes: number;
+  /** Minutes of stillness before a reason is required (and the manager is alerted). */
+  idleReasonMinutes: number;
   /** Public contact address printed on the privacy policy page the stores link to. */
   privacyContact: string;
   /**
@@ -94,6 +104,10 @@ export function readConfig(): Config {
   if (!Number.isInteger(staleGpsMinutes) || staleGpsMinutes < 3 || staleGpsMinutes > 120) {
     throw new Error('STALE_GPS_MINUTES must be an integer from 3 to 120.');
   }
+  const idleReasonMinutes = Number(process.env.IDLE_REASON_MINUTES || DEFAULT_IDLE_REASON_MINUTES);
+  if (!Number.isInteger(idleReasonMinutes) || idleReasonMinutes < 15 || idleReasonMinutes > 240) {
+    throw new Error('IDLE_REASON_MINUTES must be an integer from 15 to 240 (minutes).');
+  }
   const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   if (adminEmail === EXAMPLE_ADMIN_EMAIL) {
     // The first administrator is created from this value, so the template address means
@@ -113,6 +127,7 @@ export function readConfig(): Config {
     adminPassword: process.env.ADMIN_PASSWORD || '',
     allowedOrigins: (process.env.ALLOWED_ORIGINS || '').split(',').map(x => x.trim()).filter(Boolean),
     staleGpsMinutes,
+    idleReasonMinutes,
     // A privacy contact is required by both stores. It defaults to privacy@<domain of the
     // manager address> so an installation never publishes the manager's own login address.
     privacyContact: (process.env.PRIVACY_CONTACT || '').trim() || `privacy@${adminEmail.split('@')[1] || 'example.com'}`,

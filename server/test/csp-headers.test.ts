@@ -25,6 +25,7 @@ test.after(async () => {
 });
 
 const policyOf = (res: request.Response) => String(res.headers['content-security-policy'] ?? '');
+const directiveConnect = (policy: string) => policy.split('; ').find(part => part.startsWith('connect-src ')) ?? '';
 
 test('the public privacy and deletion pages carry the policy', async () => {
   for (const path of ['/privacy', '/delete-account']) {
@@ -36,6 +37,14 @@ test('the public privacy and deletion pages carry the policy', async () => {
     assert.match(policy, /frame-ancestors 'self'/);
     assert.ok(!policy.includes('unsafe-eval'), 'a static page needs no eval');
   }
+});
+
+test('the policy names the host the browser actually opened', async () => {
+  // `/` is mounted by index.ts; `/privacy` is a page createApp itself serves.
+  const res = await client.get('/privacy');
+  const policy = policyOf(res);
+  assert.match(policy, /wss:\/\/127\.0\.0\.1(:\d+)?/, `Socket.IO must reach its own host: ${policy}`);
+  assert.ok(!/wss:( |$)/.test(directiveConnect(policy)), 'no scheme-wide websocket allowance on a named host');
 });
 
 test('API responses do not carry a page policy', async () => {

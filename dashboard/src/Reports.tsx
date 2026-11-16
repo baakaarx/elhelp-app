@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, patch } from './api';
 import { ago, downloadDailyReportPdf, formatNumber } from './session';
 import { reportTypeLabels, type DailyReport, type Rep, type Report } from './types';
 
 type Tab = 'field' | 'daily';
 
-export default function Reports({ reps, onReviewed }: { reps: Rep[]; onReviewed: () => void }) {
+/**
+ * `version` is bumped by the shell whenever a report arrives (over the live socket, or by the
+ * poll when the socket is down). Without it this screen loaded once and a manager watching it
+ * never saw a report that came in while he was looking at it.
+ */
+export default function Reports({ reps, onReviewed, version = 0 }: { reps: Rep[]; onReviewed: () => void; version?: number }) {
   const [tab, setTab] = useState<Tab>('daily');
   const [reports, setReports] = useState<Report[]>([]);
   const [daily, setDaily] = useState<DailyReport[]>([]);
@@ -15,10 +20,13 @@ export default function Reports({ reps, onReviewed }: { reps: Rep[]; onReviewed:
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const loadedOnce = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // A silent refresh of a list the manager is already reading: only the first load shows the
+    // loading line, otherwise every incoming report would blank the screen for a moment.
+    if (!loadedOnce.current) setLoading(true);
     setError('');
     Promise.all([
       api<{ reports: Report[] }>('/api/reports'),
@@ -28,9 +36,9 @@ export default function Reports({ reps, onReviewed }: { reps: Rep[]; onReviewed:
       setReports(field.reports);
       setDaily(dailyRes.reports);
     }).catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'تعذر تحميل التقارير.'); })
-      .finally(() => { if (!cancelled) setLoading(false); });
+      .finally(() => { if (!cancelled) { loadedOnce.current = true; setLoading(false); } });
     return () => { cancelled = true; };
-  }, []);
+  }, [version]);
 
   const visibleReports = useMemo(() => reports.filter(r => (status === 'all' || r.status === status) && (repId === 'all' || r.userId === repId)), [reports, status, repId]);
   const visibleDaily = useMemo(() => daily.filter(r => (status === 'all' || r.status === status) && (repId === 'all' || r.userId === repId)), [daily, status, repId]);
