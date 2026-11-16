@@ -13,6 +13,7 @@ import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { deleteAccountPage, privacyPage } from './privacy.js';
+import { OauthError, verifyIdToken } from './oauth.js';
 import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 
@@ -22,6 +23,12 @@ const CLOCK_SKEW_TOLERANCE_MS = 10 * 60000;
 /** Drift below this is normal jitter around "now" and is not treated as a wrong clock. */
 const CLOCK_SKEW_FLOOR_MS = 60000;
 const credentials = z.object({ email: z.email().max(254).transform(x => x.toLowerCase().trim()), password: z.string().min(1).max(200) });
+const oauthLogin = z.object({
+  provider: z.enum(['google', 'apple']),
+  idToken: z.string().min(40).max(8192),
+  /** Apple sends the person's name only on the first authorization, so the app forwards it. */
+  name: z.string().trim().max(120).optional(),
+});
 const newRep = z.object({
   name: z.string().trim().min(2).max(80), email: z.email().max(254).transform(x => x.toLowerCase().trim()),
   password: z.string().min(10).max(200), phone: z.string().trim().max(30).default(''), region: z.string().trim().max(80).default(''),
@@ -338,6 +345,63 @@ export function createApp(overrides: Partial<Config> = {}) {
     setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
     store.audit(user.id, 'auth.login');
     res.json({ ...session, user: publicUser(user) });
+  });
+
+  /* ── Sign in with Google / Apple ────────────────────────────────────────────────
+     The phone signs in with the provider's own SDK and posts the resulting ID token; the
+     server verifies the signature and the claims, then issues the same session a password
+     login would. Accounts are never created here: an unknown address gets a clear "ask your
+     manager", because the app is an internal tool and a Google account is not a licence. */
+  app.post('/api/auth/oauth', rateLimit({ ...config.loginRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ربع ساعة.' } }), async (req, res) => {
+    const parsed = oauthLogin.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'طلب تسجيل دخول غير صالح.' }); return; }
+    const { provider, idToken, name } = parsed.data;
+    const audiences = (provider === 'google' ? config.oauthGoogleClientIds : config.oauthAppleClientIds) ?? [];
+    if (!audiences.length) { res.status(400).json({ error: 'تسجيل الدخول بـ' + (provider === 'google' ? 'Google' : 'Apple') + ' غير مفعّل على السيرفر.', code: 'OAUTH_DISABLED' }); return; }
+
+    let identity;
+    try {
+      identity = await verifyIdToken(provider, idToken, { audiences });
+    } catch (error) {
+      if (error instanceof OauthError) { res.status(error.status).json({ error: error.message, code: error.code }); return; }
+      throw error;
+    }
+
+    // Linked account first: Apple only returns the email on the very first authorization.
+    const user = store.get('SELECT * FROM users WHERE oauth_provider=? AND oauth_subject=?', provider, identity.subject)
+      || (identity.email ? store.get('SELECT * FROM users WHERE email=?', identity.email) : undefined);
+    if (!user) {
+      res.status(403).json({ error: 'مفيش حساب في الهلب جروب بالبريد ده. اطلب من مدير المتابعة يضيفك الأول.', code: 'ACCOUNT_NOT_FOUND' });
+      return;
+    }
+    if (!user.active) { res.status(403).json({ error: 'الحساب متوقف — تواصل مع الإدارة.', code: 'ACCOUNT_DISABLED' }); return; }
+    if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير — سيتم تفعيله قريبًا.', code: 'PENDING_APPROVAL' }); return; }
+    if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
+    if (user.oauth_subject && (user.oauth_provider !== provider || user.oauth_subject !== identity.subject)) {
+      // The address is already tied to another Google/Apple account: refuse instead of
+      // silently moving the link to whoever controls a matching address today.
+      res.status(409).json({ error: 'الحساب ده مربوط بحساب ' + (String(user.oauth_provider) === 'apple' ? 'Apple' : 'Google') + ' تاني. كلّم مدير المتابعة يفكّ الربط.', code: 'ACCOUNT_LINKED' });
+      return;
+    }
+    if (!user.oauth_subject) {
+      store.run('UPDATE users SET oauth_provider=?, oauth_subject=? WHERE id=?', provider, identity.subject, user.id);
+      if (name && !user.name) store.run('UPDATE users SET name=? WHERE id=?', name, user.id);
+    }
+
+    const session = createSession(store, user.id);
+    setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
+    store.audit(user.id, `auth.login.${provider}`);
+    res.json({ ...session, user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
+  });
+
+  /* Which social buttons the app is allowed to show — the server is the only one that knows
+     whether it can verify those tokens, so the app asks instead of guessing from a build flag. */
+  app.get('/api/auth/providers', (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.json({
+      google: ((config.oauthGoogleClientIds ?? []) as string[]).length > 0,
+      apple: ((config.oauthAppleClientIds ?? []) as string[]).length > 0,
+    });
   });
   // Do not accept social tokens until their signature, issuer and audience are verified.
   // Decoding a JWT alone lets anyone impersonate an existing account.

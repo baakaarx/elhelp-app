@@ -72,8 +72,19 @@ export async function stopShift() {
 }
 export const reportIdle = (reason: string, location: { lat: number; lng: number; accuracy: number | null }, deviceId: string) =>
   post<{ id: string; idleMinutes: number }>('/api/shifts/idle', { reason, location, deviceId });
-export const socialLogin = (provider: 'google' | 'apple', idToken: string, deviceId?: string, deviceName?: string) =>
-  post<{ token: string; user: User }>('/api/auth/social', { provider, idToken, deviceId, deviceName });
+/** Which social sign-ins this server can actually verify (it owns the client ids, not the app). */
+export const authProviders = () =>
+  get<{ google: boolean; apple: boolean }>('/api/auth/providers').catch(() => ({ google: false, apple: false }));
+
+/**
+ * Exchanges a Google/Apple ID token for a session. The token is the proof; the account must
+ * already exist on the server, so a personal Google account cannot create itself access.
+ */
+export async function oauthLogin(provider: 'google' | 'apple', idToken: string, name?: string) {
+  const res = await post<{ token: string; user: User }>('/api/auth/oauth', { provider, idToken, name });
+  await setToken(res.token);
+  return res.user;
+}
 export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points });
 export const sendReport = (report: ReportInput) => post<{ report: { id: string } }>('/api/reports', report);
 export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id: string } }>('/api/daily-reports', report);

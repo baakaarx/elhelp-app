@@ -33,6 +33,9 @@ const config: ExpoConfig = {
     // for review, and this tool is used on the engineers' phones.
     supportsTablet: false,
     bundleIdentifier: 'com.elhelb.mandoub',
+    // Required for the native "Sign in with Apple" sheet (Apple 4.8: an app that offers any
+    // other social sign-in must offer Apple's too).
+    usesAppleSignIn: true,
     // TestFlight/App Store reject a build number that was used before, and `expo prebuild`
     // always writes 1 — same trap as Android's versionCode.
     buildNumber: String(Number(process.env.IOS_BUILD_NUMBER || '1') || 1),
@@ -65,6 +68,7 @@ const config: ExpoConfig = {
     }],
     './plugins/withApiTraffic',
     './plugins/withReleaseSigning',
+    'expo-apple-authentication',
     'expo-secure-store',
     'expo-sqlite',
     'expo-font',
