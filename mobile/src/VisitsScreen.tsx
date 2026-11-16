@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { colors, fonts, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle } from './ui';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
-import { hhmmss } from './format';
+import { hhmmss, timeText } from './format';
 import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
 
@@ -15,6 +15,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
 
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
 
+  const timeZone = field.summary?.timezone;
   const shift = field.summary?.shift ?? null;
   const visits = useMemo(() => (filter === 'all' ? field.visits : field.visits.filter(v => v.status === filter)), [field.visits, filter]);
   const open = field.summary?.openVisit ?? null;
@@ -46,7 +47,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
             </Row>
             <Heading>{open.customerName}</Heading>
             <Body muted>
-              {visitPurposeLabels[open.purpose]} · دخلت {new Date(open.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+              {visitPurposeLabels[open.purpose]} · دخلت {timeText(open.checkedInAt, timeZone)}
               {open.inAccuracy ? ` · دقة ±${Math.round(open.inAccuracy)} م` : ''}
             </Body>
             <Row style={{ gap: space.sm }}>
@@ -79,8 +80,8 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
                 <View style={{ flex: 1, gap: 2 }}>
                   <Text style={styles.name}>{visit.customerName}</Text>
                   <Text style={styles.meta}>
-                    {visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
-                    {visit.status === 'closed' && visit.durationSeconds !== null ? ` ← ${new Date(visit.checkedOutAt ?? visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })} · ${Math.max(1, Math.round(visit.durationSeconds / 60))} د` : ' · جارية'}
+                    {visitPurposeLabels[visit.purpose]} · {timeText(visit.checkedInAt, timeZone)}
+                    {visit.status === 'closed' && visit.durationSeconds !== null ? ` ← ${timeText(visit.checkedOutAt ?? visit.checkedInAt, timeZone)} · ${Math.max(1, Math.round(visit.durationSeconds / 60))} د` : ' · جارية'}
                   </Text>
                   {visit.outcome ? <Text style={styles.outcome} numberOfLines={2}>{visit.outcome}</Text> : null}
                   {visit.village || visit.district ? <Text style={styles.meta}>{[visit.governorate, visit.district, visit.village].filter(Boolean).join(' · ')}</Text> : null}

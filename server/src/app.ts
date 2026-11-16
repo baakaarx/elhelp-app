@@ -16,6 +16,7 @@ import { deleteAccountPage, privacyPage } from './privacy.js';
 import { OauthError, verifyIdToken } from './oauth.js';
 import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
+import { contentSecurityPolicy } from './csp.js';
 
 const CONSENT_VERSION = '1.0';
 /** How far a phone's clock may run ahead before every fix in the batch is refused. */
@@ -111,6 +112,19 @@ export function createApp(overrides: Partial<Config> = {}) {
     frameguard: config.production ? { action: 'sameorigin' } : false,
     crossOriginResourcePolicy: config.production ? { policy: 'same-origin' } : false,
   }));
+  /*
+   * The policy is set here, before any route, not in index.ts: the server-rendered pages
+   * (`/privacy`, `/delete-account`) end the response inside their own handler, so a middleware
+   * registered after the routes — which is where it used to live — never ran for them and the
+   * two pages the stores link to were served with no policy at all.
+   */
+  app.use((req, res, next) => {
+    if (config.production && !req.path.startsWith('/api') && !req.path.startsWith('/socket.io')) {
+      const engineerApp = req.path === '/app' || req.path.startsWith('/app/');
+      res.setHeader('Content-Security-Policy', contentSecurityPolicy(engineerApp));
+    }
+    next();
+  });
   app.use(cors({ origin: originCheck }));
   app.use(express.json({ limit: '128kb' }));
   // Anonymous calls are counted per address; signed-in ones per session token. Keying only by
@@ -971,7 +985,11 @@ export function createApp(overrides: Partial<Config> = {}) {
         AVG(CASE WHEN status='closed' THEN duration_seconds END) AS avgDuration
         FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?`, rep.id, start, end)!;
       const reportsRow = store.get("SELECT COUNT(*) AS c, COALESCE(SUM(CASE WHEN type='collection' THEN amount ELSE 0 END),0) AS collected FROM reports WHERE user_id=? AND created_at>=? AND created_at<?", rep.id, start, end)!;
-      const dailyRow = store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=? AND created_at>=? AND created_at<?', rep.id, start, end)!;
+      // The daily report belongs to the day it *covers* (`report_date`), not the moment it was
+      // sent. An engineer who writes Monday's form on Tuesday morning — or whose shift runs past
+      // midnight — used to move that report into the next day, and a report sent on the 1st for
+      // the 30th landed in the wrong row of the monthly register the company files.
+      const dailyRow = store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=? AND report_date>=? AND report_date<=?', rep.id, from, to)!;
       const daysWithData = activeLocalDays(rep.id, start, end);
       const lastRow = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id)!;
       return {

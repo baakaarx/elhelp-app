@@ -5,7 +5,14 @@ import type { DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) { super(message); this.status = status; }
+  /**
+   * The server's machine-readable reason when it sends one (`CLOCK_SKEW`,
+   * `DAILY_REPORT_EXISTS`, `GPS_REQUIRED`, …). Without it a caller can only guess from the
+   * status code, and a batch of GPS fixes rejected for a fast phone clock looked exactly like
+   * a batch of corrupt fixes.
+   */
+  code?: string;
+  constructor(message: string, status: number, code?: string) { super(message); this.status = status; if (code) this.code = code; }
 }
 function resolveBase(): string {
   const configured = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl || process.env.EXPO_PUBLIC_API_URL || '';
@@ -38,7 +45,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const body = isJson ? await res.json().catch(() => null) : null;
   if (!res.ok) {
     if (res.status === 401) await setToken(null);
-    throw new ApiError(body?.error || `فشل الطلب (${res.status})`, res.status);
+    const code = typeof body?.code === 'string' ? body.code : undefined;
+    throw new ApiError(body?.error || `فشل الطلب (${res.status})`, res.status, code);
   }
   return body as T;
 }

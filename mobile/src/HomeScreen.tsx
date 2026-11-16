@@ -4,7 +4,7 @@ import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle, Sheet, Stat } from './ui';
 import RouteMap from './RouteMap';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
-import { agoText, clockText, hhmmss } from './format';
+import { agoText, clockText, hhmmss, timeText } from './format';
 import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
 import { captureOnce } from './location';
@@ -29,6 +29,9 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
 
   const summary = field.summary;
+  // Every label on this screen uses the installation's clock, exactly like the manager's copy
+  // of the same record — never the phone's own zone.
+  const timeZone = summary?.timezone;
   const shift = summary?.shift ?? null;
   const openVisit = summary?.openVisit ?? null;
   const shiftElapsed = shift ? hhmmss(now - shift.started_at) : null;
@@ -41,7 +44,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.hello}>أهلاً {user.name.split(' ')[0]} 👋</Text>
-            <Text style={styles.date}>{clockText(now)}</Text>
+            <Text style={styles.date}>{clockText(now, timeZone)}</Text>
           </View>
           {/* Company mark instead of a bare initial: the engineer sees the ElHelp identity
               next to their own name, and the greeting already carries their first name. */}
@@ -57,7 +60,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
           </Row>
           <Text style={styles.heroHint}>
             {shift
-              ? `بدأت ${new Date(shift.started_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })} · ${field.trackingActive ? 'يتم تسجيل موقعك' : 'استأنف تسجيل الموقع'}`
+              ? `بدأت ${timeText(Number(shift.started_at), timeZone)} · ${field.trackingActive ? 'يتم تسجيل موقعك' : 'استأنف تسجيل الموقع'}`
               : 'ابدأ الوردية ليبدأ تسجيل موقعك ويظهر مسارك للمدير.'}
           </Text>
           <View style={styles.heroStats}>
@@ -73,6 +76,9 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
           ) : (
             <Button label="بدء الوردية وتسجيل الموقع" onPress={() => setConsentOpen(true)} loading={field.busy} />
           )}
+          {/* The sync loop's own warning: the server refused the fixes because the phone's
+              clock is ahead, and the engineer is the only one who can fix that. */}
+          {field.syncNotice ? <Text style={styles.notice}>⚠ {field.syncNotice}</Text> : null}
           {field.error ? <Text style={styles.error}>{field.error}</Text> : null}
         </Card>
 
@@ -92,7 +98,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
             </Row>
             <Heading>{openVisit.customerName}</Heading>
             <Body muted>
-              {visitPurposeLabels[openVisit.purpose]} · بدأت {new Date(openVisit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+              {visitPurposeLabels[openVisit.purpose]} · بدأت {timeText(openVisit.checkedInAt, timeZone)}
               {openVisit.governorate ? ` · ${openVisit.governorate}` : ''}
             </Body>
             <Row style={{ gap: space.sm, marginTop: 4 }}>
@@ -130,7 +136,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
               <View style={{ flex: 1 }}>
                 <Text style={styles.visitName}>{visit.customerName}</Text>
                 <Text style={styles.meta}>
-                  {visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+                  {visitPurposeLabels[visit.purpose]} · {timeText(visit.checkedInAt, timeZone)}
                   {visit.status === 'closed' && visit.durationSeconds !== null ? ` · ${Math.max(1, Math.round(visit.durationSeconds / 60))} دقيقة` : ' · مفتوحة'}
                 </Text>
               </View>
@@ -322,6 +328,7 @@ const styles = StyleSheet.create({
   visitDot: { width: 8, height: 8, borderRadius: 4 },
   visitName: { fontFamily: fonts.medium, fontSize: 13.5, color: colors.ink, textAlign: 'right' },
   error: { fontFamily: fonts.regular, fontSize: 12, color: '#ffd7d7', textAlign: 'right' },
+  notice: { fontFamily: fonts.bold, fontSize: 12, color: '#f6d68a', textAlign: 'right', lineHeight: 19 },
   toggle: { flexDirection: 'row-reverse', alignItems: 'flex-start', gap: space.sm },
   checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: colors.line, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.white },
   checkboxOn: { backgroundColor: colors.green700, borderColor: colors.green700 },
