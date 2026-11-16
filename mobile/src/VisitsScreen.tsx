@@ -13,7 +13,17 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   const [checkInOpen, setCheckInOpen] = useState(false);
   const [checkOutVisit, setCheckOutVisit] = useState<Visit | null>(null);
 
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  // The ticking clock only exists for the open visit's stopwatch. It used to run on every
+  // visit screen: a full re-render of the whole list every second, all day, on a phone that is
+  // already tracking GPS — for a number that does not change when nothing is open.
+  const openVisitId = field.summary?.openVisit?.id ?? null;
+  useEffect(() => {
+    if (!openVisitId) return;
+    // Start from the current second: the clock on this screen may be older than the visit.
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [openVisitId]);
 
   const timeZone = field.summary?.timezone;
   const shift = field.summary?.shift ?? null;
