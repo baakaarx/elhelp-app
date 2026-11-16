@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { myRoute, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, requestPermissions, startTracking, stopTracking } from './tracking';
-import { captureOnce } from './location';
+import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
 import type { RepSummary, RouteResponse, User, Visit, VisitInput } from './types';
@@ -170,8 +170,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     try {
       const permission = await requestPermissions(background);
       if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن بدء التتبع بدونها.');
-      const fix = await captureOnce({ maxAgeMs: 15000 });
-      if (!fix) throw new Error('GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل بدء الوردية.');
+      // Starting a shift is a claim about the phone's current location; do not reuse cached GPS.
+      const fix = await captureOnce({ maxAgeMs: 0 });
+      if (!fix) throw new Error(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل بدء الوردية.');
       const deviceId = await getDeviceId();
       const deviceName = await getDeviceName();
       const res = await startShift('1.0', fix, deviceId, deviceName);

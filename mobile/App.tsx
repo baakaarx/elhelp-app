@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
@@ -17,6 +17,8 @@ import { flushOutbox } from './src/reports';
 import { hhmmss } from './src/format';
 import { stopTracking } from './src/tracking';
 import { useField } from './src/useField';
+import { onMockLocationDetected, MOCK_LOCATION_MESSAGE } from './src/location';
+import { initializePushHandling } from './src/push';
 import { colors, fonts, space } from './src/theme';
 import type { User } from './src/types';
 
@@ -50,6 +52,7 @@ export default function App() {
 function Root() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('home');
+  const [pushRefresh, setPushRefresh] = useState(0);
   const [checking, setChecking] = useState(true);
 
   const onSessionExpired = useCallback(async () => {
@@ -57,6 +60,34 @@ function Root() {
     setUser(null);
   }, []);
   const field = useField(user ?? null, onSessionExpired);
+
+  useEffect(() => {
+    const unsubscribe = onMockLocationDetected(() => Alert.alert('تم اكتشاف موقع محاكى', MOCK_LOCATION_MESSAGE));
+    void initializePushHandling().catch(() => undefined);
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    let active = true;
+    let subscription: { remove: () => void } | undefined;
+    const openForNotification = (response: import('expo-notifications').NotificationResponse) => {
+      const data = response.notification.request.content.data as { type?: string };
+      if (data.type === 'report_reviewed') { setTab('reports'); setPushRefresh(value => value + 1); }
+      else if (data.type === 'daily_report_reviewed') setTab('daily');
+      void field.refresh();
+    };
+    void import('expo-notifications').then(async Notifications => {
+      if (!active) return;
+      subscription = Notifications.addNotificationResponseReceivedListener(openForNotification);
+      const last = await Notifications.getLastNotificationResponseAsync();
+      if (active && last) {
+        openForNotification(last);
+        await Notifications.clearLastNotificationResponseAsync();
+      }
+    }).catch(() => undefined);
+    return () => { active = false; subscription?.remove(); };
+  }, [field.refresh]);
 
   useEffect(() => {
     (async () => {
@@ -114,7 +145,7 @@ function Root() {
             />
           )}
           {tab === 'visits' && <VisitsScreen user={user} field={field} />}
-          {tab === 'reports' && <ReportScreen onPending={() => void field.refresh()} />}
+          {tab === 'reports' && <ReportScreen onPending={() => void field.refresh()} refreshKey={pushRefresh} />}
           {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} timezone={field.summary?.timezone} />}
           {tab === 'settings' && (
             <SettingsScreen

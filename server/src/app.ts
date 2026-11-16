@@ -18,6 +18,7 @@ import { verifyTotp } from './totp.js';
 import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 import { contentSecurityPolicy } from './csp.js';
+import { isPushToken, sendPush } from './push.js';
 
 const CONSENT_VERSION = '1.0';
 /** How far a phone's clock may run ahead before every fix in the batch is refused. */
@@ -54,6 +55,15 @@ const pointSchema = z.object({
   recordedAt: z.number().int().nonnegative(),
 }).strict();
 const batchSchema = z.object({ points: z.array(pointSchema).min(1).max(100) }).strict();
+const pushTokenSchema = z.object({
+  token: z.string().trim().min(20).max(256).refine(isPushToken, 'Expo push token غير صالح.'),
+  platform: z.enum(['ios', 'android']),
+  deviceId: z.string().trim().min(3).max(120),
+}).strict();
+const pushTokenDeleteSchema = z.object({ deviceId: z.string().trim().min(3).max(120) }).strict();
+const mockLocationSchema = z.object({
+  shiftId: z.uuid(), deviceId: z.string().trim().min(3).max(120),
+}).strict();
 export const REPORT_TYPES = ['visit', 'order', 'collection', 'note', 'issue', 'other'] as const;
 const reportLocation = z.object({
   lat: z.number().finite().min(-90).max(90), lng: z.number().finite().min(-180).max(180),
@@ -168,6 +178,69 @@ export function createApp(overrides: Partial<Config> = {}) {
   const adminOnly = requireAuth(store, 'admin');
   const repOnly = requireAuth(store, 'rep');
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
+  const mockLocationLimiter = rateLimit({ windowMs: 60 * 60000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تم تسجيل بلاغات كثيرة عن الموقع الوهمي. حاول بعد ساعة.' } });
+  const pushRegistrationLimiter = rateLimit({ windowMs: 60 * 60000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'طلبات تسجيل الإشعارات كثيرة. حاول بعد ساعة.' } });
+  function notifyUser(userId: string, title: string, body: string, data: Record<string, unknown>) {
+    const tokens = store.all('SELECT token FROM push_tokens WHERE user_id=?', userId) as Array<{ token: string }>;
+    if (!tokens.length) return;
+    void sendPush(tokens.map(row => ({ to: String(row.token), title, body, data }))).then(result => {
+      try {
+        for (const token of result.invalid) store.run('DELETE FROM push_tokens WHERE token=?', token);
+        if (result.failed) console.warn(`[push] ${result.failed} notification(s) were not accepted; token records remain registered for future events.`);
+      } catch (error) { console.error('[push] could not update push-token state:', error); }
+    }).catch(error => console.error('[push] send failed without affecting the saved operation:', error));
+  }
+  app.get('/api/push/status', repOnly, (_req, res) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ enabled: !!store.get('SELECT 1 FROM push_tokens WHERE user_id=? LIMIT 1', res.locals.user.id) });
+  });
+  app.post('/api/push/token', repOnly, pushRegistrationLimiter, (req, res) => {
+    const parsed = pushTokenSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'رمز الإشعارات أو بيانات الجهاز غير صالحة.' }); return; }
+    const user = res.locals.user;
+    const boundDevice = String(user.device_id || '').trim();
+    if (!boundDevice) {
+      res.status(409).json({ error: 'ابدأ وردية من هذا الهاتف مرة واحدة قبل تفعيل إشعارات المراجعة.', code: 'DEVICE_NOT_BOUND' }); return;
+    }
+    if (parsed.data.deviceId !== boundDevice) {
+      res.status(403).json({ error: 'رمز الإشعارات صادر من هاتف غير مرتبط بالحساب.', code: 'DEVICE_MISMATCH' }); return;
+    }
+    const owner = store.get('SELECT user_id, device_id FROM push_tokens WHERE token=?', parsed.data.token) as { user_id: string; device_id: string } | undefined;
+    if (owner && (owner.user_id !== user.id || owner.device_id !== parsed.data.deviceId)) {
+      res.status(409).json({ error: 'رمز الإشعارات مرتبط بحساب أو جهاز آخر.', code: 'PUSH_TOKEN_IN_USE' }); return;
+    }
+    const now = Date.now();
+    store.run(`INSERT INTO push_tokens(token,user_id,platform,device_id,created_at,updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(user_id,device_id) DO UPDATE SET token=excluded.token, platform=excluded.platform, updated_at=excluded.updated_at`,
+    parsed.data.token, user.id, parsed.data.platform, parsed.data.deviceId, now, now);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ ok: true });
+  });
+  app.delete('/api/push/token', repOnly, (req, res) => {
+    const parsed = pushTokenDeleteSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'معرّف الجهاز غير صالح.' }); return; }
+    store.run('DELETE FROM push_tokens WHERE user_id=? AND device_id=?', res.locals.user.id, parsed.data.deviceId);
+    res.json({ ok: true });
+  });
+  app.post('/api/security/mock-location', repOnly, mockLocationLimiter, (req, res) => {
+    const parsed = mockLocationSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'بيانات رصد الموقع غير صالحة.' }); return; }
+    const user = res.locals.user;
+    const shift = store.get('SELECT id, device_id FROM shifts WHERE id=? AND user_id=? AND ended_at IS NULL', parsed.data.shiftId, user.id) as { id: string; device_id: string } | undefined;
+    if (!shift) { res.status(409).json({ error: 'الوردية غير مفتوحة لهذا الحساب.', code: 'SHIFT_NOT_OPEN' }); return; }
+    const boundDevice = String(shift.device_id || user.device_id || '').trim();
+    if (!boundDevice) { res.status(409).json({ error: 'الوردية غير مرتبطة بجهاز موثّق.', code: 'DEVICE_NOT_BOUND' }); return; }
+    if (parsed.data.deviceId !== boundDevice) {
+      res.status(403).json({ error: 'بلاغ الموقع صادر من هاتف غير مرتبط بالوردية.', code: 'DEVICE_MISMATCH' }); return;
+    }
+    const result = store.run('INSERT OR IGNORE INTO mock_location_events(id,user_id,shift_id,device_id,created_at) VALUES (?,?,?,?,?)',
+      randomUUID(), user.id, shift.id, parsed.data.deviceId, Date.now());
+    if (result.changes) {
+      store.audit(user.id, 'location.mock_detected', { shiftId: shift.id });
+      invalidateKpis(); broadcast();
+    }
+    res.status(result.changes ? 201 : 200).json({ ok: true, duplicate: !result.changes });
+  });
   const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
   // A month for the whole team is hundreds of thousands of fixes. The page, the CSV and the
   // workbook ask for the same rows seconds apart, so the result is reused — and any change the
@@ -502,8 +575,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = z.object({ status: z.enum(['approved', 'rejected', 'pending']) }).strict().safeParse(req.body);
     const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
     if (!parsed.success || !user) { res.status(400).json({ error: 'بيانات الموافقة غير صحيحة.' }); return; }
+    const previousStatus = String(user.approval_status || 'approved');
     store.run('UPDATE users SET approval_status=? WHERE id=?', parsed.data.status, user.id);
     if (parsed.data.status !== 'approved') { store.run('DELETE FROM sessions WHERE user_id=?', user.id); io.in(`user:${user.id}`).disconnectSockets(true); }
+    if (previousStatus !== parsed.data.status) {
+      const message = parsed.data.status === 'approved'
+        ? 'تم تفعيل حسابك. يمكنك تسجيل الدخول ومتابعة عملك.'
+        : parsed.data.status === 'rejected' ? 'تم تحديث حالة حسابك. تواصل مع مدير المتابعة.' : 'حسابك بانتظار مراجعة الإدارة.';
+      notifyUser(user.id, 'تحديث حالة الحساب', message, { type: 'account_status', status: parsed.data.status });
+    }
     store.audit(res.locals.user.id, 'rep.approval', { repId: user.id, status: parsed.data.status });
     invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
@@ -539,6 +619,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
   app.post('/api/auth/logout', auth, (req, res) => {
     if (res.locals.user.role === 'rep') endShift(res.locals.user.id);
+    // Logging out must stop notifications on the old phone before another person can use it.
+    store.run('DELETE FROM push_tokens WHERE user_id=?', res.locals.user.id);
     store.run('DELETE FROM sessions WHERE token_hash=?', res.locals.tokenHash);
     clearSessionCookies(req, res);
     store.audit(res.locals.user.id, 'auth.logout');
@@ -1045,11 +1127,11 @@ export function createApp(overrides: Partial<Config> = {}) {
         alerts.push({ id: `${rep.id}:novisit`, level: 'info', code: 'no_visits', repId: rep.id, repName: rep.name, title: 'لا زيارات مسجلة اليوم', detail: 'المهندس في الميدان لكن لم يسجل أي زيارة اليوم.', at: bounds.start });
       }
       /*
-       * A visit is a claim about being somewhere. Nothing on the phone stops a mock-location app
-       * from making that claim from the office, and the server cannot ask Android whether the fix
-       * was real — but it can compare the claim with the engineer's own trail. A visit far from
-       * every fix of that morning, or two visits at the same coordinates to five decimals, is
-       * worth a manager's attention even though it is not proof.
+       * A visit is a claim about being somewhere. The native app now drops fixes the OS marks as
+       * simulated and reports that flag, but a modified/rooted client can still omit it — this is
+       * not hardware attestation. The independent trail checks below remain useful: a visit far
+       * from every fix of that morning, or two visits at the same coordinates to five decimals,
+       * is worth a manager's attention even though it is not proof.
        */
       const dayVisits = store.all(`SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt,
           in_lat AS lat, in_lng AS lng, in_accuracy AS accuracy FROM visits
@@ -1116,6 +1198,18 @@ export function createApp(overrides: Partial<Config> = {}) {
         alerts.push({ id: `${rep.id}:daily`, level: 'warn', code: 'missing_daily_report', repId: rep.id, repName: rep.name, title: 'تقرير يومي غير مُرسل', detail: 'مر وقت العمل ولم يُرسل التقرير اليومي بعد.', at: bounds.start });
       }
     }
+    // This is an operating-system signal reported by the installed app, not forensic proof:
+    // modified/rooted clients can still lie. Keep it visible in the same manager alert feed so
+    // a native mock-provider hit is investigated instead of silently discarded on the phone.
+    const mockEvents = store.all(`SELECT e.id, e.created_at AS at, u.id AS repId, u.name AS repName
+      FROM mock_location_events e JOIN users u ON u.id=e.user_id
+      WHERE e.created_at>? AND u.active=1 ORDER BY e.created_at DESC LIMIT 100`, now - 24 * 3600000) as Array<Record<string, any>>;
+    for (const event of mockEvents) alerts.push({
+      id: `mock-location:${event.id}`, level: 'warn', code: 'mock_gps_detected', repId: String(event.repId), repName: String(event.repName),
+      title: 'اكتُشف موقع مُحاكى من نظام التشغيل',
+      detail: 'الهاتف أبلغ أن مزوّد الموقع وضع علامة «محاكى» على إشارة GPS. تم تجاهل النقطة؛ تحقّق من الجهاز مع المهندس.',
+      at: Number(event.at),
+    });
     const staleReviews = store.get('SELECT COUNT(*) AS c FROM reports WHERE status=? AND created_at<?', 'new', now - 24 * 3600000)!;
     if (Number(staleReviews.c) > 0) {
       alerts.push({ id: 'reports:stale', level: 'info', code: 'stale_reviews', title: 'تقارير بانتظار المراجعة', detail: `${staleReviews.c} تقرير مضى عليه أكثر من ٢٤ ساعة.`, at: now });
@@ -1139,6 +1233,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const user = store.get('SELECT * FROM users WHERE id=?', String(req.params.id));
     if (!user) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
     store.run('UPDATE users SET device_id=? WHERE id=?', '', user.id);
+    store.run('DELETE FROM push_tokens WHERE user_id=?', user.id);
     store.audit(res.locals.user.id, 'rep.reset_device', { repId: user.id });
     invalidateKpis(); broadcast();
     res.json({ ok: true });
@@ -1469,6 +1564,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (report.status !== 'reviewed') {
       store.run("UPDATE reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
       store.audit(res.locals.user.id, 'report.review', { reportId: report.id });
+      notifyUser(report.userId, 'تمت مراجعة تقريرك', 'مدير المتابعة راجع تقريرك. افتح التطبيق لمراجعة حالته.', { type: 'report_reviewed', reportId: report.id });
       invalidateKpis(); broadcast();
     }
     res.json({ report: reportRow(String(req.params.id)) });
@@ -1526,6 +1622,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (report.status !== 'reviewed') {
       store.run("UPDATE daily_reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
       store.audit(res.locals.user.id, 'daily_report.review', { reportId: report.id });
+      notifyUser(report.userId, 'تمت مراجعة تقريرك اليومي', 'مدير المتابعة راجع تقرير اليوم. افتح التطبيق لمراجعة حالته.', { type: 'daily_report_reviewed', reportId: report.id });
       io.to('admins').emit('daily-report', dailyReportRow(store, report.id));
       invalidateKpis(); broadcast();
     }

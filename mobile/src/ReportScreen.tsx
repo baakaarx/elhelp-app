@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { get, sendReport } from './api';
-import { captureOnce } from './location';
+import { captureOnce, locationIssueMessage, type Fix } from './location';
 import { parseNumberText } from './format';
 import { enqueueReport, flushOutbox } from './reports';
 import { shouldQueue } from './retry';
@@ -22,7 +22,7 @@ const types: { id: ReportType; label: string; icon: string }[] = [
 ];
 interface Recent { id: string; title: string; type: ReportType; status: 'new' | 'reviewed'; createdAt: number }
 
-export default function ReportScreen({ onPending }: { onPending?: (value: number) => void }) {
+export default function ReportScreen({ onPending, refreshKey = 0 }: { onPending?: (value: number) => void; refreshKey?: number }) {
   const [type, setType] = useState<ReportType>('visit');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -40,7 +40,7 @@ export default function ReportScreen({ onPending }: { onPending?: (value: number
       setRecent(res.reports.slice(0, 6));
     } catch { /* the form still works offline */ }
   }
-  useEffect(() => { void loadRecent(); }, []);
+  useEffect(() => { void loadRecent(); }, [refreshKey]);
 
   async function submit() {
     if (title.trim().length < 2) { setError('اكتب عنوانًا قصيرًا للتقرير.'); return; }
@@ -49,7 +49,13 @@ export default function ReportScreen({ onPending }: { onPending?: (value: number
     if (amount.trim() !== '' && (parsedAmount === null || parsedAmount < 0)) {
       setError('المبلغ غير صحيح — اكتب رقمًا (مثال: ٥٠٠ أو 500).'); setBusy(false); return;
     }
-    const fix = withLocation ? await captureOnce() : null;
+    let fix: Fix | null = null;
+    if (withLocation) {
+      try { fix = await captureOnce(); }
+      catch { setError('تعذر قراءة الموقع. حاول مرة أخرى أو أوقف إرفاق الموقع.'); setBusy(false); return; }
+      const locationError = locationIssueMessage();
+      if (locationError) { setError(locationError); setBusy(false); return; }
+    }
     const payload: ReportInput = {
       id: randomUUID(), type, title: title.trim(), body: body.trim(), customer: customer.trim(),
       amount: parsedAmount,

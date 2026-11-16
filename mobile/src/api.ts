@@ -108,6 +108,13 @@ export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id
 export const myReports = () => get<{ reports: ReportInput[] }>('/api/reports');
 export const myDailyReports = () => get<{ reports: unknown[] }>('/api/daily-reports');
 export const presence = () => post<{ ok: true }>('/api/presence', {});
+export const registerPushToken = (data: { token: string; platform: 'ios' | 'android'; deviceId: string }) =>
+  post<{ ok: true }>('/api/push/token', data);
+export const pushStatus = () => get<{ enabled: boolean }>('/api/push/status');
+export const disablePush = (deviceId: string) =>
+  request<{ ok: true }>('/api/push/token', { method: 'DELETE', body: JSON.stringify({ deviceId }) });
+export const reportMockLocation = (shiftId: string, deviceId: string) =>
+  post<{ ok: true; duplicate?: boolean }>('/api/security/mock-location', { shiftId, deviceId });
 
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);

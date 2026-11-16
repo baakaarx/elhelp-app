@@ -141,6 +141,28 @@ export class Store {
         duration_minutes INTEGER NOT NULL, device_id TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL
       );
+      -- Expo tokens are scoped to a user and device. They can be rotated at each install, so one
+      -- device may replace its token without leaving stale credentials behind.
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        platform TEXT NOT NULL CHECK(platform IN ('ios','android')),
+        device_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        UNIQUE(user_id, device_id)
+      );
+      CREATE INDEX IF NOT EXISTS push_tokens_user ON push_tokens(user_id);
+      -- A single OS-flagged simulated-location event per shift is enough for the manager to
+      -- investigate, and prevents a fast GPS stream from turning detection into an event flood.
+      CREATE TABLE IF NOT EXISTS mock_location_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        shift_id TEXT NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+        device_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(shift_id)
+      );
+      CREATE INDEX IF NOT EXISTS mock_location_events_time ON mock_location_events(created_at);
     `);
     // The product no longer ships simulated engineers. Deleting the marker without deleting
     // the rows would have left fake people inside a live account, so the rows go first.
@@ -214,6 +236,7 @@ export class Store {
     this.run('DELETE FROM locations WHERE recorded_at < ?', cutoff);
     this.run('DELETE FROM sessions WHERE expires_at < ?', Date.now());
     this.run('DELETE FROM audit_log WHERE created_at < ?', cutoff);
+    this.run('DELETE FROM mock_location_events WHERE created_at < ?', cutoff);
     this.run('DELETE FROM shifts WHERE ended_at IS NOT NULL AND ended_at < ? AND NOT EXISTS (SELECT 1 FROM locations WHERE locations.shift_id = shifts.id)', cutoff);
     this.run('DELETE FROM reports WHERE created_at < ?', cutoff);
     this.run('DELETE FROM daily_reports WHERE created_at < ?', cutoff);

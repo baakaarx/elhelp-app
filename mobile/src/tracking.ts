@@ -4,6 +4,9 @@ import * as Location from 'expo-location';
 import { enqueueLocation, flushOutbox } from './reports';
 import { setActiveShift } from './storage';
 import { MAX_ACCURACY_M, metersBetween } from './location';
+import { announceMockLocation, isMockedLocation } from './locationIntegrity';
+import { getDeviceId } from './device';
+import { reportMockLocation } from './api';
 import type { GeoPoint } from './types';
 
 export const BACKGROUND_TASK = 'mandoub-background-location';
@@ -21,6 +24,7 @@ type Listener = (point: GeoPoint) => void;
 let subscription: Location.LocationSubscription | null = null;
 let shiftId: string | null = null;
 let lastQueued: { lat: number; lng: number; at: number } | null = null;
+let mockReportState: { shiftId: string; lastAttemptAt: number; sent: boolean } | null = null;
 const listeners = new Set<Listener>();
 
 function makeId(): string {
@@ -71,6 +75,20 @@ export async function startTracking(id: string, opts: { background: boolean; sta
     subscription = await Location.watchPositionAsync(
       { accuracy: Location.Accuracy.High, timeInterval: CHUNK_MS, distanceInterval: 5 },
       position => {
+        if (isMockedLocation(position)) {
+          announceMockLocation();
+          const activeShift = shiftId;
+          const now = Date.now();
+          const previous = mockReportState;
+          if (activeShift && (!previous || previous.shiftId !== activeShift || (!previous.sent && now - previous.lastAttemptAt >= 60000))) {
+            // Retry after a minute if the phone was offline when the OS flag first appeared.
+            mockReportState = { shiftId: activeShift, lastAttemptAt: now, sent: false };
+            void getDeviceId().then(deviceId => reportMockLocation(activeShift, deviceId))
+              .then(() => { if (mockReportState?.shiftId === activeShift) mockReportState.sent = true; })
+              .catch(() => undefined);
+          }
+          return; // Never queue a location the operating system identifies as simulated.
+        }
         if (!shiftId || !Number.isFinite(position.timestamp) || position.timestamp < (opts.startedAt ?? 0)) return;
         const { latitude, longitude, accuracy } = position.coords;
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;

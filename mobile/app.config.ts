@@ -8,6 +8,9 @@ import type { ExpoConfig } from 'expo/config';
  * "لا يوجد اتصال" — a store build that cannot reach the server, discovered after review.
  */
 const apiUrl = (process.env.EXPO_PUBLIC_API_URL || '').trim();
+const easProjectId = (process.env.EAS_PROJECT_ID || process.env.EAS_BUILD_PROJECT_ID || '').trim();
+const googleServicesFile = (process.env.GOOGLE_SERVICES_JSON || '').trim();
+const notificationMode = process.env.EAS_BUILD_PROFILE === 'production' ? 'production' : 'development';
 if (!/^https?:\/\/[^/]/i.test(apiUrl)) {
   if (process.env.EAS_BUILD === 'true') {
     throw new Error(
@@ -50,14 +53,14 @@ const config: ExpoConfig = {
   },
   android: {
     package: 'com.elhelb.mandoub',
+    ...(googleServicesFile ? { googleServicesFile } : {}),
     // Play rejects a bundle whose versionCode was already used; `npm run build:aab -- ...
     // --version-code=7` (or ANDROID_VERSION_CODE) raises it without hand-editing Gradle.
     versionCode: Number(process.env.ANDROID_VERSION_CODE || '1') || 1,
     // Matches the artwork's own corner colour, so the mask edge never shows a different navy.
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#020305' },
-    // No POST_NOTIFICATIONS: the app ships no push/local notifications, and asking for a
-    // permission the code never uses is a Play "unnecessary permissions" flag.
-    permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'ACCESS_BACKGROUND_LOCATION', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_LOCATION'],
+    // POST_NOTIFICATIONS is required at runtime on Android 13+ for the opt-in review alerts.
+    permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'ACCESS_BACKGROUND_LOCATION', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_LOCATION', 'POST_NOTIFICATIONS'],
   },
   web: { bundler: 'metro', output: 'single', favicon: './assets/favicon.png' },
   plugins: [
@@ -69,6 +72,7 @@ const config: ExpoConfig = {
     }],
     './plugins/withApiTraffic',
     './plugins/withReleaseSigning',
+    ['expo-notifications', { mode: notificationMode, defaultChannel: 'default', color: '#1f513f' }],
     'expo-apple-authentication',
     'expo-secure-store',
     'expo-sqlite',
@@ -78,6 +82,7 @@ const config: ExpoConfig = {
   experiments: { baseUrl: process.env.EXPO_BASE_URL || undefined },
   extra: {
     apiUrl,
+    ...(easProjectId ? { eas: { projectId: easProjectId } } : {}),
   },
 };
 
