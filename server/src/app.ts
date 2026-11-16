@@ -197,6 +197,8 @@ export function createApp(overrides: Partial<Config> = {}) {
     const openVisit = store.get("SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status='open' ORDER BY checked_in_at DESC LIMIT 1", user.id);
     return {
       ...publicUser(user), lastSeen: user.last_seen || null, online, tracking: !!shift,
+      // The team page shows when the engineer joined; without it the page printed "today".
+      createdAt: user.created_at || null,
       shiftStartedAt: shift?.started_at || null,
       location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, speed: location.speed, heading: location.heading, battery: location.battery, recordedAt: location.recorded_at, receivedAt: location.receivedAt, source: location.source } : null,
       distanceMeters: stats.distanceMeters, pointCount: stats.pointCount,

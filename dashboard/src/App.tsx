@@ -142,7 +142,7 @@ export default function App() {
         </nav>
         <div className="sidebar-foot">
           <p className="small"><span className={connected ? 'status ok' : 'status'} /> {connected ? 'متصل بالبث الحي' : 'وضع التحديث الدوري'}</p>
-          <p className="muted small">مدة الاحتفاظ: {formatNumber(overview?.retentionDays ?? 30)} يوم · {overview?.timezone ?? 'Africa/Cairo'}</p>
+          <p className="muted small">{overview ? `مدة الاحتفاظ: ${formatNumber(overview.retentionDays)} يوم` : 'جارٍ التحميل…'} · {overview?.timezone ?? 'Africa/Cairo'}</p>
         </div>
       </aside>
       <main className="content">
@@ -371,13 +371,13 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
       <div className="two-col">
         <div className="panel">
           <h3 className="panel-title">قبول المهندسين <span className="pill warn">{formatNumber(pending.length)} بانتظار الموافقة</span></h3>
-          <p className="muted small">اللي سجّل بـ Google / Apple بيستنى موافقتك — اضغط قبول ليبدأ شغله فوراً، أو رفض لحجبه. بدون تسجيل يدوي.</p>
+          <p className="muted small">الحسابات بتتعمل من «فريق الميدان». أي حساب حالته «بانتظار الموافقة» مش هيقدر يدخل لحد ما تقبله هنا.</p>
           <ul className="rep-list">
             {pending.length === 0 && <li className="empty">لا يوجد طلبات جديدة — كل المهندسين مقبولين.</li>}
             {pending.map(rep => (
               <li key={rep.id} className="team-row" style={{ borderColor: '#f0c27a', background: '#fffaf0' }}>
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
-                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {new Date((rep as any).created_at || Date.now()).toLocaleDateString('ar-EG')}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
+                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {rep.createdAt ? `انضم ${new Date(rep.createdAt).toLocaleDateString('ar-EG')}` : 'تاريخ الانضمام غير مسجّل'}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
                 <span style={{ display: 'flex', gap: 6 }}>
                   <button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button>
                   <button className="btn ghost sm" onClick={() => approve(rep, 'rejected')}>رفض</button>

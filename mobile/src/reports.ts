@@ -3,6 +3,9 @@ import { createQueue, type Outbox } from './queue';
 import { sendLocationChunks } from './locationQueue';
 import type { DailyReportInput, GeoPoint, ReportInput } from './types';
 
+/** Matches the server's window: nothing older than this can still belong to a shift. */
+const STALE_FIX_MS = 24 * 3600000;
+
 let queuePromise: Promise<Outbox> | null = null;
 const outbox = () => (queuePromise ??= createQueue());
 
@@ -38,7 +41,19 @@ async function flushOnce(): Promise<{ sent: number; pending: number }> {
       if (status === 401) break;
     }
   }
+  /*
+   * A fix older than a day cannot belong to any open shift (the server closes a shift that has
+   * been silent for 18 hours), so it would only ever be rejected. Dropping it here matters:
+   * a rejected batch is split in half until every point fails, which is ~128 requests for a
+   * single stale backlog of 80 points — every time the app came back online.
+   */
+  const cutoff = Date.now() - STALE_FIX_MS;
+  const fresh: GeoPoint[] = [];
+  for (const point of locations) {
+    if (point.recordedAt >= cutoff) fresh.push(point);
+    else await queue.remove(point.id);
+  }
   // Preserve unsent fixes on transient errors and isolate invalid points.
-  sent += await sendLocationChunks(locations, pushLocations, id => queue.remove(id));
+  sent += await sendLocationChunks(fresh, pushLocations, id => queue.remove(id));
   return { sent, pending: await queue.count() };
 }
