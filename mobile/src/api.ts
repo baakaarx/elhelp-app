@@ -30,7 +30,13 @@ export const API_BASE = resolveBase();
  */
 export const UNCONFIGURED = API_BASE === '' && Platform.OS !== 'web';
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/**
+ * `queued` marks the endpoints whose caller stores the payload on the phone and retries it: only
+ * for those is "saved and will be sent" true. A visit, a shift or a password change is not
+ * queued, and telling an engineer in the field that his visit was saved when it was not is the
+ * worst message this app can print.
+ */
+async function request<T>(path: string, init: RequestInit = {}, options: { queued?: boolean } = {}): Promise<T> {
   const token = await getToken();
   const headers: Record<string, string> = { Accept: 'application/json', 'X-Mandoub-Client': 'rep', ...(init.headers as Record<string, string> | undefined) };
   if (token) headers['X-Mandoub-Token'] = token;
@@ -39,7 +45,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   } catch {
-    throw new ApiError('لا يوجد اتصال بالإنترنت. سيتم حفظ البيانات وإرسالها تلقائيًا.', 0);
+    throw new ApiError(options.queued
+      ? 'لا يوجد اتصال بالإنترنت. سيتم حفظ البيانات وإرسالها تلقائيًا.'
+      : 'لا يوجد اتصال بالإنترنت — لم يُحفظ أي شيء. أعد المحاولة عندما تعود الشبكة.', 0);
   }
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   const body = isJson ? await res.json().catch(() => null) : null;
@@ -50,7 +58,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   return body as T;
 }
-export const post = <T>(path: string, data: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(data) });
+export const post = <T>(path: string, data: unknown, options: { queued?: boolean } = {}) =>
+  request<T>(path, { method: 'POST', body: JSON.stringify(data) }, options);
 export const get = <T>(path: string) => request<T>(path, { method: 'GET' });
 /**
  * Erases the signed-in account on the server. The email acts as the confirmation step the
@@ -93,9 +102,9 @@ export async function oauthLogin(provider: 'google' | 'apple', idToken: string, 
   await setToken(res.token);
   return res.user;
 }
-export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points });
-export const sendReport = (report: ReportInput) => post<{ report: { id: string } }>('/api/reports', report);
-export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id: string } }>('/api/daily-reports', report);
+export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points }, { queued: true });
+export const sendReport = (report: ReportInput) => post<{ report: { id: string } }>('/api/reports', report, { queued: true });
+export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id: string } }>('/api/daily-reports', report, { queued: true });
 export const myReports = () => get<{ reports: ReportInput[] }>('/api/reports');
 export const myDailyReports = () => get<{ reports: unknown[] }>('/api/daily-reports');
 export const presence = () => post<{ ok: true }>('/api/presence', {});

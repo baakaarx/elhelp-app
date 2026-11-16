@@ -220,10 +220,17 @@ export class Store {
     // with "لديك زيارة مفتوحة" and kept a stopwatch running for days on both screens. It is
     // closed here at zero duration, marked as automatic, and keeps the result if one was typed.
     // The duration is not measured, so the KPI average ignores it (`auto_closed`).
+    // A visit is opened inside a shift and can only be closed by one, so a visit still open for
+    // an account with no open shift is over: its shift was closed (by the rule above, by another
+    // device, or by the engineer's own stop that never reached the server). Waiting for the
+    // 18-hour clock left it open — and therefore invisible on the "today" screen while it kept
+    // blocking the next check-in with "لديك زيارة مفتوحة" — for a whole working day.
     this.run(`UPDATE visits SET status='closed', auto_closed=1,
         checked_out_at = checked_in_at, duration_seconds = 0,
         outcome = CASE WHEN TRIM(COALESCE(outcome,''))='' THEN ? ELSE outcome END
-      WHERE status='open' AND checked_in_at < ?`, AUTO_CLOSED_OUTCOME, staleBefore);
+      WHERE status='open' AND (checked_in_at < ?
+        OR NOT EXISTS (SELECT 1 FROM shifts s WHERE s.user_id = visits.user_id AND s.ended_at IS NULL))`,
+    AUTO_CLOSED_OUTCOME, staleBefore);
   }
   close() { this.db.close(); }
 }

@@ -743,8 +743,19 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     if (!shift) { res.status(409).json({ error: 'ابدأ الوردية أولًا قبل تسجيل الزيارة.' }); return; }
-    const open = store.get('SELECT id FROM visits WHERE user_id=? AND status=?', res.locals.user.id, 'open');
-    if (open) { res.status(409).json({ error: 'لديك زيارة مفتوحة. أنهِها قبل بدء زيارة جديدة.', openVisitId: open.id }); return; }
+    const open = store.get('SELECT id, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status=?', res.locals.user.id, 'open');
+    if (open) {
+      // Saying "لديك زيارة مفتوحة" while the visit is not on this screen is how an engineer
+      // gets stuck: name the day so he knows where to look (it is listed under "الزيارات").
+      const fromEarlier = localDate(config.timezone, Number(open.checkedInAt)) !== localDate(config.timezone);
+      res.status(409).json({
+        error: fromEarlier
+          ? 'لديك زيارة مفتوحة من يوم سابق — افتح تبويب «الزيارات»، ستجدها بالأعلى، واقفلها الأول.'
+          : 'لديك زيارة مفتوحة. أنهِها قبل بدء زيارة جديدة.',
+        openVisitId: open.id,
+      });
+      return;
+    }
     const now = Date.now();
     store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,in_lat,in_lng,in_accuracy,created_at)
       VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
@@ -826,7 +837,10 @@ export function createApp(overrides: Partial<Config> = {}) {
      * from the app. It is the only place the missing result can be typed, so the last two weeks
      * of those come along, flagged with `pendingResult`.
      */
-    const pending = store.all(`${VISIT_SELECT} WHERE v.user_id=? AND ${PENDING_RESULT_SQL} AND v.checked_in_at>=? ORDER BY v.checked_in_at DESC LIMIT 50`,
+    // A visit still open for an account with no running shift is the other half of the same
+    // dead end: it is not "today" either, so the only screen that can close it did not show it,
+    // while every check-in was refused with "لديك زيارة مفتوحة". It comes along too.
+    const pending = store.all(`${VISIT_SELECT} WHERE v.user_id=? AND (v.status='open' OR ${PENDING_RESULT_SQL}) AND v.checked_in_at>=? ORDER BY v.checked_in_at DESC LIMIT 50`,
       res.locals.user.id, Date.now() - 14 * 86400000) as Array<Record<string, any>>;
     const seen = new Set(visits.map(visit => String(visit.id)));
     const missing = pending.filter(visit => !seen.has(String(visit.id)));

@@ -1218,13 +1218,19 @@ test("a representative's visit list is today's field log, not every visit ever",
   const visit = await request(app).post('/api/visits/check-in').set(auth(engineer.token))
     .send({ id: older, customerName: 'مزرعة الأمس', purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 9 } });
   assert.equal(visit.status, 201, JSON.stringify(visit.body));
+  // Closed with a real result, so it is a finished visit of yesterday and not one of the two
+  // exceptions the engineer's list legitimately carries (still open, or missing its result).
+  const closed = await request(app).post(`/api/visits/${older}/check-out`).set(auth(engineer.token))
+    .send({ outcome: 'اتقفلت امبارح', notes: '', amount: null, location: null });
+  assert.equal(closed.status, 200, JSON.stringify(closed.body));
   const yesterday = localDate(config.timezone, Date.now() - 86400000);
   const bounds = dayBounds(yesterday, config.timezone);
-  store.run('UPDATE visits SET checked_in_at=?, created_at=? WHERE id=?', bounds.start + 3600000, bounds.start + 3600000, older);
+  store.run('UPDATE visits SET checked_in_at=?, checked_out_at=?, created_at=? WHERE id=?',
+    bounds.start + 3600000, bounds.start + 7200000, bounds.start + 3600000, older);
 
   const today = await request(app).get('/api/visits').set(auth(engineer.token));
   assert.equal(today.status, 200);
-  assert.equal(today.body.visits.length, 0, 'yesterday\'s visit must not count as today\'s');
+  assert.equal(today.body.visits.length, 0, 'yesterday\'s finished visit must not count as today\'s');
   const past = await request(app).get(`/api/visits?date=${yesterday}`).set(auth(engineer.token));
   assert.equal(past.status, 200);
   assert.equal(past.body.visits.length, 1);
