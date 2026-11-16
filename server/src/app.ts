@@ -830,17 +830,23 @@ export function createApp(overrides: Partial<Config> = {}) {
     // `?date=`, and the manager's feed still spans everything unless a date is given.
     const scopeDate = date ?? (isAdmin ? undefined : localDate(config.timezone));
     const visits = listVisits({ userId: isAdmin ? repId : res.locals.user.id, date: scopeDate, status });
-    if (isAdmin || date || status === 'open') { res.json({ visits }); return; }
+    // The manager's feed, and any explicit day, are answered exactly as asked.
+    if (isAdmin || date) { res.json({ visits }); return; }
     /*
-     * The engineer's screen is titled "today", but a visit the system closed — because the app
-     * was killed and the cleanup ran the next morning — belongs to yesterday and simply vanished
-     * from the app. It is the only place the missing result can be typed, so the last two weeks
-     * of those come along, flagged with `pendingResult`.
+     * The engineer's screen is titled "today", but two kinds of visit it must still show belong
+     * to an earlier day:
+     *   - one the system closed because the app was killed (the cleanup ran the next morning):
+     *     the result is missing and this screen is the only place it can be typed;
+     *   - one still open for an account with no running shift: nothing else can close it, and
+     *     every check-in is refused with a message about it.
+     * Both come along from the last two weeks. An open visit is not a "closed" row, so a filter
+     * for closed results asks only for the first kind.
      */
-    // A visit still open for an account with no running shift is the other half of the same
-    // dead end: it is not "today" either, so the only screen that can close it did not show it,
-    // while every check-in was refused with "لديك زيارة مفتوحة". It comes along too.
-    const pending = store.all(`${VISIT_SELECT} WHERE v.user_id=? AND (v.status='open' OR ${PENDING_RESULT_SQL}) AND v.checked_in_at>=? ORDER BY v.checked_in_at DESC LIMIT 50`,
+    const wantsOpen = status !== 'closed';
+    const wantsPending = status !== 'open';
+    const extraSql = wantsOpen && wantsPending ? `(v.status='open' OR ${PENDING_RESULT_SQL})`
+      : wantsOpen ? "v.status='open'" : PENDING_RESULT_SQL;
+    const pending = store.all(`${VISIT_SELECT} WHERE v.user_id=? AND ${extraSql} AND v.checked_in_at>=? ORDER BY v.checked_in_at DESC LIMIT 50`,
       res.locals.user.id, Date.now() - 14 * 86400000) as Array<Record<string, any>>;
     const seen = new Set(visits.map(visit => String(visit.id)));
     const missing = pending.filter(visit => !seen.has(String(visit.id)));

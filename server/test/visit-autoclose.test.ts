@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { tokenHash } from '../src/auth.js';
 import { AUTO_CLOSED_OUTCOME, Store } from '../src/db.js';
 import { localDate } from '../src/geo.js';
 
@@ -41,12 +42,16 @@ async function makeRep(tag: string) {
   const email = `${tag}.${Date.now()}@autoclose.test`;
   // Resolve the token before building the request: awaiting inside supertest's chain suspends
   // after the Test object is created, and it then has no server to talk to.
-  const token = await admin();
-  const created = await client.post('/api/reps').set('Authorization', `Bearer ${token}`)
+  const adminTokenValue = await admin();
+  const created = await client.post('/api/reps').set('Authorization', `Bearer ${adminTokenValue}`)
     .send({ name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  const login = await client.post('/api/auth/login').send({ email, password: 'RepPassword123!' });
-  return { id: String(created.body.user.id), token: String(login.body.token), email };
+  // A session row is what the login route writes; minting it here keeps the per-address login
+  // limit (15 per quarter of an hour) out of the way of a file that needs a dozen engineers.
+  const token = randomBytes(32).toString('base64url');
+  store.run('INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',
+    tokenHash(token), String(created.body.user.id), Date.now() + 3600000, Date.now());
+  return { id: String(created.body.user.id), token, email };
 }
 
 async function openShift(token: string, deviceId: string) {
@@ -326,4 +331,39 @@ test('an open visit from an earlier day is listed so it can be closed', async ()
   assert.equal(next.status, 404);
   const fresh = await checkIn(rep.token, 'مزرعة جديدة');
   assert.ok(fresh);
+});
+
+test('the filters only add the extra rows they are about', async () => {
+  const rep = await makeRep('filters');
+  const device = `device-${rep.id.slice(0, 6)}`;
+  await openShift(rep.token, device);
+  const openId = await checkIn(rep.token, 'مزرعة مفتوحة من امبارح');
+  const yesterday = Date.now() - DAY;
+  store.run('UPDATE visits SET checked_in_at=? WHERE id=?', yesterday, openId);
+
+  const all = async () => (await client.get('/api/visits').set('Authorization', `Bearer ${rep.token}`)).body.visits as Array<any>;
+  const closedOnly = async () => (await client.get('/api/visits?status=closed').set('Authorization', `Bearer ${rep.token}`)).body.visits as Array<any>;
+  const openOnly = async () => (await client.get('/api/visits?status=open').set('Authorization', `Bearer ${rep.token}`)).body.visits as Array<any>;
+
+  // Still open, and not from today: the open filter is exactly about it, the closed one is not.
+  assert.ok((await openOnly()).some(visit => visit.id === openId), 'the open filter carries it');
+  assert.ok(!(await closedOnly()).some(visit => visit.id === openId), 'the closed filter does not');
+  assert.ok((await closedOnly()).every(visit => visit.status === 'closed'));
+  assert.ok((await openOnly()).every(visit => visit.status === 'open'));
+
+  // Finished now, with a result: a plain visit of yesterday, which belongs to `?date=`.
+  const done = await client.post(`/api/visits/${openId}/check-out`).set('Authorization', `Bearer ${rep.token}`)
+    .send({ outcome: 'اتقفلت عادي', notes: '', amount: null, location: null });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+  assert.ok(!(await all()).some(visit => visit.id === openId), 'a finished visit of yesterday is not today');
+
+  // A second one, auto-closed by the end of the shift and missing its result, from yesterday.
+  const autoId = await checkIn(rep.token, 'مزرعة بدون نتيجة');
+  assert.equal((await client.post('/api/shifts/stop').set('Authorization', `Bearer ${rep.token}`)).status, 200);
+  store.run('UPDATE visits SET checked_in_at=? WHERE id=?', yesterday, autoId);
+  const listed = await all();
+  assert.ok(listed.some(visit => visit.id === autoId), 'the missing result is on the default list');
+  assert.ok((await closedOnly()).some(visit => visit.id === autoId), 'and on the closed filter');
+  assert.ok(!(await openOnly()).some(visit => visit.id === autoId), 'but not on the open one');
+  assert.equal(listed.length, new Set(listed.map(visit => visit.id)).size, 'no visit is listed twice');
 });
