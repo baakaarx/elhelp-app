@@ -82,6 +82,8 @@ export interface RepSummary {
   date: string;
   timezone: string;
   retentionDays: number;
+  /** Server's stillness threshold: the banner that asks for a reason follows it. */
+  idleReasonMinutes?: number;
   shift: Shift | null;
   distanceMeters: number;
   pointCount: number;

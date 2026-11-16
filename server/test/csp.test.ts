@@ -46,6 +46,22 @@ test('the map still works: tiles and reverse geocoding stay allowed', () => {
   }
 });
 
+test('the websocket allowance is the request host, not every host', () => {
+  const named = contentSecurityPolicy(false, 'tracking.example.com');
+  const connect = directive(named, 'connect-src');
+  assert.match(connect, /wss:\/\/tracking\.example\.com/);
+  assert.match(connect, /ws:\/\/tracking\.example\.com/);
+  assert.ok(!/(^| )wss:( |$)/.test(connect), `a bare scheme must be gone: ${connect}`);
+  // A header that cannot be pasted into a policy falls back instead of emitting broken syntax.
+  for (const host of ['', null, 'evil.com; script-src *', 'a b', "x'", 'tracking.example.com/../../x']) {
+    const policy = directive(contentSecurityPolicy(false, host as string | null), 'connect-src');
+    assert.match(policy, /(^| )wss:( |$)/, `"${host}" should fall back to the scheme`);
+    assert.ok(!policy.includes('script-src'), 'a host can never inject a directive');
+  }
+  // IPv6 literal plus port is a legal host and must survive verbatim.
+  assert.match(directive(contentSecurityPolicy(false, '[::1]:3000'), 'connect-src'), /wss:\/\/\[::1\]:3000/);
+});
+
 test('both surfaces keep the hardening directives', () => {
   for (const policy of [dashboard, engineer]) {
     assert.equal(directive(policy, 'default-src'), "default-src 'self'");

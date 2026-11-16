@@ -82,7 +82,9 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
         {(() => {
           const lastFix = summary?.lastFixAt ? Number(summary.lastFixAt) : null;
           const idleMs = lastFix ? now - lastFix : null;
-          const showIdle = shift && idleMs !== null && idleMs > 60 * 60 * 1000;
+          // The same threshold the server alerts on, so the phone and the manager agree.
+          const idleLimitMs = (summary?.idleReasonMinutes ?? 60) * 60000;
+          const showIdle = shift && idleMs !== null && idleMs > idleLimitMs;
           if (!showIdle) return null;
           return <IdleBanner now={now} lastFixAt={lastFix!} />;
         })()}
@@ -258,10 +260,10 @@ function IdleBanner({ now, lastFixAt }: { now: number; lastFixAt: number }) {
       </Card>
     );
   }
-  return <IdleSheet onClose={() => setOpen(false)} />;
+  return <IdleSheet minutes={minutes} onClose={() => setOpen(false)} />;
 }
 
-function IdleSheet({ onClose }: { onClose: () => void }) {
+function IdleSheet({ minutes, onClose }: { minutes: number; onClose: () => void }) {
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -278,7 +280,7 @@ function IdleSheet({ onClose }: { onClose: () => void }) {
     finally { setSaving(false); }
   };
   return (
-    <Sheet visible={true} onClose={onClose} title="تبرير الوقوف — ساعة بلا حركة">
+    <Sheet visible={true} onClose={onClose} title={`تبرير الوقوف — سكون ${minutes} دقيقة`}>
       <Body muted>مربوط بهاتفك تلقائيًا — سيظهر للمدير مع موقعك الآن.</Body>
       <View style={{ gap: 6 }}>
         <Text style={styles.toggleLabel}>السبب</Text>

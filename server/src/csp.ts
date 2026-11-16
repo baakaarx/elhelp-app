@@ -13,8 +13,11 @@
  *   - `fonts.gstatic.com`, because the exported bundle references the Noto Naskh Arabic files
  *     from there.
  *
- * `wss:` stays in `connect-src`: Socket.IO upgrades the same origin, and a handful of browsers
- * do not treat the websocket scheme as covered by `'self'`.
+ * `connect-src` names the websocket origin explicitly: Socket.IO upgrades the same origin, and a
+ * handful of browsers do not treat the websocket scheme as covered by `'self'`. It used to be the
+ * bare scheme (`wss:`), which allows a websocket to *any* host — the one channel the rest of this
+ * policy closes. The caller passes the request's own host, and the scheme falls back to `wss:`
+ * only when that host cannot be used verbatim.
  *
  * `script-src 'unsafe-inline'` is kept for the engineer build only. The manager dashboard ships a
  * Vite bundle plus three HTML pages built here (`/privacy`, `/delete-account`, the `/app`
@@ -29,17 +32,23 @@ const BASE = {
   // Map tiles come from one keyless provider (`dashboard/src/MapView.tsx`).
   img: "img-src 'self' data: blob: https://server.arcgisonline.com",
   // Reverse geocoding for the map pin label, plus the tile host itself.
-  connect: "connect-src 'self' wss: https://geocode.arcgis.com https://server.arcgisonline.com",
+  connect: 'https://geocode.arcgis.com https://server.arcgisonline.com',
 };
 
-export function contentSecurityPolicy(engineerApp: boolean): string {
+/** A `Host` header safe to paste into a policy: letters, digits, dots, dashes, brackets, a port. */
+const HOST = /^[a-z0-9.-]+(:\d{1,5})?$|^\[[0-9a-f:.]+\](:\d{1,5})?$/i;
+
+export function contentSecurityPolicy(engineerApp: boolean, host?: string | null): string {
+  // Same-origin websockets only. An unusable header (missing, or something a proxy invented)
+  // falls back to the scheme-wide form rather than locking live updates out of its own server.
+  const socket = host && HOST.test(host) ? `wss://${host} ws://${host}` : 'wss:';
   return [
     "default-src 'self'",
     engineerApp ? `${BASE.engineerScript} 'unsafe-eval'` : BASE.script,
     BASE.style,
     engineerApp ? "font-src 'self' data: https://fonts.gstatic.com" : "font-src 'self' data:",
     BASE.img,
-    BASE.connect,
+    `connect-src 'self' ${socket} ${BASE.connect}`,
     // Nothing on either surface frames a provider page; the native app uses the OS sheets.
     "frame-src 'none'",
     "worker-src 'self' blob:",

@@ -39,7 +39,16 @@ export default function App() {
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
+  /**
+   * Bumped whenever a report may have changed, so the reports screen reloads itself.
+   *
+   * That screen used to load once when it opened: a manager sitting on it while an engineer
+   * submitted a daily report saw nothing until he switched tabs and came back.
+   */
+  const [reportsVersion, setReportsVersion] = useState(0);
+  const bumpReports = useCallback(() => setReportsVersion(value => value + 1), []);
   const socketRef = useRef<Socket | null>(null);
+  const liveRef = useRef(false);
 
   useEffect(() => { me().then(setUser).catch(() => setUser(null)); }, []);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 5000); return () => clearInterval(timer); }, []);
@@ -58,25 +67,28 @@ export default function App() {
       setIdleReports(nextIdle.reports);
       setSyncedAt(Date.now());
       setError('');
+      // With no live socket the poll is the only thing that can notice a new report, so the
+      // reports screen follows it; when the socket is up its events do that job instead.
+      if (!liveRef.current) bumpReports();
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.'); }
-  }, []);
+  }, [bumpReports]);
 
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
     refresh();
     const socket = io('/', { auth: { token: getToken() }, transports: ['websocket', 'polling'], reconnectionDelayMax: 5000 });
     socketRef.current = socket;
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
-    socket.on('connect_error', () => setConnected(false));
+    socket.on('connect', () => { liveRef.current = true; setConnected(true); });
+    socket.on('disconnect', () => { liveRef.current = false; setConnected(false); });
+    socket.on('connect_error', () => { liveRef.current = false; setConnected(false); });
     socket.on('overview', (data: Overview) => { setOverview(data); setSyncedAt(Date.now()); });
-    socket.on('report', () => refresh());
-    socket.on('daily-report', () => refresh());
+    socket.on('report', () => { bumpReports(); refresh(); });
+    socket.on('daily-report', () => { bumpReports(); refresh(); });
     socket.on('visit', () => refresh());
-    return () => { socket.close(); socketRef.current = null; };
+    return () => { liveRef.current = false; socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would
     // churn connections. The poll below has its own effect precisely so it can follow it.
-  }, [user, refresh]);
+  }, [user, refresh, bumpReports]);
 
   // The polling rate depends on the live socket, and the value read when the socket effect ran
   // was always the initial `false` — so a connected dashboard kept asking three endpoints every
@@ -232,7 +244,7 @@ export default function App() {
         )}
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
-        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} />}
+        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
         {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={() => setUser(null)} />}
