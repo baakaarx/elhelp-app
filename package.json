@@ -19,6 +19,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "export:mobile": "npm run export:web -w @mandoub/mobile",
     "test:e2e": "node scripts/reset-e2e-db.mjs && playwright test",
+    "smoke": "node scripts/smoke.mjs",
     "preview": "node scripts/preview.mjs",
     "agent": "npm run agent -w @mandoub/server",
     "agent:skills": "npm run agent -w @mandoub/server -- skills",
