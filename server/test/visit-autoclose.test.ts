@@ -265,3 +265,65 @@ test('the two flags travel as booleans, not as SQLite 0/1', async () => {
   const same = (closed.body.visits as Array<any>).find(visit => visit.id === visitId);
   assert.equal(same?.autoClosed, true);
 });
+
+/**
+ * The same dead end from the other side: a visit left open by a shift that was closed somewhere
+ * else. It is not on the "today" screen, so nothing could close it, while every new check-in was
+ * refused with a message about a visit the engineer could not see.
+ */
+test('a shift closed elsewhere does not strand an open visit', async () => {
+  const rep = await makeRep('orphan');
+  const shiftId = await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
+  const visitId = await checkIn(rep.token, 'مزرعة الوردية الضائعة');
+
+  // The shift ends without the stop request ever arriving (the phone died): the cleanup rule
+  // closes a shift that has been silent, and the visit that belonged to it must not survive it.
+  store.run('UPDATE shifts SET ended_at=? WHERE id=?', Date.now(), shiftId);
+  store.cleanup(config.retentionDays);
+
+  const row = store.get('SELECT * FROM visits WHERE id=?', visitId)!;
+  assert.equal(row.status, 'closed', 'an open visit cannot outlive its shift');
+  assert.equal(Number(row.auto_closed), 1);
+  assert.equal(row.outcome, AUTO_CLOSED_OUTCOME);
+
+  const listed = await client.get('/api/visits').set('Authorization', `Bearer ${rep.token}`);
+  const visit = (listed.body.visits as Array<any>).find(item => item.id === visitId)!;
+  assert.ok(visit.pendingResult, 'and it stays on the engineer screen so the result can be typed');
+
+  // A visit opened while a shift is running is untouched by the same cleanup.
+  await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
+  const live = await checkIn(rep.token, 'مزرعة شغالة');
+  store.cleanup(config.retentionDays);
+  assert.equal(store.get('SELECT status FROM visits WHERE id=?', live)!.status, 'open');
+});
+
+test('an open visit from an earlier day is listed so it can be closed', async () => {
+  const rep = await makeRep('listed');
+  const shiftId = await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
+  const visitId = await checkIn(rep.token, 'مزرعة امبارح');
+
+  // Yesterday's visit, still open: the screen only asks for today's, so it used to be invisible
+  // while the engineer kept his shift and kept being refused the next check-in.
+  const yesterday = Date.now() - DAY;
+  store.run('UPDATE visits SET checked_in_at=? WHERE id=?', yesterday, visitId);
+  store.run('UPDATE shifts SET started_at=? WHERE id=?', yesterday - 60000, shiftId);
+
+  const listed = await client.get('/api/visits').set('Authorization', `Bearer ${rep.token}`);
+  const visit = (listed.body.visits as Array<any>).find(item => item.id === visitId);
+  assert.ok(visit, 'the open visit from yesterday is on the list');
+  assert.equal(visit.status, 'open');
+
+  // And it can be closed from there, which is the whole point of showing it.
+  const closed = await client.post(`/api/visits/${visitId}/check-out`).set('Authorization', `Bearer ${rep.token}`)
+    .send({ outcome: 'اتقفلت من الشاشة', notes: '', amount: null, location: null });
+  assert.equal(closed.status, 200, JSON.stringify(closed.body));
+  assert.equal(closed.body.visit.status, 'closed');
+  assert.equal(closed.body.visit.outcome, 'اتقفلت من الشاشة');
+  assert.equal(closed.body.visit.autoClosed, false);
+
+  // The next check-in is accepted again instead of answering 409 with a visit nobody could see.
+  const next = await client.post('/api/shifts/check-in-placeholder', {}).set('Authorization', `Bearer ${rep.token}`);
+  assert.equal(next.status, 404);
+  const fresh = await checkIn(rep.token, 'مزرعة جديدة');
+  assert.ok(fresh);
+});

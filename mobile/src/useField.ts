@@ -188,16 +188,15 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     // Ending the shift with a customer visit still open left the server to close it without a
     // result, and the visit's duration became "when the shift happened to stop". The engineer
     // records the result first — one button away in the visits tab.
-    if (summary?.openVisit) {
-      // The poll's copy can be up to fifteen seconds old, and the server closes a visit when the
-      // shift ends. Ask once before telling the engineer he cannot leave.
-      const fresh = await myVisits().catch(() => null);
-      const stillOpen = fresh ? fresh.visits.some(visit => visit.status === 'open') : true;
-      if (stillOpen) {
-        const message = 'فيه زيارة مفتوحة. سجّل نتيجتها من تبويب «الزيارات» الأول، وبعدها أنهِ الوردية.';
-        setError(message);
-        throw new Error(message);
-      }
+    // The poll's copy is up to fifteen seconds old in both directions: it can show a visit that
+    // is already closed (blocking the engineer for nothing) or miss one he has just opened, and
+    // then the server closes it with no result. Ask the server every time, and refuse only on a
+    // positive answer — a failed request must not trap him in the field.
+    const fresh = await myVisits().catch(() => null);
+    if (fresh?.visits.some(visit => visit.status === 'open')) {
+      const message = 'فيه زيارة مفتوحة. سجّل نتيجتها من تبويب «الزيارات» الأول، وبعدها أنهِ الوردية.';
+      setError(message);
+      throw new Error(message);
     }
     setBusy(true); setError('');
     try {
@@ -208,7 +207,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, summary]);
+  }, [refresh]);
 
   const checkIn = useCallback(async (input: VisitInput) => {
     setBusy(true); setError('');

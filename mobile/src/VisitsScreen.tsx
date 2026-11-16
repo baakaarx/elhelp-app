@@ -29,12 +29,17 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   const shift = field.summary?.shift ?? null;
   const visits = useMemo(() => (filter === 'all' ? field.visits : field.visits.filter(v => v.status === filter)), [field.visits, filter]);
   const open = field.summary?.openVisit ?? null;
-  const closed = field.visits.filter(v => v.status === 'closed');
+  // The list also carries visits from the last two weeks: those whose result is still missing
+  // (the system closed them) and one left open by a shift that ended somewhere else. Every
+  // figure in the header is about today, so the average is not a mix of several days.
+  const todayVisits = field.visits.filter(visit => isToday(visit.checkedInAt, timeZone));
+  const closed = todayVisits.filter(v => v.status === 'closed');
   const avgMinutes = closed.length ? Math.round(closed.reduce((sum, v) => sum + (v.durationSeconds ?? 0), 0) / closed.length / 60) : 0;
-  // The list also carries visits from the last two weeks whose result is still missing (the
-  // system closed them), so the header counts today's only — the rest are flagged per row.
-  const todayCount = field.visits.filter(visit => isToday(visit.checkedInAt, timeZone)).length;
+  const todayCount = todayVisits.length;
   const pendingCount = field.visits.filter(visit => visit.pendingResult).length;
+  const earlierOpen = field.visits.some(visit => visit.status === 'open' && !isToday(visit.checkedInAt, timeZone));
+  /** A row from an earlier day that is still open: nothing else can close it. */
+  const canCloseFromRow = (visit: Visit) => Boolean(visit.pendingResult) || (visit.status === 'open' && !isToday(visit.checkedInAt, timeZone));
 
   return (
     <>
@@ -42,7 +47,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>زيارات اليوم</Text>
-            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{closed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}</Text>
+            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{closed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
           </View>
           <View style={styles.count}><Text style={styles.countText}>{todayCount}</Text></View>
         </View>
@@ -56,7 +61,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         {open ? (
           <Card tone="mint" style={styles.openCard}>
             <Row style={{ justifyContent: 'space-between' }}>
-              <Pill label="مفتوحة الآن" tone="warn" />
+              <Pill label={isToday(open.checkedInAt, timeZone) ? 'مفتوحة الآن' : `مفتوحة من ${dayText(open.checkedInAt, timeZone)}`} tone="warn" />
               <Text style={styles.timer}>{hhmmss(now - open.checkedInAt)}</Text>
             </Row>
             <Heading>{open.customerName}</Heading>
@@ -65,7 +70,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
               {open.inAccuracy ? ` · دقة ±${Math.round(open.inAccuracy)} م` : ''}
             </Body>
             <Row style={{ gap: space.sm }}>
-              <Button style={{ flex: 1 }} label="إنهاء وتسجيل النتيجة" onPress={() => setCheckOutVisit(open)} />
+              <Button style={{ flex: 1 }} label={isToday(open.checkedInAt, timeZone) ? 'إنهاء وتسجيل النتيجة' : 'اقفل الزيارة القديمة'} onPress={() => setCheckOutVisit(open)} />
             </Row>
           </Card>
         ) : (
@@ -99,11 +104,12 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
                   </Text>
                   {visit.outcome ? <Text style={styles.outcome} numberOfLines={2}>{visit.outcome}</Text> : null}
                   {visit.village || visit.district ? <Text style={styles.meta}>{[visit.governorate, visit.district, visit.village].filter(Boolean).join(' · ')}</Text> : null}
-                  {/* Closed by the system, not by the engineer: the result is still missing and
-                      he is the only one who knows it. */}
-                  {visit.pendingResult ? (
+                  {/* Two rows the engineer alone can finish: one the system closed without a
+                      result, and one left open by a shift that ended somewhere else — it is not
+                      on the "today" list, so this row is the only place it can be closed. */}
+                  {canCloseFromRow(visit) ? (
                     <Pressable onPress={() => setCheckOutVisit(visit)} accessibilityRole="button" style={styles.lateButton}>
-                      <Text style={styles.lateText}>سجّل نتيجة الزيارة</Text>
+                      <Text style={styles.lateText}>{visit.pendingResult ? 'سجّل نتيجة الزيارة' : 'اقفل الزيارة وتسجيل النتيجة'}</Text>
                     </Pressable>
                   ) : null}
                 </View>
