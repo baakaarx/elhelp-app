@@ -12,10 +12,18 @@ db.execSync(`CREATE TABLE IF NOT EXISTS outbox (
   attempts INTEGER NOT NULL DEFAULT 0
 );`);
 
+/*
+ * One fix per second is ~86k rows a day. An engineer who stays offline for a week used to come
+ * back to a database big enough to make every flush crawl; fixes older than three days can no
+ * longer belong to a shift, so they are dropped at startup. Reports are never pruned here —
+ * they are the engineer's work, and the report queue is small.
+ */
+db.runSync("DELETE FROM outbox WHERE kind='location' AND created_at < ?", Date.now() - 3 * 86400000);
+
 export async function createQueue(): Promise<Outbox> {
   return {
     async add(kind: OutboxKind, payload: unknown) {
-      const key = kind === 'location' ? (payload as { id: string }).id : (payload as { id: string }).id;
+      const key = (payload as { id: string }).id;
       db.runSync('INSERT OR IGNORE INTO outbox(key,kind,payload,created_at,attempts) VALUES (?,?,?,?,0)', key, kind, JSON.stringify(payload), Date.now());
     },
     async list(limit = 200) {

@@ -1441,3 +1441,13 @@ test('the first phone to start a shift owns the account, and the agent refresh e
       'skill files carry a body and an absolute path; neither belongs in an API response');
   }
 });
+
+test('the overview carries the join date the team page prints', async () => {
+  const engineer = await freshRep('joindate');
+  const res = await request(app).get('/api/overview').set(auth(adminToken));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const row = (res.body.reps as Array<Record<string, unknown>>).find(rep => rep.id === engineer.id);
+  assert.ok(row, 'the new engineer must be in the overview');
+  assert.equal(typeof row.createdAt, 'number');
+  assert.ok(Number(row.createdAt) > Date.now() - 600000, 'the join date is the creation time, not null');
+});

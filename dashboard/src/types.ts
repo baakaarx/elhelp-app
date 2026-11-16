@@ -25,6 +25,7 @@ export interface LocationPoint {
 }
 export interface Rep extends User {
   online: boolean;
+  createdAt: number | null;
   tracking: boolean;
   shiftStartedAt: number | null;
   lastSeen: number | null;

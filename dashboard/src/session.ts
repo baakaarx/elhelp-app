@@ -23,12 +23,6 @@ export async function login(email: string, password: string) {
   setToken(res.token);
   return res.user;
 }
-export async function loginWithSocial(provider: 'google' | 'apple', idToken: string, deviceId?: string, deviceName?: string) {
-  const res = await post<{ token: string; expiresAt: number; user: User } & { error?: string; code?: string }>('/api/auth/social', { provider, idToken, deviceId, deviceName });
-  // server returns 202 pending with error message but no token — caller handles it as exception
-  if ((res as any).token) setToken((res as any).token);
-  return (res as any).user as User;
-}
 export async function me(): Promise<User | null> {
   if (!getToken()) return null;
   try { return (await api<{ user: User }>('/api/auth/me')).user; }
