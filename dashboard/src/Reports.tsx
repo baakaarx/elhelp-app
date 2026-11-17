@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, patch } from './api';
 import { ago, downloadDailyReportPdf, formatNumber } from './session';
+import { dateTimeText } from './dates';
 import { reportTypeLabels, type DailyReport, type Rep, type Report } from './types';
 
 type Tab = 'field' | 'daily';
@@ -10,7 +11,7 @@ type Tab = 'field' | 'daily';
  * poll when the socket is down). Without it this screen loaded once and a manager watching it
  * never saw a report that came in while he was looking at it.
  */
-export default function Reports({ reps, onReviewed, version = 0 }: { reps: Rep[]; onReviewed: () => void; version?: number }) {
+export default function Reports({ reps, onReviewed, version = 0, timezone }: { reps: Rep[]; onReviewed: () => void; version?: number; timezone?: string }) {
   const [tab, setTab] = useState<Tab>('daily');
   const [reports, setReports] = useState<Report[]>([]);
   const [daily, setDaily] = useState<DailyReport[]>([]);
@@ -125,7 +126,7 @@ export default function Reports({ reps, onReviewed, version = 0 }: { reps: Rep[]
                         ))}
                       </tbody>
                     </table>
-                    <p className="muted small">توقيع إلكتروني: {report.signedName} · {new Date(report.signedAt).toLocaleString('ar-EG')}</p>
+                    <p className="muted small">توقيع إلكتروني: {report.signedName} · {dateTimeText(report.signedAt, timezone)}</p>
                   </div>
                 )}
                 <div className="report-actions">

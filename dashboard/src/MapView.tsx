@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
+import { DEFAULT_TIMEZONE, timeText } from './dates';
 import type { Rep, RouteResponse } from './types';
 
 // Keyless basemaps: no API key, so no token can expire or leak in the client bundle.
@@ -51,7 +52,7 @@ function SyncAge({ at, live }: { at: number | null; live: boolean }) {
   return <>{live ? 'بثّ لحظي' : 'تحديث كل ثانيتين'}{freshness}</>;
 }
 
-export default function MapView({ reps, selectedId, route, live = false, syncedAt = null }: { reps: Rep[]; selectedId: string | null; route: RouteResponse | null; live?: boolean; syncedAt?: number | null }) {
+export default function MapView({ reps, selectedId, route, live = false, syncedAt = null, timezone = DEFAULT_TIMEZONE }: { reps: Rep[]; selectedId: string | null; route: RouteResponse | null; live?: boolean; syncedAt?: number | null; timezone?: string }) {
   const host = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const layer = useRef<L.LayerGroup | null>(null);
@@ -65,6 +66,7 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   const fitKey = useRef('');
 
   const selected = useMemo(() => reps.find(r => r.id === selectedId) ?? null, [reps, selectedId]);
+  const recordTimezone = route?.timezone || timezone;
   const points = useMemo(() => (route?.points ?? []).map(p => ({ lat: p.lat, lng: p.lng, at: p.recordedAt })), [route]);
   const path = useMemo(() => sample(points, MAX_DRAWN_POINTS), [points]);
   // The first point identifies the loaded route without changing on every live poll. The key
@@ -159,7 +161,7 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
       });
       const headMarker = L.marker([head.lat, head.lng], { icon: headIcon }).addTo(group);
       headMarker.bindTooltip(
-        `<b>${escapeHtml(selected?.name || 'المهندس')}</b><br/>${progress >= 1 ? 'آخر نقطة' : 'أثناء المسار'} · ${new Date(head.at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}`,
+        `<b>${escapeHtml(selected?.name || 'المهندس')}</b><br/>${progress >= 1 ? 'آخر نقطة' : 'أثناء المسار'} · ${timeText(head.at, recordTimezone)}`,
         { direction: 'top', offset: [0, -16] },
       );
       bounds.push(...path.map(p => [p.lat, p.lng] as [number, number]));
@@ -210,7 +212,7 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
         else instance.fitBounds(L.latLngBounds(bounds).pad(0.18), { animate: true, maxZoom: 15 });
       }
     }
-  }, [reps, selectedId, path, points, progress, selected, routeViewKey]);
+  }, [reps, selectedId, path, points, progress, selected, routeViewKey, recordTimezone]);
 
   async function toggleFullscreen() {
     const node = host.current?.closest('.map-panel') as HTMLElement | null;
@@ -222,7 +224,7 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   }
 
   const noFixYet = !reps.some(r => r.location);
-  const headTime = path.length ? new Date(path[Math.min(path.length - 1, Math.max(0, Math.round(path.length * progress) - 1))].at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : null;
+  const headTime = path.length ? timeText(path[Math.min(path.length - 1, Math.max(0, Math.round(path.length * progress) - 1))].at, recordTimezone) : null;
   return (
     <div className="map-shell">
       <div ref={host} className="map" role="application" aria-label="خريطة مواقع المهندسين" />

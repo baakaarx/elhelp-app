@@ -18,11 +18,19 @@ test('report date defaults follow a late server timezone and preserve manual cho
   let overviewReleased = false;
   const overviewGate = new Promise<void>(resolve => { releaseInitialOverview = resolve; });
   let nextTimezone = 'Pacific/Kiritimati';
+  const overview = {
+    reps: [],
+    serverTime: Date.parse('2026-01-31T12:30:00.000Z'),
+    timezone: 'Africa/Cairo',
+    retentionDays: 365,
+    newReports: 0,
+    staleGpsMinutes: 10,
+  };
   await page.route('**/api/overview', async route => {
     if (!overviewReleased) await overviewGate;
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({ response, json: { ...body, timezone: nextTimezone } });
+    // This test only cares about the timezone lifecycle. A deterministic response avoids
+    // depending on a second fetch through the Vite proxy while the first response is gated.
+    await route.fulfill({ json: { ...overview, timezone: nextTimezone } });
   });
 
   await page.goto('/');

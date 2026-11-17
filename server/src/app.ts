@@ -1584,18 +1584,30 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = newReport.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'راجع بيانات التقرير: النوع والعنوان مطلوبان.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const data = parsed.data;
-    const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+    const ownerId = res.locals.user.id;
+    const existing = store.get('SELECT user_id AS userId FROM reports WHERE id=?', data.id);
+    if (existing && existing.userId !== ownerId) {
+      res.status(409).json({ error: 'معرّف التقرير مستخدم بالفعل.', code: 'REPORT_ID_IN_USE' });
+      return;
+    }
+    const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', ownerId);
     const now = Date.now();
     const result = store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, data.id, res.locals.user.id, shift?.id || null, data.type, data.title, data.body, data.customer, data.amount,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, data.id, ownerId, shift?.id || null, data.type, data.title, data.body, data.customer, data.amount,
       data.location?.lat ?? null, data.location?.lng ?? null, data.location?.accuracy ?? null, now);
+    const report = reportRow(data.id);
+    // Re-check the row returned by INSERT OR IGNORE as well: another writer may have claimed
+    // the same id after the first lookup. An idempotent replay is only valid for its owner.
+    if (!report || report.userId !== ownerId) {
+      res.status(409).json({ error: 'معرّف التقرير مستخدم بالفعل.', code: 'REPORT_ID_IN_USE' });
+      return;
+    }
     if (result.changes) {
-      store.audit(res.locals.user.id, 'report.create', { reportId: data.id, type: data.type });
-      const report = reportRow(data.id);
+      store.audit(ownerId, 'report.create', { reportId: data.id, type: data.type });
       io.to('admins').emit('report', report);
       invalidateKpis(); broadcast();
     }
-    res.status(result.changes ? 201 : 200).json({ report: reportRow(data.id), duplicate: !result.changes });
+    res.status(result.changes ? 201 : 200).json({ report, duplicate: !result.changes });
   });
   app.get('/api/reports', auth, (req, res) => {
     const isAdmin = res.locals.user.role === 'admin';

@@ -30,8 +30,27 @@ export function localMonth(timeZone: string = DEFAULT_TIMEZONE, at: number = Dat
 }
 
 /** The same calendar day, `days` days earlier — still resolved on the installation's clock. */
-export function dayBefore(days: number, timeZone: string = DEFAULT_TIMEZONE): string {
-  return localDay(timeZone, Date.now() - days * 86400000);
+export function dayBefore(days: number, timeZone: string = DEFAULT_TIMEZONE, at: number = Date.now()): string {
+  const [year, month, day] = localDay(timeZone, at).split('-').map(Number);
+  // Do calendar arithmetic on a UTC date-only value. Subtracting 24-hour durations shifts the
+  // answer across DST transitions (Africa/Cairo changes at local midnight).
+  const target = new Date(Date.UTC(year, month - 1, day - Math.trunc(days)));
+  return `${String(target.getUTCFullYear()).padStart(4, '0')}-${String(target.getUTCMonth() + 1).padStart(2, '0')}-${String(target.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** A timestamp in the installation's timezone, not the dashboard browser's local timezone. */
+export function timeText(at: number, timeZone: string = DEFAULT_TIMEZONE): string {
+  return new Date(at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone });
+}
+
+/** A date and time for an event, formatted on the installation's clock. */
+export function dateTimeText(at: number, timeZone: string = DEFAULT_TIMEZONE): string {
+  return new Date(at).toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short', timeZone });
+}
+
+/** A calendar date for an event, formatted on the installation's clock. */
+export function localDateText(at: number, timeZone: string = DEFAULT_TIMEZONE): string {
+  return new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'numeric', year: 'numeric', timeZone }).format(at);
 }
 
 /** String arithmetic on `YYYY-MM`, so month lists never depend on a date object's timezone. */

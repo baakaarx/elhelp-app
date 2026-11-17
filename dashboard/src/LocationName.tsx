@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
+import { DEFAULT_TIMEZONE, timeText } from './dates';
 import type { LocationPoint } from './types';
 
 type Lookup = { label: string; at: number };
 /** Reverse lookup is opt-in: do not send anyone's GPS to a third party on page load. */
-export default function LocationName({ location }: { location: LocationPoint | null }) {
+export default function LocationName({ location, timezone = DEFAULT_TIMEZONE }: { location: LocationPoint | null; timezone?: string }) {
   const [result, setResult] = useState<Lookup | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -30,7 +31,7 @@ export default function LocationName({ location }: { location: LocationPoint | n
   }
   if (!location) return <span className="muted small">لا توجد إشارة موقع</span>;
   return <div className="small">
-    {result && <span>{result.label} <span className="muted">(تقريبي · إشارة {new Date(result.at).toLocaleTimeString('ar-EG')})</span><br /></span>}
+    {result && <span>{result.label} <span className="muted">(تقريبي · إشارة {timeText(result.at, timezone)})</span><br /></span>}
     {error && <span className="error" role="alert">{error}<br /></span>}
     <button type="button" className="btn ghost sm" onClick={lookup} disabled={loading}>{loading ? 'جارٍ تحديد المنطقة…' : result ? 'تحديث اسم المنطقة' : 'عرض اسم المنطقة التقريبي'}</button>
     <small className="muted" style={{ display: 'block' }}>بالضغط تُرسل إحداثيات هذه الإشارة لخدمة Esri لتحديد الاسم.</small>
