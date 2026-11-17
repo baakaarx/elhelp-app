@@ -115,8 +115,12 @@ export default async function globalSetup() {
       db.prepare('UPDATE shifts SET started_at=? WHERE id=?').run(shiftStart, shiftId);
       db.prepare('UPDATE shifts SET consent_at=? WHERE id=?').run(shiftStart, shiftId);
       // Engineer 1 finishes at the current minute, engineer 2 an hour ago, engineer 3 lost
-      // signal 45 minutes ago (STALE_GPS_MINUTES is 10).
+      // signal 45 minutes ago (STALE_GPS_MINUTES is 10). Shift-start also records a GPS fix;
+      // backdate that implicit point too, or it masks the deliberately stale seeded fixes.
       const lastPointAge = index === 0 ? 0 : index === 1 ? 60 : 45;
+      const seededIds = pointIds.map(() => '?').join(',');
+      db.prepare(`UPDATE locations SET recorded_at=? WHERE user_id=? AND shift_id=? AND point_id NOT IN (${seededIds})`)
+        .run(now - lastPointAge * minute, repId, shiftId, ...pointIds);
       for (const [step, pointId] of pointIds.entries()) {
         const age = lastPointAge + (pointIds.length - 1 - step) * 8;
         db.prepare('UPDATE locations SET recorded_at=? WHERE user_id=? AND point_id=?')

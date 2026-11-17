@@ -1627,6 +1627,8 @@ export function createApp(overrides: Partial<Config> = {}) {
       store.run("UPDATE reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
       store.audit(res.locals.user.id, 'report.review', { reportId: report.id });
       notifyUser(report.userId, 'تمت مراجعة تقريرك', 'مدير المتابعة راجع تقريرك. افتح التطبيق لمراجعة حالته.', { type: 'report_reviewed', reportId: report.id });
+      // Keep every manager's open report list in sync, not only the page that clicked review.
+      io.to('admins').emit('report', reportRow(report.id));
       invalidateKpis(); broadcast();
     }
     res.json({ report: reportRow(String(req.params.id)) });

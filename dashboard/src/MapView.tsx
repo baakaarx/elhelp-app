@@ -67,6 +67,9 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   const selected = useMemo(() => reps.find(r => r.id === selectedId) ?? null, [reps, selectedId]);
   const points = useMemo(() => (route?.points ?? []).map(p => ({ lat: p.lat, lng: p.lng, at: p.recordedAt })), [route]);
   const path = useMemo(() => sample(points, MAX_DRAWN_POINTS), [points]);
+  // The first point identifies the loaded route without changing on every live poll. The key
+  // therefore changes for a new engineer/day, but a growing same-day route never steals the map.
+  const routeViewKey = `${selectedId ?? 'all'}|${route?.date ?? ''}|${route?.points[0]?.id ?? ''}`;
 
   useEffect(() => {
     if (!host.current || map.current) return;
@@ -188,22 +191,26 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
       );
       bounds.push([lat, lng]);
     }
-    // Only re-frame when the cast changes (first load, selection, route switch). Re-fitting on
-    // every poll would fight the operator's pan/zoom while the markers glide.
-    const key = selectedId ?? 'all';
-    if (key !== fitKey.current) {
-      // Don't change the viewport as new points arrive. Focus only on the first
-      // available position for a selection (or the first overall set of pins).
-      if (selectedId && selected?.location) {
-        fitKey.current = key;
+    // Re-frame when the selected engineer or loaded day changes, but not when a live poll adds
+    // points to the same route; otherwise the map would fight the manager's pan/zoom.
+    if (routeViewKey !== fitKey.current) {
+      if (selectedId && points.length > 0) {
+        fitKey.current = routeViewKey;
+        const routeBounds = points.map(point => [point.lat, point.lng] as L.LatLngExpression);
+        if (routeBounds.length === 1) instance.setView(routeBounds[0], 14, { animate: true });
+        else instance.fitBounds(L.latLngBounds(routeBounds).pad(0.18), { animate: true, maxZoom: 15 });
+      } else if (selectedId && selected?.location) {
+        // Until the route loads, keep the selected engineer visible. The loaded route will
+        // change routeViewKey and then fit the full historical path.
+        fitKey.current = routeViewKey;
         instance.setView([selected.location.lat, selected.location.lng], 14, { animate: true });
       } else if (!selectedId && bounds.length) {
-        fitKey.current = key;
+        fitKey.current = routeViewKey;
         if (bounds.length === 1) instance.setView(bounds[0], 14, { animate: true });
         else instance.fitBounds(L.latLngBounds(bounds).pad(0.18), { animate: true, maxZoom: 15 });
       }
     }
-  }, [reps, selectedId, path, progress, selected]);
+  }, [reps, selectedId, path, points, progress, selected, routeViewKey]);
 
   async function toggleFullscreen() {
     const node = host.current?.closest('.map-panel') as HTMLElement | null;

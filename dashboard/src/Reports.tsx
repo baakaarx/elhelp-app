@@ -58,7 +58,8 @@ export default function Reports({ reps, onReviewed, version = 0 }: { reps: Rep[]
   }
   async function download(report: DailyReport) {
     setDownloading(report.id);
-    try { await downloadDailyReportPdf(report.id, `تقرير-${report.reportDate}-${report.repName}.pdf`); }
+    // Chromium drops Arabic anchor filenames to a generic "download"; keep the PDF name portable.
+    try { await downloadDailyReportPdf(report.id, `daily-report-${report.reportDate}.pdf`); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر تنزيل الملف.'); }
     finally { setDownloading(null); }
   }
