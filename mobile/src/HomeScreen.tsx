@@ -7,7 +7,7 @@ import { CheckInSheet, CheckOutSheet } from './VisitSheets';
 import { agoText, clockText, hhmmss, timeText } from './format';
 import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
-import { captureOnce } from './location';
+import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId } from './device';
 import { reportIdle } from './api';
 
@@ -136,7 +136,9 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
                 <Text style={styles.visitName}>{visit.customerName}</Text>
                 <Text style={styles.meta}>
                   {visitPurposeLabels[visit.purpose]} · {timeText(visit.checkedInAt, timeZone)}
-                  {visit.status === 'closed' && visit.durationSeconds !== null ? ` · ${Math.max(1, Math.round(visit.durationSeconds / 60))} دقيقة` : ' · مفتوحة'}
+                  {visit.status === 'open' ? ' · مفتوحة'
+                    : visit.durationSeconds !== null ? ` · ${Math.max(1, Math.round(visit.durationSeconds / 60))} دقيقة`
+                    : visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية'}
                 </Text>
               </View>
               {visit.status === 'open' && <Pressable onPress={() => setCheckOutVisit(visit)}><Text style={styles.link}>إنهاء</Text></Pressable>}
@@ -272,7 +274,7 @@ function IdleSheet({ minutes, onClose }: { minutes: number; onClose: () => void 
     setSaving(true); setError('');
     try {
       const fix = await captureOnce({ maxAgeMs: 0 });
-      if (!fix) throw new Error('GPS مطلوب — فعّل الموقع لإرسال تبرير الوقوف.');
+      if (!fix) throw new Error(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع لإرسال تبرير الوقوف.');
       const deviceId = await getDeviceId();
       await reportIdle(reason.trim(), { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy }, deviceId);
       onClose();

@@ -1,4 +1,4 @@
-// Build once, then serve a stable preview (no Vite HMR / tsx watch restarts).
+// Build once, then serve both web surfaces from one stable preview (no Vite HMR / tsx watch restarts).
 // Credentials come from the environment/.env exactly like a real deployment: there is no
 // built-in account to fall back on.
 import { spawn, spawnSync } from 'node:child_process';
@@ -12,7 +12,6 @@ if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD) {
   process.exit(1);
 }
 run(['run', 'build']);
-run(['run', 'export:mobile'], { EXPO_BASE_URL: '/app' });
 const child = spawn(process.execPath, ['server/dist/index.js'], {
   stdio: 'inherit',
   env: { ...process.env, NODE_ENV: 'development', PORT: process.env.PORT || '5173' },

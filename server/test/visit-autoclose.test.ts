@@ -71,7 +71,7 @@ async function checkIn(token: string, name = 'مزرعة مفتوحة') {
 
 test('ending the shift closes the visit that was still open', async () => {
   const rep = await makeRep('stop');
-  await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
+  const shiftId = await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
   const visitId = await checkIn(rep.token);
 
   const stop = await client.post('/api/shifts/stop').set('Authorization', `Bearer ${rep.token}`);
@@ -81,6 +81,8 @@ test('ending the shift closes the visit that was still open', async () => {
   assert.equal(row.status, 'closed', 'the visit must not stay open after the shift');
   assert.equal(Number(row.auto_closed), 1, 'and it is marked as closed by the system');
   assert.equal(row.outcome, AUTO_CLOSED_OUTCOME);
+  const shift = store.get('SELECT ended_at FROM shifts WHERE id=?', shiftId)!;
+  assert.equal(Number(row.checked_out_at), Number(shift.ended_at), 'shift-stop closure uses the server-recorded shift end');
   assert.ok(Number(row.duration_seconds) >= 0);
 
   // The whole point: the next visit is accepted.
@@ -130,7 +132,8 @@ test('the cleanup closes a visit nobody ended, and the KPI average ignores it', 
   assert.equal(abandoned.status, 'closed');
   assert.equal(Number(abandoned.auto_closed), 1);
   assert.equal(abandoned.outcome, AUTO_CLOSED_OUTCOME);
-  assert.equal(Number(abandoned.duration_seconds), 0, 'no invented duration');
+  assert.equal(abandoned.checked_out_at, null, 'the cleanup cannot invent a checkout time');
+  assert.equal(abandoned.duration_seconds, null, 'unknown duration stays unknown, not zero');
 
   const avg = store2.get('SELECT AVG(CASE WHEN status=\'closed\' AND auto_closed=0 THEN duration_seconds END) AS avgDuration FROM visits WHERE user_id=?', userId)!;
   assert.equal(Number(avg.avgDuration), 1800, 'only the measured visit counts');
@@ -166,6 +169,56 @@ test('the result of a visit the system closed can still be recorded', async () =
   const row = store.get('SELECT * FROM visits WHERE id=?', visitId)!;
   assert.equal(Number(row.auto_closed), 1, 'the duration is still not measured, so the average keeps ignoring it');
   assert.equal(Number(row.duration_seconds), Number(before.duration_seconds), 'no invented duration');
+});
+
+test('the engineer summary excludes automatic closures from the measured visit average', async () => {
+  const rep = await makeRep('average');
+  await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
+  const measuredId = await checkIn(rep.token, 'زيارة مقاسة');
+  const measured = await client.post(`/api/visits/${measuredId}/check-out`).set('Authorization', `Bearer ${rep.token}`)
+    .send({ outcome: 'تمت الزيارة', notes: '', amount: null, location: null });
+  assert.equal(measured.status, 200, JSON.stringify(measured.body));
+  store.run('UPDATE visits SET duration_seconds=600 WHERE id=?', measuredId);
+
+  const automaticId = await checkIn(rep.token, 'زيارة أُغلقت تلقائيًا');
+  await client.post('/api/shifts/stop').set('Authorization', `Bearer ${rep.token}`);
+  assert.equal(Number(store.get('SELECT auto_closed FROM visits WHERE id=?', automaticId)!.auto_closed), 1);
+
+  const summary = await client.get('/api/me/summary').set('Authorization', `Bearer ${rep.token}`);
+  assert.equal(summary.status, 200, JSON.stringify(summary.body));
+  assert.equal(summary.body.visitsCompleted, 2, 'both closed rows still count as completed');
+  assert.equal(summary.body.avgVisitSeconds, 600, 'the automatic close must not dilute the measured average');
+});
+
+test('an auto-closed offline result rejects stale, future, and pre-check-in timestamps', async () => {
+  const rep = await makeRep('late-time');
+  await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
+  const visitId = await checkIn(rep.token, 'مزرعة وقت النتيجة');
+  assert.equal((await client.post('/api/shifts/stop').set('Authorization', `Bearer ${rep.token}`)).status, 200);
+  const before = store.get('SELECT checked_in_at AS checkedInAt, checked_out_at AS checkedOutAt, outcome FROM visits WHERE id=?', visitId)!;
+  assert.equal(before.outcome, AUTO_CLOSED_OUTCOME);
+
+  const sendLateResult = (recordedAt: number) => client.post(`/api/visits/${visitId}/check-out`)
+    .set('Authorization', `Bearer ${rep.token}`)
+    .send({ outcome: 'نتيجة وقت الزيارة', notes: '', amount: null, location: null, recordedAt });
+  for (const recordedAt of [
+    Date.now() + 5 * 60000,
+    Date.now() - 25 * 3600000,
+    Number(before.checkedInAt) - 2 * 60000,
+  ]) {
+    const rejected = await sendLateResult(recordedAt);
+    assert.equal(rejected.status, 422, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.code, 'OFFLINE_VISIT_REJECTED');
+    const unchanged = store.get('SELECT checked_out_at AS checkedOutAt, outcome FROM visits WHERE id=?', visitId)!;
+    assert.equal(unchanged.checkedOutAt, before.checkedOutAt);
+    assert.equal(unchanged.outcome, AUTO_CLOSED_OUTCOME);
+  }
+
+  const recordedAt = Date.now();
+  const accepted = await sendLateResult(recordedAt);
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  assert.equal(accepted.body.visit.checkedOutAt, recordedAt);
+  assert.equal(accepted.body.visit.outcome, 'نتيجة وقت الزيارة');
 });
 
 test('a visit that was closed normally still answers duplicate', async () => {

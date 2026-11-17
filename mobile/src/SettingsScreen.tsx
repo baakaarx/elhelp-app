@@ -1,18 +1,20 @@
 import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Location from 'expo-location';
-import { useState } from 'react';
-import { API_BASE, changeMyPassword, deleteMyAccount } from './api';
-import { clearDeviceData } from './storage';
-import { createQueue } from './queue';
+import { useEffect, useState } from 'react';
+import { API_BASE, changeMyPassword, deleteMyAccount, pushStatus } from './api';
+import { disablePushNotifications, enablePushNotifications, notificationPermission } from './push';
 import { flushOutbox } from './reports';
 import { colors, fonts, space } from './theme';
 import { Body, Button, Card, Heading, Pill, Row, SectionTitle } from './ui';
 import type { User } from './types';
 import type { FieldBundle } from './useField';
 
-export default function SettingsScreen({ user, field, onLogout, onDeleted }: { user: User; field: FieldBundle; onLogout: () => void; onDeleted: () => void }) {
+export default function SettingsScreen({ user, field, onLogout, onDeleted }: { user: User; field: FieldBundle; onLogout: () => void; onDeleted: () => void | Promise<void> }) {
   const [syncing, setSyncing] = useState(false);
   const [permission, setPermission] = useState<string | null>(null);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushPermission, setPushPermission] = useState<'granted' | 'denied' | 'unsupported'>('unsupported');
+  const [pushBusy, setPushBusy] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [nextPassword, setNextPassword] = useState('');
   const [changing, setChanging] = useState(false);
@@ -21,14 +23,66 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
   // Typing the account address is the confirmation step: the stores require a real in-app
   // deletion path, and an accidental tap must never erase a field engineer's history.
   const canDelete = !deleting && confirmEmail.trim().toLowerCase() === user.email.toLowerCase();
+  const pushActive = pushEnabled && pushPermission === 'granted';
+
+  useEffect(() => {
+    let current = true;
+    void Promise.all([
+      pushStatus().catch(() => ({ enabled: false })),
+      notificationPermission(),
+    ]).then(([server, os]) => {
+      if (!current) return;
+      setPushEnabled(server.enabled);
+      setPushPermission(os);
+    });
+    return () => { current = false; };
+  }, []);
+
+  async function stopPush() {
+    setPushBusy(true);
+    try {
+      await disablePushNotifications();
+      setPushEnabled(false);
+      Alert.alert('الإشعارات', 'تم إيقاف إرسال إشعارات المراجعة لهذا الجهاز.');
+    } catch (error) {
+      Alert.alert('تعذر إيقاف الإشعارات', error instanceof Error ? error.message : 'حاول مرة أخرى.');
+    } finally { setPushBusy(false); }
+  }
+
+  async function togglePush() {
+    setPushBusy(true);
+    try {
+      if (pushActive) {
+        await disablePushNotifications();
+        setPushEnabled(false);
+        Alert.alert('الإشعارات', 'تم إيقاف إرسال إشعارات المراجعة لهذا الجهاز.');
+        return;
+      }
+      const result = await enablePushNotifications();
+      if (result === 'enabled') {
+        setPushEnabled(true);
+        setPushPermission('granted');
+        Alert.alert('الإشعارات', 'تم تفعيل إشعارات مراجعة تقاريرك وموافقة الإدارة.');
+      } else if (result === 'denied') {
+        setPushPermission('denied');
+        Alert.alert('الإشعارات غير مفعلة', 'اسمح بالإشعارات من إعدادات الهاتف ثم جرّب مرة أخرى.');
+      } else if (result === 'not-configured') {
+        Alert.alert('الإشعارات غير جاهزة', 'نسخة التطبيق لم تُربط بمشروع EAS بعد. أعد بناء نسخة النشر بعد إعداد معرّف المشروع ومفاتيح الإشعارات.');
+      } else {
+        Alert.alert('غير مدعوم', 'إشعارات الدفع تعمل على هاتف Android أو iPhone حقيقي، وليس على الويب أو المحاكي.');
+      }
+    } catch (error) {
+      Alert.alert('تعذر تفعيل الإشعارات', error instanceof Error ? error.message : 'تحقق من الاتصال وحاول مرة أخرى.');
+    } finally { setPushBusy(false); }
+  }
 
   async function eraseAccount() {
     setDeleting(true);
     try {
       await deleteMyAccount(user.email);
-      await (await createQueue()).clear();
-      await clearDeviceData();
-      onDeleted();
+      // The app-level callback stops the tracker before clearing its queue, so a final GPS
+      // callback cannot recreate local data after account deletion.
+      await onDeleted();
     } catch (error) {
       Alert.alert('تعذر حذف الحساب', error instanceof Error ? error.message : 'حاول مرة أخرى.');
     } finally { setDeleting(false); }
@@ -99,14 +153,31 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
           <Button style={{ flex: 1 }} variant="soft" label={syncing ? 'جارٍ المزامنة…' : 'مزامنة الآن'} loading={syncing} onPress={async () => {
             setSyncing(true);
             try {
-              const result = await flushOutbox();
-              Alert.alert('المزامنة', result.pending ? `تم إرسال ${result.sent}، وباقي ${result.pending}.` : 'كل البيانات مُرسلة ✅');
+              const result = await flushOutbox(user.id, { retryRejected: true });
+              Alert.alert('المزامنة', result.notice || (result.pending ? `تم إرسال ${result.sent}، وباقي ${result.pending}.` : 'كل البيانات مُرسلة ✅'));
               await field.refresh();
             } catch { Alert.alert('المزامنة', 'تعذر الاتصال بالسيرفر. حاول بعد قليل.'); }
             finally { setSyncing(false); }
           }} />
           <Button style={{ flex: 1 }} variant="ghost" label="تحديث البيانات" onPress={() => void field.refresh()} />
         </Row>
+      </Card>
+
+      <Card>
+        <SectionTitle title="الإشعارات" action={<Pill label={pushActive ? 'مفعلة' : pushEnabled ? 'تحتاج إذن الهاتف' : 'متوقفة'} tone={pushActive ? 'mint' : 'warn'} />} />
+        <Body muted>
+          لو المدير راجع تقريرك أو غيّر حالة حسابك، هيوصلك تنبيه حتى لو التطبيق مقفول. لا تحتوي الإشعارات على موقعك أو تفاصيل التقرير. يتفعّل التسجيل بعد ربط الحساب بهذا الهاتف ببدء وردية مرة واحدة.
+          {pushPermission === 'denied' ? '\nإذن الإشعارات مرفوض من إعدادات الهاتف.' : ''}
+        </Body>
+        <Button
+          variant={pushActive ? 'ghost' : 'soft'}
+          label={pushBusy ? 'جارٍ التحديث…' : pushActive ? 'إيقاف إشعارات هذا الجهاز' : pushEnabled ? 'إعادة تفعيل إشعارات المراجعة' : 'تفعيل إشعارات المراجعة'}
+          loading={pushBusy}
+          onPress={() => void togglePush()}
+        />
+        {pushEnabled && pushPermission !== 'granted' ? (
+          <Button variant="ghost" label="إيقاف الإرسال من السيرفر" loading={pushBusy} onPress={() => void stopPush()} />
+        ) : null}
       </Card>
 
       <Card>

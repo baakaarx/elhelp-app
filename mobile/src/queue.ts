@@ -5,7 +5,9 @@ export interface Outbox {
   list(limit?: number): Promise<OutboxItem[]>;
   remove(key: string): Promise<void>;
   bump(key: string): Promise<void>;
-  count(): Promise<number>;
+  reject(key: string): Promise<void>;
+  unreject(key: string): Promise<void>;
+  count(kind?: OutboxKind): Promise<number>;
   /** Drops everything queued on the device (used when an account is erased). */
   clear(): Promise<void>;
 }

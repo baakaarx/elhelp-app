@@ -2,6 +2,9 @@
 
 الملف ده قائمة تنفيذ (checklist) — كل بند إما جاهز في الكود أو خطوة بتعملها مرة واحدة في حساب المتجر.
 
+**خطة التوزيع الحالية:** APK لمهندسي Android وموقع مهندس مخصص لمهندسي iPhone؛ لا يُبنى IPA أو
+يُستخدم TestFlight الآن. أقسام App Store أدناه مرجع مستقبلي فقط، وليست خطوات مطلوبة للإصدار الحالي.
+
 ---
 
 ## ١) الحاجات اللي المشروع بقى موفّرها
@@ -14,6 +17,7 @@
 | **موافقة صريحة على الموقع** | شاشة موافقة داخل التطبيق (إصدار 1.0) + مؤشر دائم أثناء التسجيل |
 | **توقيع وتوزيع** | `npm run keystore` + `npm run build:aab` (وAPK للتوزيع الداخلي) |
 | **بناء سحابي لـiOS** | `mobile/eas.json` جاهز (profile `production` = AAB / iOS release) |
+| **فصل واجهات الاستخدام** | مهندسو Android يستخدمون APK؛ مهندسو iPhone يستخدمون موقع المهندس على أصل مستقل، والمديرون لوحة ويب منفصلة؛ الخادم يقدّم حزمة Expo تحت `/app` ويرفض خلط أدوار العملاء |
 
 ---
 
@@ -74,9 +78,9 @@ PRIVACY_CONTACT=privacy@your-company.com   # في server/.env
 | السؤال | الإجابة |
 | --- | --- |
 | هل يجمع التطبيق بيانات؟ | نعم |
-| أنواع البيانات | الموقع التقريبي والدقيق · المعلومات الشخصية (الاسم، البريد، الهاتف) · معلومات مالية (مبالغ التحصيل في التقارير) · سجل النشاط داخل التطبيق |
-| الغرض | وظائف التطبيق (App functionality) · إدارة الحساب · الأمان ومنع إساءة الاستخدام · التحليلات التشغيلية |
-| تُشارك مع أطراف ثالثة؟ | لا (المزوّدون يعملون بصفة «معالج بيانات» فقط) |
+| أنواع البيانات | الموقع التقريبي والدقيق · المعلومات الشخصية (الاسم، البريد، الهاتف) · مبالغ التحصيل · سجل النشاط · معرّف الجهاز ورمز الإشعارات (اختياري) |
+| الغرض | وظائف التطبيق · إدارة الحساب · الأمان ومنع إساءة الاستخدام · إشعارات مراجعة التقارير وحالة الحساب |
+| تُشارك مع أطراف ثالثة؟ | نعم، بقدر الحاجة: Expo Push Service يستقبل رمز الإشعار ونصًا عامًا لتسليمه (لا موقع ولا تفاصيل التقرير)؛ ومزوّد الخرائط يستقبل الإحداثيات اللازمة لعرض الخريطة |
 | مشفّرة أثناء النقل؟ | نعم (HTTPS) |
 | يمكن طلب حذف البيانات؟ | نعم — من داخل التطبيق + صفحة ويب `/delete-account` + البريد |
 | الموقع يُجمع في الخلفية؟ | نعم — أثناء الوردية فقط، بموافقة صريحة |
@@ -102,14 +106,16 @@ PRIVACY_CONTACT=privacy@your-company.com   # في server/.env
      --environment production --visibility plaintext
    ```
    أو ضيفه في `mobile/eas.json` تحت `build.production.env.EXPO_PUBLIC_API_URL`. ملف `mobile/.env`
-   **مش بيتنمّى للسحابة** (متجاهَل في git)، والبناء بيفشل فورًا لو العنوان ناقص.
+   **مش بيتنمّى للسحابة** (متجاهَل في git)، والبناء بيفشل فورًا لو العنوان ناقص. بروفايل `production`
+   يرفض كذلك HTTP و`localhost`؛ استخدم دومين الـVPS على HTTPS، ولا تعتمد على cleartext في نسخة المتجر.
    وكمان لو النسخة طلعت من غير عنوان، التطبيق بيعرض شاشة «النسخة دي مش مربوطة بسيرفر الشركة»
    بدل ما يقول «لا يوجد اتصال» للأبد.
 
 5. **App Store Connect**:
    - **Privacy Policy URL**: `https://<دومين>/privacy`.
    - **App Privacy** (nutrition labels): Location → *Collected · Linked to the user · App Functionality*;
-     Contact Info (الاسم/البريد) · Identifiers (معرّف الجهاز) · User Content (تقارير).
+     Contact Info (الاسم/البريد) · Identifiers (معرّف الجهاز ورمز الإشعار الاختياري) · User Content (تقارير).
+     إشعارات المراجعة لا تحتوي الموقع ولا تفاصيل التقرير؛ رمز الجهاز ونص التنبيه يمران بخدمة Expo Push للتسليم.
    - **Background location**: في `Notes for Review` اكتب:
      > التطبيق أداة عمل داخلية لمهندسي الشركة. تسجيل الموقع يبدأ بضغط المهندس على «بدء الوردية»
      > بعد موافقة صريحة، ويتوقف بإيقاف الوردية أو بإغلاق التطبيق من الإعدادات. يُستخدم لمتابعة خط
@@ -138,6 +144,35 @@ eas build -p ios --profile production         # يحتاج Apple Developer
 
 ---
 
+## ٥-أ) إشعارات Push — الإعداد الإلزامي قبل اختبارها على هاتف حقيقي
+
+الكود جاهز في التطبيق والسيرفر: المهندس يفعّل التنبيهات من «حسابي»، والسيرفر يرسل إشعارًا عامًا
+عند مراجعة تقريره أو تغيير حالة حسابه. التسليم يتم عبر Expo Push Service؛ **لا تضع مفاتيح FCM/APNs
+في `server/.env` ولا في Git**.
+
+1. من مجلد `mobile` اربط التطبيق بمشروع EAS مرة واحدة (`eas init`). يحتاج البناء السحابي إلى
+   `EAS_PROJECT_ID`/`EAS_BUILD_PROJECT_ID` ليطلب رمز Push مربوطًا بالمشروع؛ إذا لم يظهر تلقائيًا،
+   أضفه كمتغير بيئة EAS `EAS_PROJECT_ID` في بيئة `production`.
+2. **Android/FCM:** أنشئ Firebase project واربط تطبيق Android بالحزمة
+   `com.elhelb.mandoub`، نزّل `google-services.json` واربطه كـEAS file environment variable
+   باسم `GOOGLE_SERVICES_JSON` (أو محليًا عبر `android.googleServicesFile`; الملف متجاهَل في Git).
+   ثم أضف **FCM v1 service-account key** إلى Credentials في EAS (`eas credentials -p android`).
+   ملف JSON وحده لا يكفي للإرسال؛ لا ترفع ملف الحساب الخاص أو المفتاح إلى المستودع أو المحادثة.
+3. **iOS/APNs:** من Apple Developer أنشئ APNs Authentication Key (`.p8`) للتطبيق، ثم أضفها
+   إلى EAS Credentials (`eas credentials -p ios`). احتفظ بمفتاح `.p8` خارج Git.
+4. أعد بناء APK/AAB أو IPA بعد إضافة `expo-notifications` و`POST_NOTIFICATIONS` — تحديث JavaScript
+   وحده لا يضيف الإذن والموديول الأصليين. اختبر على **هاتف فعلي**؛ Expo Go والمحاكي لا يثبتان
+   وصول Push الإنتاجي.
+5. بعد ربط الهاتف ببدء وردية مرة واحدة، افتح «حسابي ← تفعيل إشعارات المراجعة» واسمح بالإذن.
+   اختبر مراجعة تقرير فعليًا؛ إشعار التسليم لا يحتوي اسم العميل أو المبلغ أو الموقع. تسجيل الخروج يمسح رمز هذا الحساب من السيرفر.
+
+إذا كان معرّف مشروع EAS ناقصًا، التطبيق يرفض تفعيل الإشعار برسالة واضحة ولا يطلب إذن نظام بلا فائدة.
+لا يستطيع العميل وحده التحقق أن مفاتيح Firebase/APNs صالحة؛ عشان كده اختبار جهاز حقيقي شرط قبل الإعلان أن Push شغّال.
+السيرفر لا يحتاج أسرار Push؛ يعزل فشل Expo عن حفظ التقارير، ويحذف الرموز التي يعلن Expo أنها غير مسجلة.
+
+> الكود والشروط جاهزة، لكن لا يمكن ادعاء وصول تنبيه حيّ قبل وضع مفاتيح EAS الخاصة بالشركة وبناء
+> النسخة الأصلية وتجربتها على جهاز حقيقي — هذه خطوة حسابات/أجهزة، وليست شيئًا يخفيه الكود.
+
 ## ٦) التكاليف والزمن
 
 | البند | التكلفة | ملاحظات |
@@ -157,6 +192,8 @@ eas build -p ios --profile production         # يحتاج Apple Developer
 - [ ] حساب فردي؟ ١٢ مختبِر × ١٤ يوم خلصوا قبل طلب Production.
 - [ ] `GOOGLE_CLIENT_IDS` / `APPLE_CLIENT_IDS` مضبوطة في `server/.env` (أو الأزرار مخفية عن قصد).
 - [ ] حذف الحساب مُختبَر فعليًا على حساب اختبار (والمدير الأخير مرفوض بحكمة).
+- [ ] مشروع EAS مربوط؛ `google-services.json` وFCM v1 على Android وAPNs على iOS مضبوطون، وإشعار مراجعة تم اختباره على جهاز فعلي.
+- [ ] اختبر Android مع mock location مفعّل: الوردية/الزيارة لا تُقبل بإحداثيات محاكية، ويظهر تنبيه المدير.
 - [ ] الـAPK/الـAAB مبني على العنوان النهائي (مش IP مؤقت).
 - [ ] أيقونة 512 + صورة عرض + لقطات شاشة بالعربي.
 - [ ] نسخة احتياطية من `elhelp-release.keystore` + كلمات سرّه.
@@ -172,44 +209,61 @@ eas build -p ios --profile production         # يحتاج Apple Developer
 | ٣ | مفيش رابط حذف حساب على الويب | `/delete-account` — صفحة عربية عامة، بطلب حذف من غير التطبيق |
 | ٤ | التطبيق بيقول للمهندس «البيانات بتتحذف بعد ٣٠ يوم» والسيرفر بيحتفظ بسنة | النص بقى بيقرأ `retentionDays` من السيرفر |
 | ٥ | «سكون ${minutes} دقيقة» بتظهر حرفيًا في بانر السكون | الأرقام ظاهرة صح |
-| ٦ | `supportsTablet` + `POST_NOTIFICATIONS` + سؤال التشفير في كل رفع | iPhone فقط · صلاحية مش مستخدمة اتشالت · `ITSAppUsesNonExemptEncryption` |
+| ٦ | التطبيق لم يكن يحتاج أذونات إشعارات | لم يكن فيه Push؛ بقى `POST_NOTIFICATIONS` مطلوبًا بعد إضافة تنبيهات المراجعة الاختيارية، مع `ITSAppUsesNonExemptEncryption` |
 
 ---
 
-## ٩) تسجيل الدخول بـ Google وApple — التفعيل
+## ٩) تسجيل الدخول بـ Google وApple — إعداد التطبيق والموقع
 
-التنفيذ كامل في الكود (سيرفر + تطبيق). الأزرار **مش بتظهر** إلا لما الشرطين يتوفروا مع بعض:
-السيرفر عنده client ids يتحقق بيها، والنسخة المبنية معاها client id للمنصة. يعني مفيش زرار
-هيفشل لما تدوس عليه.
+الأزرار لا تظهر إلا عندما يكون المزوّد مفعّلًا في `server/.env`، ويكون للعميل الحالي معرّف مناسب.
+مهندسو Android يستخدمون Google في الـAPK؛ مهندسو iPhone يمكنهم استخدام Google وApple من موقع
+المهندسين بعد تسجيل عنوان الموقع وقيم OAuth أدناه. لا يُبنى تطبيق iOS ضمن خطة التوزيع الحالية.
 
 ### Google
 1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) ← **Create OAuth client ID**:
-   - **iOS**: bundle id = `com.elhelb.mandoub`، ومعاه redirect `elhelbmandoob://oauth`.
-   - **Android**: package = `com.elhelb.mandoub` + بصمة **SHA-1** بتاعت مفتاح التوقيع
+   - **Android**: package = `com.elhelb.mandoub` + بصمة **SHA-1** لمفتاح التوقيع
      (`keytool -list -v -keystore mobile/elhelp-release.keystore -alias elhelp`).
-   - **Web** (لو هتجرّب من المتصفح).
-2. في `server/.env` حط الثلاثة مفصولين بفاصلة:
+   - **Web**: أضف الدومين الفعلي إلى Authorized JavaScript origins، وأضف redirect URI:
+     `https://field.your-company.com/app/oauth`.
+2. في `server/.env` ضع الـclient IDs التي سيقبل الخادم رموزها:
    ```
-   GOOGLE_CLIENT_IDS=123-ios.apps.googleusercontent.com,456-android.apps.googleusercontent.com,789-web.apps.googleusercontent.com
+   GOOGLE_CLIENT_IDS=456-android.apps.googleusercontent.com,789-web.apps.googleusercontent.com
    ```
-3. في بناء التطبيق: `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` و`EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`
-   و`EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` (في `mobile/.env` للبناء المحلي، أو `eas.json`/`eas env` للسحابي).
+3. في `mobile/.env` (للبناء المحلي) أو بيئة بناء النشر:
+   ```ini
+   EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID=456-android.apps.googleusercontent.com
+   EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=789-web.apps.googleusercontent.com
+   ```
 
-### Apple
-1. Apple Developer ← **Identifiers** ← App ID `com.elhelb.mandoub` ← فعّل **Sign In with Apple**.
-2. في `server/.env`: `APPLE_CLIENT_IDS=com.elhelb.mandoub`.
-3. المكوّن الأصلي iOS فقط؛ على أندرويد زر Apple مش بيظهر.
-4. Apple 4.8: أي تطبيق على iOS فيه دخول اجتماعي تاني لازم يوفّر Sign in with Apple — المكوّن
-   مضاف في `app.config.ts` (`usesAppleSignIn` + `expo-apple-authentication`).
+### Apple على موقع iPhone
+1. Apple Developer: فعّل **Sign in with Apple** للـApp ID، وأنشئ **Services ID** (مثال:
+   `com.elhelb.mandoub.web`) واربطه بالـPrimary App ID.
+2. في إعدادات الـServices ID سجّل الدومين `field.your-company.com` وعنوان Return URL:
+   `https://field.your-company.com/app/oauth/apple`.
+3. أضف Services ID إلى `server/.env`، بجوار App ID الأصلي إن كان مطلوبًا لأي نسخة Android مستقبلية:
+   ```ini
+   APPLE_CLIENT_IDS=com.elhelb.mandoub.web
+   ```
+4. في `mobile/.env` أو بيئة بناء الويب:
+   ```ini
+   EXPO_PUBLIC_APPLE_WEB_CLIENT_ID=com.elhelb.mandoub.web
+   ```
+   موقع المهندسين يحمل Apple JS SDK الرسمي من نطاق Apple فقط إذا ردّ الخادم بأن Apple مفعّل.
+   زر Apple لا يظهر على Android.
+
+> احفظ `mobile/.env` خارج Git. الـclient IDs ليست أسرارًا، لكن مفاتيح Apple الخاصة وملفات التوقيع
+> أسرار ولا تُحفظ في التطبيق أو المستودع. يلزم اختبار تدفقي الدخول فعليًا على الدومين النهائي؛
+> لا يمكن لاختبار محلي بلا Apple/Google credentials إثبات قبول إعداد المزود.
 
 ### إزاي بيتحقق السيرفر
-- التطبيق بيجيب **ID token** من SDK المزوّد، والسيرفر (`server/src/oauth.ts`) بيتحقق من
-  التوقيع بمفاتيح المزوّد المنشورة (RS256 فقط — أي `alg: none` أو توقيع مزيّف بيترفض)، ومن
-  `iss` و`aud` (قائمة كل الـclients) و`exp`.
-- **مفيش إنشاء حسابات تلقائي**: بريد مش مسجّل ⇒ `403 ACCOUNT_NOT_FOUND` («اطلب من المدير يضيفك»).
-- أول دخول بيربط `oauth_provider`/`oauth_subject` بالحساب؛ بعد كده الدخول بيتم بالـ`sub`
-  (لأن Apple مش بتبعت البريد غير أول مرة).
-- `GET /api/auth/providers` هو اللي بيقول للتطبيق يعرض أي زرار — مش فلاج في البناء.
+- التطبيق/الموقع يرسل **ID token** موقّعًا؛ السيرفر (`server/src/oauth.ts`) يتحقق من التوقيع
+  بمفاتيح المزوّد المنشورة (RS256 فقط — أي `alg: none` أو توقيع مزيّف يُرفض)، ومن `iss` و`aud`
+  (قائمة كل الـclients) و`exp`.
+- **لا إنشاء حساب تلقائي**: بريد غير مسجّل ⇒ `403 ACCOUNT_NOT_FOUND` («اطلب من المدير يضيفك»).
+- أول دخول يربط `oauth_provider`/`oauth_subject` بالحساب؛ بعد ذلك الدخول بالـ`sub`
+  (لأن Apple قد لا يرسل البريد مرة أخرى).
+- `GET /api/auth/providers` هو الذي يقرر الأزرار، وغياب client ID من البناء يخفي الزر بدل أن
+  يعرض تدفقًا لا يمكن إكماله.
 
 ---
 
@@ -220,7 +274,7 @@ eas build -p ios --profile production         # يحتاج Apple Developer
 | `mobile/assets/icon.png` | 1024×1024، **بدون قناة شفافية** | أيقونة iOS ولقطة المتجر (ارفع نفس الملف 1024 في App Store Connect) |
 | `mobile/assets/adaptive-icon.png` | 1024×1024 | طبقة أندرويد الأمامية — الشعار كله جوه المنطقة الآمنة (٦٦٪) فالماسك الدائري مش بيقص حاجة |
 | `mobile/assets/splash-icon.png` | 1024×1024 | شاشة البداية (`backgroundColor: #020305` = لون خلفية الشعار نفسه، فمفيش حواف) |
-| `mobile/assets/favicon.png` | 128×128 | تبويب المتصفح في نسخة الويب `/app` |
+| `mobile/assets/favicon.png` | 128×128 | معاينة Expo Web محلية فقط؛ لا تُستخدم في موقع الإنتاج |
 
 الأيقونة اتشالت منها شارة «ELHELB AI ENGINE» والإطار الخارجي (كانوا بيتقصّوا في لانشر أندرويد)،
 والشعار (المرساة + الغار + ELHELB GROUP) هو اللي ظاهر. لأيقونة المتجر 512×512 المطلوبة في Play:

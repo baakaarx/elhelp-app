@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
@@ -12,11 +12,12 @@ import DailyReports from './src/DailyReports';
 import SettingsScreen from './src/SettingsScreen';
 import { UNCONFIGURED, me, logout } from './src/api';
 import { clearDeviceData, getToken } from './src/storage';
-import { createQueue } from './src/queue';
-import { flushOutbox } from './src/reports';
+import { activateOutboxUser, clearOutbox, deactivateOutboxUser, flushOutbox } from './src/reports';
 import { hhmmss } from './src/format';
 import { stopTracking } from './src/tracking';
 import { useField } from './src/useField';
+import { onMockLocationDetected, MOCK_LOCATION_MESSAGE } from './src/location';
+import { initializePushHandling } from './src/push';
 import { colors, fonts, space } from './src/theme';
 import type { User } from './src/types';
 
@@ -34,8 +35,8 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="dark" />
-      {/* The same bundle is served as a web app under /app: keep it in a phone-width column
-          instead of stretching edge to edge on a desktop viewport. */}
+      {/* Expo can render a local web preview during development, but production engineers use
+          the native phone app; keep the preview phone-sized if a developer opens it on desktop. */}
       <View style={styles.shell}>
         <View style={styles.frame}>
           {fontsLoaded ? <Root /> : (
@@ -50,21 +51,77 @@ export default function App() {
 function Root() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('home');
+  const [pushRefresh, setPushRefresh] = useState(0);
   const [checking, setChecking] = useState(true);
 
   const onSessionExpired = useCallback(async () => {
     await stopTracking();
+    await deactivateOutboxUser();
     setUser(null);
   }, []);
   const field = useField(user ?? null, onSessionExpired);
+
+  const completeLogout = useCallback(async () => {
+    await stopTracking().catch(() => undefined);
+    // If the phone is offline the server call can fail, but logout() still erases the local token.
+    try { await logout(); } catch { /* the next login remains available without a network call */ }
+    try { await clearOutbox(); } catch { /* no queue or local store unavailable */ }
+    await clearDeviceData();
+    setUser(null);
+  }, []);
+
+  const requestLogout = useCallback(async (ownerId: string) => {
+    const result = await flushOutbox(ownerId).catch(() => null);
+    if (!result || result.pending > 0) {
+      const detail = result
+        ? `ما زال هناك ${result.pending} عنصر محفوظ على الهاتف ولم يصل إلى السيرفر. ابقَ داخل الحساب وجرّب المزامنة، أو سجّل الخروج بعد تأكيد حذف البيانات المعلّقة.`
+        : 'تعذر التأكد من حالة المزامنة. يمكنك البقاء داخل الحساب والمحاولة لاحقًا، أو تسجيل الخروج بعد تأكيد حذف البيانات المعلّقة.';
+      Alert.alert('بيانات لم تتم مزامنتها', detail, [
+        { text: 'البقاء في الحساب', style: 'cancel' },
+        { text: 'تسجيل الخروج وحذف المعلّق', style: 'destructive', onPress: () => { void completeLogout(); } },
+      ]);
+      return;
+    }
+    await completeLogout();
+  }, [completeLogout]);
+
+  useEffect(() => {
+    const unsubscribe = onMockLocationDetected(() => Alert.alert('تم اكتشاف موقع محاكى', MOCK_LOCATION_MESSAGE));
+    void initializePushHandling().catch(() => undefined);
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    let active = true;
+    let subscription: { remove: () => void } | undefined;
+    const openForNotification = (response: import('expo-notifications').NotificationResponse) => {
+      const data = response.notification.request.content.data as { type?: string };
+      if (data.type === 'report_reviewed') { setTab('reports'); setPushRefresh(value => value + 1); }
+      else if (data.type === 'daily_report_reviewed') setTab('daily');
+      void field.refresh();
+    };
+    void import('expo-notifications').then(async Notifications => {
+      if (!active) return;
+      subscription = Notifications.addNotificationResponseReceivedListener(openForNotification);
+      const last = await Notifications.getLastNotificationResponseAsync();
+      if (active && last) {
+        openForNotification(last);
+        await Notifications.clearLastNotificationResponseAsync();
+      }
+    }).catch(() => undefined);
+    return () => { active = false; subscription?.remove(); };
+  }, [field.refresh]);
 
   useEffect(() => {
     (async () => {
       try {
         const token = await getToken();
-        if (!token) { setUser(null); return; }
-        setUser(await me());
-      } catch { setUser(null); }
+        if (!token) { await deactivateOutboxUser(); setUser(null); return; }
+        const signedIn = await me();
+        await activateOutboxUser(signedIn.id);
+        setUser(signedIn);
+      } catch { await deactivateOutboxUser(); setUser(null); }
       finally { setChecking(false); }
     })();
   }, []);
@@ -87,7 +144,9 @@ function Root() {
     return (
       <SafeAreaView style={styles.screen} edges={['top', 'left', 'right', 'bottom']}>
         <StatusBar style="light" />
-        <LoginScreen onLogin={value => { setUser(value); setTab('home'); }} />
+        <LoginScreen onLogin={value => {
+          void activateOutboxUser(value.id).catch(() => undefined).then(() => { setUser(value); setTab('home'); });
+        }} />
       </SafeAreaView>
     );
   }
@@ -99,8 +158,10 @@ function Root() {
         {shift ? <LiveBanner since={shift.started_at} pending={field.pending} trackingActive={field.trackingActive} /> : null}
         {/* The sync warning is app-wide (a phone clock the server refuses), so it lives in the
             top bar where every tab shows it — not inside one screen's card. */}
-        {field.syncNotice ? (
-          <View style={[styles.errorBar, styles.noticeBar]}><Text style={styles.noticeText}>⚠ {field.syncNotice}</Text></View>
+        {field.syncNotice || field.offlineNotice ? (
+          <View style={[styles.errorBar, styles.noticeBar]}>
+            <Text style={styles.noticeText}>⚠ {[field.syncNotice, field.offlineNotice].filter(Boolean).join(' ')}</Text>
+          </View>
         ) : null}
         {field.error && <View style={styles.errorBar}><Text style={styles.errorText}>{field.error}</Text></View>}
         <View style={styles.body}>
@@ -114,25 +175,25 @@ function Root() {
             />
           )}
           {tab === 'visits' && <VisitsScreen user={user} field={field} />}
-          {tab === 'reports' && <ReportScreen onPending={() => void field.refresh()} />}
+          {tab === 'reports' && <ReportScreen ownerId={user.id} onPending={() => void field.refresh()} refreshKey={pushRefresh} />}
           {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} timezone={field.summary?.timezone} />}
           {tab === 'settings' && (
             <SettingsScreen
               user={user}
               field={field}
-              onLogout={async () => {
-                await stopTracking();
-                // Anything still queued was written by THIS engineer. Sending it after the next
-                // person signs in on the same phone filed their collections under the wrong
-                // account, so the queue is drained best-effort and then emptied here.
-                await flushOutbox().catch(() => null);
-                await logout();
-                try { await (await createQueue()).clear(); } catch { /* nothing queued */ }
-                await clearDeviceData();
+              onLogout={() => { void requestLogout(user.id); }}
+              // The server has deleted the account. Stop all producers before clearing its on-device work.
+              onDeleted={async () => {
+                await stopTracking().catch(() => undefined);
+                await deactivateOutboxUser();
                 setUser(null);
+                let outboxCleared = true;
+                try { await clearOutbox(); } catch { outboxCleared = false; }
+                await clearDeviceData();
+                if (!outboxCleared) {
+                  Alert.alert('تم حذف الحساب', 'لكن تعذر محو بعض البيانات المعلقة من الهاتف. لا تسجّل الدخول بحساب آخر على هذا الجهاز قبل التواصل مع المسؤول.');
+                }
               }}
-              // The account is already gone on the server, so there is nothing left to log out of.
-              onDeleted={async () => { await stopTracking(); await clearDeviceData(); setUser(null); }}
             />
           )}
         </View>

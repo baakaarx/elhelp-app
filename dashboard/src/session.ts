@@ -1,9 +1,6 @@
 import { api, post, setToken, getToken } from './api';
 import type { User } from './types';
 
-/** The Expo web build is served by the same API under /app. */
-export const ENGINEER_APP_PATH = '/app';
-
 /**
  * Surface the reason the server actually gave instead of a blanket "try again" message.
  * A bare status code with no explanation is the only clue an operator can act on, so the
@@ -18,8 +15,10 @@ async function failureText(res: Response, fallback: string): Promise<string> {
   return `${fallback} (${res.status})`;
 }
 
-export async function login(email: string, password: string) {
-  const res = await post<{ token: string; expiresAt: number; user: User }>('/api/auth/login', { email, password });
+/** `code` is the six-digit second factor, sent only on the second attempt. */
+export async function login(email: string, password: string, code?: string) {
+  const res = await post<{ token: string; expiresAt: number; user: User }>('/api/auth/login',
+    code ? { email, password, code } : { email, password });
   setToken(res.token);
   return res.user;
 }

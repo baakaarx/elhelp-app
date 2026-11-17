@@ -3,6 +3,15 @@ import type { Request, Response, NextFunction } from 'express';
 import type { Store, Row } from './db.js';
 
 export const SESSION_MS = 12 * 3600000;
+/**
+ * However often a session is used, it dies this long after it was created.
+ *
+ * A sliding expiry with no ceiling is a permanent credential: a token copied off a phone that is
+ * then lost, or lifted from a browser profile, stays alive for as long as whoever holds it keeps
+ * using it. Thirty days is long enough that the engineer never notices — the app is open every
+ * working day — and short enough that a forgotten token stops being a key.
+ */
+export const MAX_SESSION_MS = 30 * 86400000;
 export function hashPassword(password: string): string {
   const salt = randomBytes(16).toString('hex');
   return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
@@ -27,8 +36,30 @@ export function publicUser(row: Row) {
  */
 export function sessionUser(store: Store, token: unknown): Row | undefined {
   if (typeof token !== 'string' || token.length < 20 || token.length > 300) return undefined;
+  const now = Date.now();
   return store.get(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
-    WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`, tokenHash(token), Date.now());
+    WHERE s.token_hash=? AND s.expires_at>? AND s.created_at + ?>? AND u.active=1`,
+  tokenHash(token), now, MAX_SESSION_MS, now);
+}
+/**
+ * A session in use never dies mid-shift.
+ *
+ * The expiry was fixed at twelve hours from the login, so an engineer who signed in at eight in
+ * the morning was signed out at eight in the evening — in the middle of his day, on a phone that
+ * then stopped reporting his position. A used session now slides forward; the write is skipped
+ * unless the row is at least a minute old, so this costs at most one UPDATE per minute per
+ * session, not one per request.
+ */
+export function touchSession(store: Store, token: string): boolean {
+  const now = Date.now();
+  // `MIN` is the ceiling: the row slides, but never past the day this session was born.
+  const nextExpiry = now + SESSION_MS;
+  const result = store.run(`UPDATE sessions SET expires_at=MIN(?, created_at + ?)
+    WHERE token_hash=? AND expires_at>? AND expires_at<=?
+      AND expires_at < MIN(?, created_at + ?)`,
+  nextExpiry, MAX_SESSION_MS, tokenHash(token), now, now + SESSION_MS - 60000,
+  nextExpiry, MAX_SESSION_MS);
+  return Number(result.changes) > 0;
 }
 export function createSession(store: Store, userId: string) {
   const now = Date.now();
@@ -43,13 +74,23 @@ export const SESSION_COOKIES: Record<ClientRole, string> = { admin: 'mandoub_adm
 const LEGACY_COOKIE = 'mandoub_session';
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+export function clientRoleMismatch(client: ClientRole) {
+  return {
+    error: client === 'admin'
+      ? 'حسابات المهندسين تستخدم APK على Android أو موقع المهندس على iPhone. لوحة الإدارة مخصصة للمديرين.'
+      : 'حساب المدير يستخدم لوحة المتابعة على الويب. عميل المهندسين على الهاتف أو /app مخصص للمهندسين.',
+    code: 'CLIENT_ROLE_MISMATCH',
+  };
+}
+
 function cookieSecure(req: Request): boolean {
   return req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
 }
 /**
- * `Lax` in every environment. The dashboard and the engineer web build are served by the same
- * origin as the API, so a cross-site cookie buys nothing — while `SameSite=None` would let any
- * sibling subdomain drive the session for state-changing requests.
+ * `Lax` in every environment. The manager website is served by the same origin as the API, so a
+ * cross-site cookie buys nothing — while `SameSite=None` would let any sibling subdomain drive
+ * the session for state-changing requests. The native engineer app sends a scoped client hint
+ * and bearer token; it does not depend on cross-site cookies.
  */
 function cookieSameSite(_req: Request): 'lax' { return 'lax'; }
 function readCookie(req: Request, name: string): string | undefined {
@@ -63,7 +104,7 @@ function readCookie(req: Request, name: string): string | undefined {
   }
   return undefined;
 }
-function clientHint(req: Request): ClientRole | undefined {
+export function clientHint(req: Request): ClientRole | undefined {
   const hint = req.headers['x-mandoub-client'] ?? req.query.client;
   return hint === 'admin' || hint === 'rep' ? hint : undefined;
 }
@@ -72,7 +113,10 @@ export function cookieRequestAllowed(req: Request): boolean {
   const site = req.headers['sec-fetch-site'];
   if (typeof site === 'string') {
     if (!['same-origin', 'same-site', 'none'].includes(site)) return false;
-    if (UNSAFE_METHODS.has(req.method) && site === 'none') return false;
+    // SameSite cookies are also sent to a sibling subdomain. `same-site` is therefore not a
+    // sufficient CSRF signal for a state-changing request: only accept cookie writes from the
+    // exact origin that served the session. Native clients use bearer tokens, not this fallback.
+    if (UNSAFE_METHODS.has(req.method) && site !== 'same-origin') return false;
     return true;
   }
   if (!UNSAFE_METHODS.has(req.method)) return true;
@@ -91,7 +135,7 @@ export function cookieRequestAllowed(req: Request): boolean {
 export function cookieToken(req: Request, role?: ClientRole): string | undefined {
   if (!cookieRequestAllowed(req)) return undefined;
   const hint = clientHint(req);
-  // A rep page must not borrow the manager cookie on admin routes (and vice versa).
+  // The engineer app and manager website must not borrow one another's role-scoped cookie.
   if (role && hint && hint !== role) return undefined;
   const wanted = role ?? hint;
   if (wanted) return readCookie(req, SESSION_COOKIES[wanted]);
@@ -142,9 +186,16 @@ export function requireAuth(store: Store, role?: ClientRole) {
       }));
       res.status(401).json({ error: 'انتهت الجلسة أو بيانات الدخول غير صحيحة.' }); return;
     }
+    const hint = clientHint(req);
+    if (hint && user.role !== hint) { res.status(403).json(clientRoleMismatch(hint)); return; }
     if (role && user.role !== role) { res.status(403).json({ error: 'ليست لديك صلاحية لهذا الإجراء.' }); return; }
     res.locals.user = user;
     res.locals.tokenHash = tokenHash(matched);
+    // Slide the session forward, and keep the browser cookie alive with it: the row and the
+    // cookie must expire together or the dashboard locks itself out while the row is still good.
+    if (touchSession(store, matched) && req.headers.cookie) {
+      setSessionCookie(req, res, user.role as ClientRole, matched, SESSION_MS);
+    }
     next();
   };
 }

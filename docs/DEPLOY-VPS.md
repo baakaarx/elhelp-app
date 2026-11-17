@@ -37,12 +37,13 @@ sudo mkdir -p /opt/elhelp-app && sudo chown elhelp:elhelp /opt/elhelp-app
 sudo -u elhelp git clone https://github.com/baakaarx/elhelp-app.git /opt/elhelp-app
 cd /opt/elhelp-app
 sudo -u elhelp npm ci
-sudo -u elhelp npm run build          # server/dist + dashboard/dist
-sudo -u elhelp npm run export:mobile  # نسخة الويب من تطبيق المهندس على /app
+sudo -u elhelp npm run build          # server/dist + dashboard/dist + mobile/dist
 ```
 
-> `mobile/dist` يجب أن يكون موجودًا وقت البناء ليُقدَّم على `/app`، لذا نفّذ التصدير
-> **قبل** إعادة تشغيل الخدمة. الأمر `npm run build` لا يصدّر الموبايل.
+يُبنى موقع مهندس الميدان من Expo ويُقدَّم على `/app/` من العملية نفسها، بينما تظل لوحة المدير
+على `/`. نسخة الويب تستخدم الـAPI من الأصل نفسه. لمهندسي iPhone، استخدم نطاقًا فرعيًا منفصلًا
+(مثل `field.your-company.com`) بدل مجلد `/app` على نطاق المدير؛ تخزين الجلسة في المتصفح مرتبط
+بالأصل، والنطاق المنفصل يمنع مشاركة التخزين المحلي مع جلسة المدير.
 
 ## ٤) الإعدادات
 
@@ -77,7 +78,7 @@ sudo chmod 600 /opt/elhelp-app/server/.env
 
 - أول تشغيل يُنشئ حساب المدير من `ADMIN_EMAIL` + `ADMIN_PASSWORD`. بعد ذلك لا يُعاد إنشاؤه،
   وتغيير كلمة المرور من داخل اللوحة (**هويتي ← كلمة المرور**) أو شاشة «حسابي» في التطبيق.
-- `ALLOWED_ORIGINS` لا بد أن يطابق الدومين الفعلي، وإلا رُفضت طلبات المتصفح.
+- `ALLOWED_ORIGINS` قائمة للأصول المتقاطعة فقط؛ لوحة المدير وموقع المهندس في هذا النشر يستخدم كل منهما API من أصله نفسه ولا يحتاجان إلى CORS. لا تضف نطاقًا لمجرد وجوده.
 - `TRUST_PROXY`: اتركه `loopback` مع Caddy على نفس الجهاز. لو السيرفر خلف Docker أو Proxy آخر
   اضبطه على `1` أو نطاق الشبكة — بدونه كل الطلبات تظهر من `127.0.0.1` فيصطدم الفريق كله بحد
   محاولات الدخول معًا. راجع [`docs/SECURITY.md`](SECURITY.md).
@@ -106,6 +107,33 @@ sudo systemctl reload caddy
 
 الدومين لازم يكون `A record` على IP السيرفر قبل تشغيل Caddy، وإلا فشل إصدار الشهادة.
 
+### نطاق منفصل لمهندسي iPhone (موصى به)
+
+أضف `A record` ثانيًا لـ`field.your-company.com` على نفس الـVPS، ثم أضف هذا الموقع في
+`/etc/caddy/Caddyfile` بجانب نطاق المدير. الجذر يحوّل إلى واجهة المهندس، وتبقى طلبات `/api`
+والملفات تمر إلى Node على الجهاز نفسه:
+
+```caddyfile
+field.your-company.com {
+    @root path /
+    redir @root /app/ 308
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {host}
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}
+```
+
+بعدها أعد تحميل Caddy، واستخدم `https://field.your-company.com/app/` على iPhone.
+لأن النطاق مختلف عن لوحة المدير، لا تتشارك الصفحتان رموز الجلسات المخزنة في المتصفح.
+
 ## ٧) الجدار الناري
 
 ```bash
@@ -126,6 +154,16 @@ sudo crontab -e    # 30 2 * * * DB_PATH=/var/lib/elhelp/mandoub.db /usr/local/bi
 ```
 
 النسخ تُحفظ مضغوطة في `/var/lib/elhelp/backups` ويُحذف ما تخطى ١٤ يومًا.
+
+> **اتأكد من النسخة الأولى بعينك** بعد ما تسطّب السكربت (الإصدار القديم من السكربت كان مكسورًا
+> وما كانش بيكتب أي نسخة):
+>
+> ```bash
+> sudo ls -lh /var/lib/elhelp/backups        # لازم تلاقي ملف mandoub-*.db.gz
+> sudo zcat /var/lib/elhelp/backups/mandoub-*.db.gz > /tmp/check.db && ls -lh /tmp/check.db
+> ```
+>
+> السكربت بقى بيفتح النسخة ويتحقق منها بنفسه قبل ما يحتفظ بيها، وبيقفل `/tmp/check.db` بعد الفحص.
 **لا تنسخ ملف SQLite بـ`cp` أثناء العمل** — استخدم السكربت (`VACUUM INTO`) لضمان نسخة متسقة.
 
 ## ٩) التحديث
@@ -135,9 +173,22 @@ cd /opt/elhelp-app
 sudo -u elhelp git pull
 sudo -u elhelp npm ci
 sudo -u elhelp npm run build
-sudo -u elhelp npm run export:mobile
 sudo systemctl restart elhelp
 ```
+
+### المصادقة الثنائية للمدير (اختياري، مستحسن)
+
+```bash
+cd /opt/elhelp-app
+npm run totp                       # يطبع ADMIN_TOTP_SECRET ولينك للمصادقة
+sudo -u elhelp nano /opt/elhelp-app/server/.env   # الصق المفتاح في ADMIN_TOTP_SECRET
+sudo systemctl restart elhelp
+```
+
+- بعدها دخول المدير من اللوحة بيطلب الستة أرقام من تطبيق المصادقة.
+- **احتفظ بالمفتاح في مدير كلمات المرور:** لو ضاع، الحل الوحيد هو حذفه من `server/.env`
+  وإعادة التشغيل من على السيرفر.
+- الدخول بـGoogle/Apple للمدير مش بيطلب الرمز (حماية جوجل/آبل نفسها هي العامل التاني).
 
 ### التأكد بعد كل تحديث (٩٠ فحصًا على السيرفر الحقيقي)
 
@@ -153,7 +204,18 @@ BASE=https://tracking.your-company.com ADMIN_EMAIL=admin@your-company.com \
   البيانات أو تحذف الحساب بعده؛ ما بيمسحش أي بيانات تانية.
 - لو فحص فشل، اسم الفحص هو التقرير: `FAIL ... → السبب` وبعدها `exit 1` (ينفع في cron/CI).
 
-## ١٠) تطبيق الموبايل (APK)
+## ١٠) موقع مهندس iPhone
+
+يُبنى تلقائيًا مع `npm run build` ويُقدَّم من `/app/`؛ استخدم النطاق المنفصل الموصى به أعلاه
+(`https://field.your-company.com/app/`). صفحة المهندس تستخدم تسجيل الدخول كـ`rep`، وواجهات API
+تظل محمية بالجلسة وصلاحية الدور نفسها المستخدمة في التطبيق الأصلي.
+
+**قيد GPS في Safari:** الموقع الجغرافي يحتاج HTTPS وإذنًا صريحًا. iOS قد يوقف صفحة الويب عند
+قفل الشاشة أو الانتقال لتطبيق آخر، لذلك يجب أن يظل Safari مفتوحًا والشاشة نشطة أثناء الوردية.
+النسخة الويب لا تملك تتبعًا في الخلفية مكافئًا لتطبيق Android الأصلي؛ اختبرها على iPhone فعلي
+قبل اعتماد سير العمل الميداني. شاشة بدء الوردية تعرض هذا القيد أيضًا.
+
+## ١١) تطبيق Android (APK)
 
 الدليل الكامل في [`BUILD-APK.md`](BUILD-APK.md). أسرع طريق:
 

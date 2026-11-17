@@ -435,6 +435,8 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .selected-visits ul { display: grid; gap: 6px; }
 .selected-visits li { display: flex; align-items: center; gap: 8px; font-size: .82rem; }
 .selected-visits small { display: block; color: var(--muted); font-size: .74rem; }
+/* A visit typed with no signal, or one that ended without a result: worth a second look. */
+.selected-visits .visit-marks { color: #b45309; font-weight: 600; }
 
 /* ---------- KPI table ---------- */
 .kpi-table-wrap { overflow-x: auto; }
@@ -448,7 +450,9 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .bar { flex: 1; min-width: 42px; height: 7px; border-radius: 999px; background: #e9eff5; overflow: hidden; }
 .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--sky-500), var(--gold-500)); border-radius: 999px; }
 
-.login-switch { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: .88rem; }
-.login-switch a { text-decoration: none; font-weight: 600; }
+.login-engineer-note { margin-top: 16px; padding: 12px 14px; border: 1px solid #d9e5ec; border-radius: 12px; background: #f3f7fa; color: var(--navy-800); }
+.login-engineer-note strong { display: block; margin-bottom: 3px; font-size: .86rem; }
+.login-engineer-note p { color: var(--muted); font-size: .8rem; line-height: 1.65; }
 .boot.redirect { gap: 8px; text-align: center; padding: 24px; }
+.boot.redirect p { margin-top: 8px; }
 .boot.redirect a { font-weight: 600; }

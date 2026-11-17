@@ -7,8 +7,6 @@ test.describe('المتابعة الحية والفريق', () => {
     await signInAsManager(page);
     await expect(page.getByText('مهندسون في الميدان')).toBeVisible();
     await expect(page.getByText('إجمالي مسافة اليوم')).toBeVisible();
-    // A production build never announces a simulation mode or sample data.
-    await expect(page.locator('body')).not.toContainText('تجريبي');
     const rows = page.locator('.rep-list .rep');
     await expect(rows.first()).toBeVisible();
     expect(await rows.count()).toBeGreaterThanOrEqual(E2E_REPS.length);

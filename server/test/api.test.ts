@@ -174,6 +174,15 @@ test('starting a shift without GPS is rejected', async () => {
   assert.equal(res.status, 422);
   assert.match(res.body.error, /GPS/);
 });
+test('starting a shift refuses a coarse network-location estimate', async () => {
+  const res = await rep.post('/api/shifts/start').set(auth(repToken)).send({
+    consentVersion: '1.0', deviceId: 'test-device-001',
+    location: { lat: 31.2, lng: 29.9, accuracy: 500 },
+  });
+  assert.equal(res.status, 422);
+  assert.equal(res.body.code, 'GPS_REQUIRED');
+  assert.match(res.body.error, /دقتها أضعف من ١٢٠/);
+});
 test('starting a shift without explicit consent is rejected', async () => {
   const res = await rep.post('/api/shifts/start').set(auth(repToken)).send({ location: { lat: 31.2, lng: 29.9, accuracy: 10 }, deviceId: 'test-device-001' });
   assert.equal(res.status, 400);
@@ -1333,7 +1342,14 @@ test('Google sign-in only works for an account the manager already created', asy
       .send({ name: 'مهندس جوجل', email: 'gmail.signer@mandoub.test', password: 'FreshPassword123!' });
     assert.equal(created.status, 201, JSON.stringify(created.body));
 
-    const ok = await request(app).post('/api/auth/oauth')
+    const managerOnPhone = await request(app).post('/api/auth/oauth').set('X-Mandoub-Client', 'rep')
+      .send({ provider: 'google', idToken: providerKeys.sign(googleClaims({ email: config.adminEmail, sub: 'manager-on-phone' })) });
+    assert.equal(managerOnPhone.status, 403);
+    assert.equal(managerOnPhone.body.code, 'CLIENT_ROLE_MISMATCH');
+    const managerRow = store.get('SELECT oauth_provider, oauth_subject FROM users WHERE email=?', config.adminEmail)!;
+    assert.equal(String(managerRow.oauth_subject || ''), '', 'a rejected mobile sign-in must not link the manager account');
+
+    const ok = await request(app).post('/api/auth/oauth').set('X-Mandoub-Client', 'rep')
       .send({ provider: 'google', idToken: providerKeys.sign(googleClaims({ email: 'gmail.signer@mandoub.test' })) });
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
     assert.equal(ok.body.user.email, 'gmail.signer@mandoub.test');

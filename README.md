@@ -4,7 +4,7 @@
 وتطبيق موبايل يسجّل الموقع أثناء الوردية فقط بموافقة صريحة، ويرسل تقارير الزيارات والتقرير اليومي
 الموقّع إلكترونيًا (نفس نموذج الورق المستخدم في الشركة) مع تصدير PDF.
 
-> هذا المستودع يحتوي على الكود الكامل القابل للتشغيل: API + لوحة التحكم + تطبيق Expo، مع ٩٠ اختبار API.
+> هذا المستودع يحتوي على الكود الكامل القابل للتشغيل: API + لوحة متابعة المدير + APK Android وموقع مهندسي iPhone، مع ٢٣١ اختبارًا للخادم.
 
 ---
 
@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | `server/` | Node ≥ 22.13 · Express 5 · Socket.IO 4 · `node:sqlite` | REST API + بث حي + مولّد PDF عربي + سجل تدقيق |
 | `dashboard/` | React 19 · Vite 8 · Leaflet | خريطة حية، بطاقات الفريق، التقارير اليومية، إدارة الحسابات |
-| `mobile/` | Expo 58 · React Native 0.88 | شاشة رئيسية بملخص اليوم، تسجيل زيارات (check-in/out)، تتبع أمامي وخلفي، تقرير سريع ويومي، صندوق صادر offline |
+| `mobile/` | Expo 58 · React Native 0.88 | APK Android وموقع مهندس iPhone تحت `/app/`: ملخص اليوم، تسجيل الزيارات، تتبع الوردية، التقارير، وصندوق صادر يعمل دون اتصال |
 | `e2e/` | Playwright | اختبارات المتصفح للدخول والخريطة والتقارير |
 
 npm workspaces من الجذر، بدون monorepo tooling إضافي.
@@ -52,23 +52,22 @@ npm run dev                      # API على :3000 ولوحة التحكم عل
 
 | المسار | التطبيق |
 | --- | --- |
-| `/` | **لوحة المدير** |
-| `/app` | **تطبيق المهندس** (نسخة الويب، تحتاج `npm run export:mobile`) |
+| `/` | **موقع متابعة المدير** — لوحة الويب الإدارية |
+| `/app/` | **موقع مهندس الميدان** — مناسب لـSafari على iPhone؛ يحتاج HTTPS، ولا يدعم تتبع GPS بالخلفية عند قفل الشاشة |
 
-حساب المهندس على لوحة المدير يُرفض ويُحوَّل تلقائيًا إلى `/app`، حتى لا يدخل على واجهة إدارية فارغة.
+لأمان الجلسات، انشر موقع المهندسين على نطاق منفصل مثل `field.your-company.com`، ولوحة المدير على `tracking.your-company.com`. الحزمة تُبنى محليًا مع `npm run build` وتُخدم من الخادم نفسه؛ راجع `docs/DEPLOY-VPS.md` لإعداد DNS وCaddy. تطبيق Android الأصلي يُوزّع كـAPK.
 
 ## أوامر الجذر
 
 ```bash
 npm run dev         # API + لوحة التحكم مع إعادة التحميل
 npm run dev:mobile  # Expo dev server
-npm run build       # بناء server ثم dashboard
-npm start           # تشغيل الـ API (يقدّم dashboard/dist تلقائيًا)
-npm test            # ٨٢ اختبار API (node:test + supertest + socket.io-client)
+npm run build       # server + لوحة المدير + حزمة ويب المهندسين على /app/
+npm start           # تشغيل الـ API (يقدّم dashboard/dist وmobile/dist تلقائيًا)
+npm test            # اختبارات node:test + supertest + socket.io-client
 npm run typecheck   # tsc لكل الوركسبيسز
 npm run test:e2e    # Playwright (يبدأ خادمًا معزولًا على 3100/5174)
-npm run export:mobile  # تصدير نسخة الويب من التطبيق
-npm run preview     # بناء + تصدير الموبايل + تقديم كل شيء على :5173 (يحتاج ADMIN_EMAIL/PASSWORD)
+npm run preview     # بناء + تقديم الموقعين على :5173 (يحتاج ADMIN_EMAIL/PASSWORD)
 ```
 
 ## متغيرات البيئة
@@ -138,14 +137,16 @@ GET    /api/daily-reports/:id/pdf
 ## النشر
 
 ```bash
-docker build -t elhelb-mandoub .
+docker build -f server/Dockerfile -t elhelb-mandoub .
 docker run -p 3000:3000 -v mandoub-data:/data \
   -e NODE_ENV=production -e ADMIN_EMAIL=admin@company.com -e ADMIN_PASSWORD='…' \
   -e ALLOWED_ORIGINS=https://tracking.company.com -e DB_PATH=/data/mandoub.db elhelb-mandoub
 ```
 
-- التطبيق يقدّم `dashboard/dist` من نفس السيرفر (مسار واحد، بلا CORS).
-- استخدم HTTPS ونطاق ثابت؛ الكوكيز تصبح `Secure; SameSite=None` تلقائيًا خلف TLS.
+- التطبيق يقدّم `dashboard/dist` على `/` و`mobile/dist` على `/app/` من الخادم نفسه.
+  لمهندسي iPhone، استخدم نطاقًا فرعيًا مستقلًا كما في `docs/DEPLOY-VPS.md` لعزل جلسة المتصفح.
+- لو فعّلت الدخول الاجتماعي في صورة Docker، مرّر `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` و`EXPO_PUBLIC_APPLE_WEB_CLIENT_ID` كـbuild args؛ هذه معرّفات عامة وليست أسرارًا. مفاتيح التحقق تبقى في `server/.env`.
+- استخدم HTTPS ونطاق ثابت؛ الكوكيز تصبح `Secure; SameSite=Lax` تلقائيًا خلف TLS.
 - `ALLOWED_ORIGINS` قائمة صريحة — لا تستخدم `*`.
 - `/privacy` صفحة سياسة خصوصية عامة (مطلوبة للمتاجر) تُولَّد من إعداد السيرفر، والبريد الظاهر عليها من `PRIVACY_CONTACT`.
 - انسخ نسخة احتياطية من ملف SQLite (أو استخدم قرصًا دائمًا) — البيانات كلها هناك.
@@ -154,8 +155,9 @@ docker run -p 3000:3000 -v mandoub-data:/data \
 ### النشر على VPS
 
 النسخة النهائية تعمل كعملية واحدة دائمة (Express + Socket.IO + ملف SQLite على قرص ثابت).
-الدليل الكامل خطوة بخطوة في [`docs/DEPLOY-VPS.md`](docs/DEPLOY-VPS.md)، ومراجعة الأمان الأخيرة قبل
-النشر (ما تم إصلاحه وإعدادات السيرفر المطلوبة) في [`docs/SECURITY.md`](docs/SECURITY.md)، وملفاته الجاهزة في:
+الدليل الكامل خطوة بخطوة في [`docs/DEPLOY-VPS.md`](docs/DEPLOY-VPS.md)، ومراجعة الأمان في
+[`docs/SECURITY.md`](docs/SECURITY.md)، وحالة مراجعة الفرع والاختبارات والقيود المتبقية في
+[`docs/REVIEW-STATUS.md`](docs/REVIEW-STATUS.md)، وملفاته الجاهزة في:
 
 - `deploy/elhelp.service` — خدمة systemd (إعادة تشغيل تلقائي بعد إعادة الإقلاع).
 - `deploy/Caddyfile` — HTTPS تلقائي عبر Let's Encrypt.
@@ -183,9 +185,9 @@ sudo cp deploy/elhelp.service /etc/systemd/system/ && sudo systemctl enable --no
 ## الاختبارات و CI
 
 ```bash
-npm test          # # tests 82 · # pass 82 · # fail 0
+npm test          # ٢٣١ اختبارًا · كلها ناجحة
 npm run typecheck # لا أخطاء
-npm run build     # server/dist + dashboard/dist
+npm run build     # server/dist + dashboard/dist + mobile/dist
 ```
 
 `.github/workflows/ci.yml` يشغّل على Node 24: `npm ci` → `typecheck` → `npm test` → `build`،

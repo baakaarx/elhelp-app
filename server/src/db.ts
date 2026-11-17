@@ -9,6 +9,20 @@ const STALE_SHIFT_MS = 18 * 3600000;
 const DEFAULT_REP_COLOR = '#28745b';
 /** Written into `visits.outcome` when the system closed a visit nobody ended. */
 export const AUTO_CLOSED_OUTCOME = 'أُغلقت تلقائيًا: انتهت الوردية قبل تسجيل النتيجة';
+/**
+ * The hourly sweep, and the reason it may fail.
+ *
+ * `cleanup` runs unattended at three in the morning inside a timer: a full disk, a lock held past
+ * `busy_timeout`, or a corrupt index makes it throw — and an exception inside a timer is an
+ * uncaught exception, so Node exits and the whole installation goes dark until someone notices.
+ * Losing one sweep costs nothing (the next one is an hour later); losing the process costs the
+ * manager the day's trail. So the error is logged and the server keeps serving.
+ */
+export function runCleanup(store: Pick<Store, 'cleanup'>, retentionDays: number): boolean {
+  try { store.cleanup(retentionDays); return true; }
+  catch (error) { console.error('[cleanup] the sweep failed, the server keeps running:', error); return false; }
+}
+
 export class Store {
   db: DatabaseSync;
   constructor(path: string) {
@@ -109,6 +123,9 @@ export class Store {
         -- 1 when the shift ended (or the cleanup ran) before the engineer recorded a result,
         -- so the row is a real check-in but its duration is an artifact, not a measured visit.
         auto_closed INTEGER NOT NULL DEFAULT 0,
+        -- 1 when the row was typed on the phone with no signal and sent later, so its times come
+        -- from the engineer's clock: the manager sees the difference instead of guessing.
+        recorded_offline INTEGER NOT NULL DEFAULT 0,
         in_lat REAL, in_lng REAL, in_accuracy REAL,
         out_lat REAL, out_lng REAL,
         created_at INTEGER NOT NULL
@@ -124,6 +141,28 @@ export class Store {
         duration_minutes INTEGER NOT NULL, device_id TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL
       );
+      -- Expo tokens are scoped to a user and device. They can be rotated at each install, so one
+      -- device may replace its token without leaving stale credentials behind.
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        platform TEXT NOT NULL CHECK(platform IN ('ios','android')),
+        device_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        UNIQUE(user_id, device_id)
+      );
+      CREATE INDEX IF NOT EXISTS push_tokens_user ON push_tokens(user_id);
+      -- A single OS-flagged simulated-location event per shift is enough for the manager to
+      -- investigate, and prevents a fast GPS stream from turning detection into an event flood.
+      CREATE TABLE IF NOT EXISTS mock_location_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        shift_id TEXT NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+        device_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(shift_id)
+      );
+      CREATE INDEX IF NOT EXISTS mock_location_events_time ON mock_location_events(created_at);
     `);
     // The product no longer ships simulated engineers. Deleting the marker without deleting
     // the rows would have left fake people inside a live account, so the rows go first.
@@ -131,8 +170,8 @@ export class Store {
       this.run('DELETE FROM users WHERE is_demo=1');
       this.db.exec('ALTER TABLE users DROP COLUMN is_demo');
     }
-    // `source` used to allow 'demo'. SQLite cannot alter a CHECK constraint, so the table is
-    // rebuilt once and any legacy simulated track is dropped.
+    // The legacy SQLite table allowed an additional location source. Rebuild it with the
+    // GPS-only constraint and keep only genuine GPS rows.
     const locationsSql = String(this.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='locations'")?.sql || '');
     if (locationsSql.includes("'demo'")) {
       this.db.exec(`
@@ -179,6 +218,7 @@ export class Store {
       "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
       "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE visits ADD COLUMN recorded_offline INTEGER NOT NULL DEFAULT 0",
     ]) { try { this.db.exec(sql); } catch {} }
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
@@ -196,6 +236,7 @@ export class Store {
     this.run('DELETE FROM locations WHERE recorded_at < ?', cutoff);
     this.run('DELETE FROM sessions WHERE expires_at < ?', Date.now());
     this.run('DELETE FROM audit_log WHERE created_at < ?', cutoff);
+    this.run('DELETE FROM mock_location_events WHERE created_at < ?', cutoff);
     this.run('DELETE FROM shifts WHERE ended_at IS NOT NULL AND ended_at < ? AND NOT EXISTS (SELECT 1 FROM locations WHERE locations.shift_id = shifts.id)', cutoff);
     this.run('DELETE FROM reports WHERE created_at < ?', cutoff);
     this.run('DELETE FROM daily_reports WHERE created_at < ?', cutoff);
@@ -217,16 +258,17 @@ export class Store {
         AND COALESCE((SELECT MAX(recorded_at) FROM locations WHERE locations.shift_id = shifts.id), started_at) < ?`,
     staleBefore, staleBefore);
     // A visit left open when the app was killed (or the phone died) blocked the next check-in
-    // with "لديك زيارة مفتوحة" and kept a stopwatch running for days on both screens. It is
-    // closed here at zero duration, marked as automatic, and keeps the result if one was typed.
-    // The duration is not measured, so the KPI average ignores it (`auto_closed`).
+    // with "لديك زيارة مفتوحة" and kept a stopwatch running for days on both screens. Close it
+    // and mark it as automatic, but leave checkout time and duration NULL: the server cannot
+    // know when the engineer actually left, and a fabricated zero looks like a measured visit.
+    // The KPI average also excludes these rows (`auto_closed`).
     // A visit is opened inside a shift and can only be closed by one, so a visit still open for
     // an account with no open shift is over: its shift was closed (by the rule above, by another
     // device, or by the engineer's own stop that never reached the server). Waiting for the
     // 18-hour clock left it open — and therefore invisible on the "today" screen while it kept
     // blocking the next check-in with "لديك زيارة مفتوحة" — for a whole working day.
     this.run(`UPDATE visits SET status='closed', auto_closed=1,
-        checked_out_at = checked_in_at, duration_seconds = 0,
+        checked_out_at = NULL, duration_seconds = NULL,
         outcome = CASE WHEN TRIM(COALESCE(outcome,''))='' THEN ? ELSE outcome END
       WHERE status='open' AND (checked_in_at < ?
         OR NOT EXISTS (SELECT 1 FROM shifts s WHERE s.user_id = visits.user_id AND s.ended_at IS NULL))`,

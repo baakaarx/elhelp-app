@@ -6,21 +6,25 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import { z } from 'zod';
-import { AUTO_CLOSED_OUTCOME, Store } from './db.js';
+import { AUTO_CLOSED_OUTCOME, runCleanup, Store } from './db.js';
 import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js';
-import { createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
-import { dayBounds, distanceMeters, localDate, type GeoPoint } from './geo.js';
+import { clientHint, clientRoleMismatch, createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
+import { dayBounds, distanceMeters, haversine, localDate, type GeoPoint } from './geo.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { deleteAccountPage, privacyPage } from './privacy.js';
 import { OauthError, verifyIdToken } from './oauth.js';
+import { verifyTotp } from './totp.js';
 import { createAgentRouter } from './agent/router.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 import { contentSecurityPolicy } from './csp.js';
+import { isPushToken, sendPush } from './push.js';
 
 const CONSENT_VERSION = '1.0';
 /** How far a phone's clock may run ahead before every fix in the batch is refused. */
 const CLOCK_SKEW_TOLERANCE_MS = 10 * 60000;
+/** GPS points looser than this are cell/network guesses, not reliable field positions. */
+const MAX_GPS_ACCURACY_M = 120;
 /** Drift below this is normal jitter around "now" and is not treated as a wrong clock. */
 const CLOCK_SKEW_FLOOR_MS = 60000;
 const credentials = z.object({ email: z.email().max(254).transform(x => x.toLowerCase().trim()), password: z.string().min(1).max(200) });
@@ -48,16 +52,29 @@ function nextRepColor(used: string[]): string {
 }
 const pointSchema = z.object({
   id: z.uuid(), shiftId: z.uuid(), lat: z.number().finite().min(-90).max(90), lng: z.number().finite().min(-180).max(180),
-  accuracy: z.number().finite().min(0).max(100000).nullable(), speed: z.number().finite().min(0).max(150).nullable(),
+  accuracy: z.number().finite().positive().max(MAX_GPS_ACCURACY_M).nullable(), speed: z.number().finite().min(0).max(150).nullable(),
   heading: z.number().finite().min(0).lt(360).nullable(), battery: z.number().finite().min(0).max(100).nullable(),
   recordedAt: z.number().int().nonnegative(),
 }).strict();
 const batchSchema = z.object({ points: z.array(pointSchema).min(1).max(100) }).strict();
+const pushTokenSchema = z.object({
+  token: z.string().trim().min(20).max(256).refine(isPushToken, 'Expo push token غير صالح.'),
+  platform: z.enum(['ios', 'android']),
+  deviceId: z.string().trim().min(3).max(120),
+}).strict();
+const pushTokenDeleteSchema = z.object({ deviceId: z.string().trim().min(3).max(120) }).strict();
+const mockLocationSchema = z.object({
+  shiftId: z.uuid(), deviceId: z.string().trim().min(3).max(120),
+}).strict();
 export const REPORT_TYPES = ['visit', 'order', 'collection', 'note', 'issue', 'other'] as const;
 const reportLocation = z.object({
   lat: z.number().finite().min(-90).max(90), lng: z.number().finite().min(-180).max(180),
   accuracy: z.number().finite().min(0).max(100000).nullable(),
 }).strict();
+/** A required, usable GPS fix for operations whose location is mandatory. */
+const gpsLocation = reportLocation.extend({
+  accuracy: z.number().finite().positive().max(MAX_GPS_ACCURACY_M).nullable(),
+});
 const newReport = z.object({
   id: z.uuid(), type: z.enum(REPORT_TYPES),
   title: z.string().trim().min(2).max(120), body: z.string().trim().max(4000).default(''),
@@ -68,7 +85,7 @@ const newReport = z.object({
 
 const startShiftSchema = z.object({
   consentVersion: z.literal(CONSENT_VERSION),
-  location: reportLocation,
+  location: gpsLocation,
   deviceId: z.string().trim().min(3).max(120),
   deviceName: z.string().trim().max(120).optional().default(''),
 }).strict();
@@ -81,9 +98,14 @@ const newVisit = z.object({
   phone: z.string().trim().max(30).default(''),
   purpose: z.enum(['visit', 'order', 'collection', 'note', 'issue', 'other']).default('visit'),
   notes: z.string().trim().max(1000).default(''),
-  location: reportLocation,
+  location: gpsLocation,
   deviceId: z.string().trim().min(3).max(120).optional(),
   deviceName: z.string().trim().max(120).optional(),
+  /**
+   * The moment the engineer actually checked in, sent only by the offline queue (a live request
+   * has no reason to name a time the server already knows).
+   */
+  recordedAt: z.number().int().nonnegative().optional(),
 }).strict();
 const closeVisit = z.object({
   /**
@@ -95,7 +117,12 @@ const closeVisit = z.object({
   notes: z.string().trim().max(1000).default(''),
   amount: z.number().finite().min(0).max(1_000_000_000).nullable().default(null),
   location: reportLocation.nullable().default(null),
+  /** Same as a check-in: the instant the phone closed the visit, when it had no signal. */
+  recordedAt: z.number().int().nonnegative().optional(),
 }).strict();
+
+/** How far back a visit typed with no signal may still be accepted. */
+const OFFLINE_WINDOW_MS = 24 * 3600000;
 
 export function createApp(overrides: Partial<Config> = {}) {
   const config = { ...readConfig(), ...overrides };
@@ -125,10 +152,9 @@ export function createApp(overrides: Partial<Config> = {}) {
    */
   app.use((req, res, next) => {
     if (config.production && !req.path.startsWith('/api') && !req.path.startsWith('/socket.io')) {
-      const engineerApp = req.path === '/app' || req.path.startsWith('/app/');
       // The request's own host is what Socket.IO upgrades to, so the policy names it instead of
       // allowing a websocket to any host at all.
-      res.setHeader('Content-Security-Policy', contentSecurityPolicy(engineerApp, req.headers.host));
+      res.setHeader('Content-Security-Policy', contentSecurityPolicy(req.headers.host));
     }
     next();
   });
@@ -157,6 +183,69 @@ export function createApp(overrides: Partial<Config> = {}) {
   const adminOnly = requireAuth(store, 'admin');
   const repOnly = requireAuth(store, 'rep');
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
+  const mockLocationLimiter = rateLimit({ windowMs: 60 * 60000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تم تسجيل بلاغات كثيرة عن الموقع الوهمي. حاول بعد ساعة.' } });
+  const pushRegistrationLimiter = rateLimit({ windowMs: 60 * 60000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'طلبات تسجيل الإشعارات كثيرة. حاول بعد ساعة.' } });
+  function notifyUser(userId: string, title: string, body: string, data: Record<string, unknown>) {
+    const tokens = store.all('SELECT token FROM push_tokens WHERE user_id=?', userId) as Array<{ token: string }>;
+    if (!tokens.length) return;
+    void sendPush(tokens.map(row => ({ to: String(row.token), title, body, data }))).then(result => {
+      try {
+        for (const token of result.invalid) store.run('DELETE FROM push_tokens WHERE token=?', token);
+        if (result.failed) console.warn(`[push] ${result.failed} notification(s) were not accepted; token records remain registered for future events.`);
+      } catch (error) { console.error('[push] could not update push-token state:', error); }
+    }).catch(error => console.error('[push] send failed without affecting the saved operation:', error));
+  }
+  app.get('/api/push/status', repOnly, (_req, res) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ enabled: !!store.get('SELECT 1 FROM push_tokens WHERE user_id=? LIMIT 1', res.locals.user.id) });
+  });
+  app.post('/api/push/token', repOnly, pushRegistrationLimiter, (req, res) => {
+    const parsed = pushTokenSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'رمز الإشعارات أو بيانات الجهاز غير صالحة.' }); return; }
+    const user = res.locals.user;
+    const boundDevice = String(user.device_id || '').trim();
+    if (!boundDevice) {
+      res.status(409).json({ error: 'ابدأ وردية من هذا الهاتف مرة واحدة قبل تفعيل إشعارات المراجعة.', code: 'DEVICE_NOT_BOUND' }); return;
+    }
+    if (parsed.data.deviceId !== boundDevice) {
+      res.status(403).json({ error: 'رمز الإشعارات صادر من هاتف غير مرتبط بالحساب.', code: 'DEVICE_MISMATCH' }); return;
+    }
+    const owner = store.get('SELECT user_id, device_id FROM push_tokens WHERE token=?', parsed.data.token) as { user_id: string; device_id: string } | undefined;
+    if (owner && (owner.user_id !== user.id || owner.device_id !== parsed.data.deviceId)) {
+      res.status(409).json({ error: 'رمز الإشعارات مرتبط بحساب أو جهاز آخر.', code: 'PUSH_TOKEN_IN_USE' }); return;
+    }
+    const now = Date.now();
+    store.run(`INSERT INTO push_tokens(token,user_id,platform,device_id,created_at,updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(user_id,device_id) DO UPDATE SET token=excluded.token, platform=excluded.platform, updated_at=excluded.updated_at`,
+    parsed.data.token, user.id, parsed.data.platform, parsed.data.deviceId, now, now);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ ok: true });
+  });
+  app.delete('/api/push/token', repOnly, (req, res) => {
+    const parsed = pushTokenDeleteSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'معرّف الجهاز غير صالح.' }); return; }
+    store.run('DELETE FROM push_tokens WHERE user_id=? AND device_id=?', res.locals.user.id, parsed.data.deviceId);
+    res.json({ ok: true });
+  });
+  app.post('/api/security/mock-location', repOnly, mockLocationLimiter, (req, res) => {
+    const parsed = mockLocationSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'بيانات رصد الموقع غير صالحة.' }); return; }
+    const user = res.locals.user;
+    const shift = store.get('SELECT id, device_id FROM shifts WHERE id=? AND user_id=? AND ended_at IS NULL', parsed.data.shiftId, user.id) as { id: string; device_id: string } | undefined;
+    if (!shift) { res.status(409).json({ error: 'الوردية غير مفتوحة لهذا الحساب.', code: 'SHIFT_NOT_OPEN' }); return; }
+    const boundDevice = String(shift.device_id || user.device_id || '').trim();
+    if (!boundDevice) { res.status(409).json({ error: 'الوردية غير مرتبطة بجهاز موثّق.', code: 'DEVICE_NOT_BOUND' }); return; }
+    if (parsed.data.deviceId !== boundDevice) {
+      res.status(403).json({ error: 'بلاغ الموقع صادر من هاتف غير مرتبط بالوردية.', code: 'DEVICE_MISMATCH' }); return;
+    }
+    const result = store.run('INSERT OR IGNORE INTO mock_location_events(id,user_id,shift_id,device_id,created_at) VALUES (?,?,?,?,?)',
+      randomUUID(), user.id, shift.id, parsed.data.deviceId, Date.now());
+    if (result.changes) {
+      store.audit(user.id, 'location.mock_detected', { shiftId: shift.id });
+      invalidateKpis(); broadcast();
+    }
+    res.status(result.changes ? 201 : 200).json({ ok: true, duplicate: !result.changes });
+  });
   const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
   // A month for the whole team is hundreds of thousands of fixes. The page, the CSV and the
   // workbook ask for the same rows seconds apart, so the result is reused — and any change the
@@ -261,7 +350,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
     v.village, v.phone, v.purpose, v.notes, v.outcome, v.status, v.checked_in_at AS checkedInAt,
     v.checked_out_at AS checkedOutAt, v.duration_seconds AS durationSeconds,
-    v.auto_closed AS autoClosed, ${PENDING_RESULT_SQL} AS pendingResult, v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
+    v.auto_closed AS autoClosed, v.recorded_offline AS recordedOffline, ${PENDING_RESULT_SQL} AS pendingResult,
+    v.in_lat AS inLat, v.in_lng AS inLng, v.in_accuracy AS inAccuracy,
     v.out_lat AS outLat, v.out_lng AS outLng,
     u.name AS repName, u.color AS repColor
     FROM visits v JOIN users u ON u.id = v.user_id`;
@@ -269,7 +359,12 @@ export function createApp(overrides: Partial<Config> = {}) {
   // client can compare with `=== true` instead of guessing (`mobile/src/VisitSheets.tsx` did,
   // and a closed visit was labelled as if it were still running).
   const asVisit = <T extends Record<string, any> | undefined>(row: T): T =>
-    (row ? { ...row, autoClosed: Boolean(row.autoClosed), pendingResult: Boolean(row.pendingResult) } : row) as T;
+    (row ? {
+      ...row,
+      autoClosed: Boolean(row.autoClosed),
+      pendingResult: Boolean(row.pendingResult),
+      recordedOffline: Boolean(row.recordedOffline),
+    } : row) as T;
   function visitRow(id: string) { return asVisit(store.get(`${VISIT_SELECT} WHERE v.id=?`, id)); }
   function listVisits(filter: { userId?: string; repId?: string; date?: string; status?: string }) {
     const where: string[] = []; const params: any[] = [];
@@ -291,16 +386,28 @@ export function createApp(overrides: Partial<Config> = {}) {
    * Distance over a range, walked one day at a time: loading a month of fixes for one engineer
    * at once is millions of rows on a busy installation, while a single shift fits easily.
    */
-  // A day that ended more than five minutes ago cannot change, so its figures are kept: a
-  // monthly register then costs one day of work instead of thirty.
+  // A completed local calendar day is reused by monthly registers. Late offline fixes and
+  // retention cleanup explicitly invalidate it; otherwise one replay could leave stale distance
+  // in memory for the rest of the process lifetime.
   const DAY_MS = 86400000;
   const dayDistanceCache = new Map<string, { meters: number; points: number }>();
+  function invalidateDistanceDay(userId: string, recordedAt: number) {
+    const date = localDate(config.timezone, recordedAt);
+    const bounds = dayBounds(date, config.timezone);
+    dayDistanceCache.delete(`${userId}|${bounds.start}|${bounds.end}`);
+  }
+  function invalidateDistanceForUser(userId: string) {
+    const prefix = `${userId}|`;
+    for (const key of dayDistanceCache.keys()) if (key.startsWith(prefix)) dayDistanceCache.delete(key);
+  }
   function rangeDistance(userId: string, start: number, end: number) {
     let meters = 0;
     let points = 0;
     const oldestCacheable = Date.now() - config.retentionDays * DAY_MS;
     for (let cursor = start; cursor < end;) {
-      const next = Math.min(end, cursor + DAY_MS);
+      // `dayBounds` follows local midnights (including 23/25-hour DST days). Adding 24 hours
+      // here shifted all later cut points for a month around a clock change.
+      const next = Math.min(end, dayBounds(localDate(config.timezone, cursor), config.timezone).end);
       const key = `${userId}|${cursor}|${next}`;
       const cacheable = next < Date.now() - 5 * 60000 && cursor >= oldestCacheable;
       const hit = cacheable ? dayDistanceCache.get(key) : undefined;
@@ -320,12 +427,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     return { meters: Math.round(meters), points };
   }
-  function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string }) {
+  function listReports(filter: { userId?: string; type?: string; status?: string; repId?: string; from?: string; to?: string }) {
     const where: string[] = []; const params: any[] = [];
     if (filter.userId) { where.push('r.user_id=?'); params.push(filter.userId); }
     if (filter.repId) { where.push('r.user_id=?'); params.push(filter.repId); }
     if (filter.type) { where.push('r.type=?'); params.push(filter.type); }
     if (filter.status) { where.push('r.status=?'); params.push(filter.status); }
+    // The feed is capped at 300 rows; a range is the only way to see an older page of it.
+    if (filter.from) { where.push('r.created_at>=?'); params.push(dayBounds(filter.from, config.timezone).start); }
+    if (filter.to) { where.push('r.created_at<?'); params.push(dayBounds(filter.to, config.timezone).end); }
     const sql = `SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
       r.lat, r.lng, r.accuracy, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt,
       u.name AS repName, u.color AS repColor
@@ -352,8 +462,23 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
   io.on('connection', socket => {
     const user = socket.data.user;
-    const expiryTimer = setTimeout(() => socket.disconnect(true), Math.max(0, socket.data.expiresAt - Date.now()));
-    expiryTimer.unref();
+    /*
+     * A live socket outlives its own expiry when the session keeps sliding (the engineer's app
+     * polls every fifteen seconds), so the timer re-reads the row instead of dropping a working
+     * connection at the twelve-hour mark.
+     */
+    let expiryTimer: NodeJS.Timeout;
+    const scheduleExpiry = () => {
+      const delay = Math.max(1000, socket.data.expiresAt - Date.now());
+      expiryTimer = setTimeout(() => {
+        const session = store.get('SELECT expires_at FROM sessions WHERE token_hash=?', tokenHash(socket.handshake.auth.token));
+        if (!session || Number(session.expires_at) <= Date.now()) { socket.disconnect(true); return; }
+        socket.data.expiresAt = Number(session.expires_at);
+        scheduleExpiry();
+      }, delay);
+      expiryTimer.unref();
+    };
+    scheduleExpiry();
     socket.once('disconnect', () => clearTimeout(expiryTimer));
     socket.join(`user:${user.id}`);
     if (user.role === 'admin') { socket.join('admins'); socket.emit('overview', overview()); }
@@ -376,6 +501,24 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!user || !valid) {
       noteLoginFailure(parsed.data.email);
       res.status(401).json({ error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.' }); return;
+    }
+    const client = clientHint(req);
+    if (client && user.role !== client) { res.status(403).json(clientRoleMismatch(client)); return; }
+    /*
+     * A second factor for the manager account, asked for after the password so a wrong password
+     * never reveals whether two-factor is on. Reps are unaffected: a phone is already bound to one
+     * device, and a field engineer typing a code before every shift was not worth it. Social
+     * sign-in for a manager keeps the provider's own second factor, which is why this lives on the
+     * password route only.
+     */
+    if (user.role === 'admin' && config.adminTotpSecret) {
+      const code = typeof req.body?.code === 'string' ? req.body.code : '';
+      if (!code.trim()) { res.status(401).json({ error: 'أدخل رمز المصادقة الثنائية من تطبيق المصادقة.', code: 'TOTP_REQUIRED' }); return; }
+      if (!verifyTotp(config.adminTotpSecret, code)) {
+        noteLoginFailure(parsed.data.email);
+        res.status(401).json({ error: 'رمز المصادقة غير صحيح أو انتهت صلاحيته — جرّب الرمز الحالي.', code: 'TOTP_INVALID' });
+        return;
+      }
     }
     if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير — سيتم تفعيله قريبًا.', code: 'PENDING_APPROVAL' }); return; }
     if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
@@ -413,6 +556,8 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.status(403).json({ error: 'مفيش حساب في الهلب جروب بالبريد ده. اطلب من مدير المتابعة يضيفك الأول.', code: 'ACCOUNT_NOT_FOUND' });
       return;
     }
+    const client = clientHint(req);
+    if (client && user.role !== client) { res.status(403).json(clientRoleMismatch(client)); return; }
     if (!user.active) { res.status(403).json({ error: 'الحساب متوقف — تواصل مع الإدارة.', code: 'ACCOUNT_DISABLED' }); return; }
     if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير — سيتم تفعيله قريبًا.', code: 'PENDING_APPROVAL' }); return; }
     if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
@@ -451,8 +596,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = z.object({ status: z.enum(['approved', 'rejected', 'pending']) }).strict().safeParse(req.body);
     const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
     if (!parsed.success || !user) { res.status(400).json({ error: 'بيانات الموافقة غير صحيحة.' }); return; }
+    const previousStatus = String(user.approval_status || 'approved');
     store.run('UPDATE users SET approval_status=? WHERE id=?', parsed.data.status, user.id);
     if (parsed.data.status !== 'approved') { store.run('DELETE FROM sessions WHERE user_id=?', user.id); io.in(`user:${user.id}`).disconnectSockets(true); }
+    if (previousStatus !== parsed.data.status) {
+      const message = parsed.data.status === 'approved'
+        ? 'تم تفعيل حسابك. يمكنك تسجيل الدخول ومتابعة عملك.'
+        : parsed.data.status === 'rejected' ? 'تم تحديث حالة حسابك. تواصل مع مدير المتابعة.' : 'حسابك بانتظار مراجعة الإدارة.';
+      notifyUser(user.id, 'تحديث حالة الحساب', message, { type: 'account_status', status: parsed.data.status });
+    }
     store.audit(res.locals.user.id, 'rep.approval', { repId: user.id, status: parsed.data.status });
     invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
@@ -488,6 +640,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
   app.post('/api/auth/logout', auth, (req, res) => {
     if (res.locals.user.role === 'rep') endShift(res.locals.user.id);
+    // Logging out must stop notifications on the old phone before another person can use it.
+    store.run('DELETE FROM push_tokens WHERE user_id=?', res.locals.user.id);
     store.run('DELETE FROM sessions WHERE token_hash=?', res.locals.tokenHash);
     clearSessionCookies(req, res);
     store.audit(res.locals.user.id, 'auth.logout');
@@ -543,6 +697,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
     io.in(`user:${snapshot.id}`).disconnectSockets(true);
     clearSessionCookies(req, res);
+    invalidateDistanceForUser(snapshot.id);
     invalidateKpis(); broadcast();
     res.json({ ok: true });
   });
@@ -627,8 +782,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = startShiftSchema.safeParse(req.body);
     if (!parsed.success) {
       const hasLocation = req.body && typeof req.body.location === 'object' && req.body.location !== null;
+      const gpsIssue = parsed.error.issues.some(issue => issue.path[0] === 'location');
       const hasDevice = req.body && typeof req.body.deviceId === 'string' && req.body.deviceId.trim().length >= 3;
-      if (!hasLocation) { res.status(422).json({ error: 'GPS مطلوب — فعّل الموقع وامنح الإذن قبل بدء الوردية.', code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+      if (!hasLocation || gpsIssue) {
+        res.status(422).json({
+          error: hasLocation ? 'إشارة GPS غير صالحة أو دقتها أضعف من ١٢٠ مترًا. انتظر حتى تثبت الإشارة.' : 'GPS مطلوب — فعّل الموقع وامنح الإذن قبل بدء الوردية.',
+          code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })),
+        }); return;
+      }
       if (!hasDevice) { res.status(422).json({ error: 'الجهاز غير موثّق — أرسل معرّف الهاتف.', code: 'DEVICE_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
       res.status(400).json({ error: 'بيانات بدء الوردية غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
     }
@@ -650,7 +811,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     invalidateKpis(); broadcast();
     res.json({ shift });
   });
-  const idleSchema = z.object({ reason: z.string().trim().min(5).max(1000), location: reportLocation, deviceId: z.string().trim().min(3).max(120) }).strict();
+  const idleSchema = z.object({ reason: z.string().trim().min(5).max(1000), location: gpsLocation, deviceId: z.string().trim().min(3).max(120) }).strict();
   app.post('/api/shifts/idle', repOnly, (req, res) => {
     const parsed = idleSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'سبب الوقوف مطلوب مع الموقع — لا يمكن ترك الحقل فارغًا.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
@@ -709,17 +870,25 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
     }
     let accepted = 0, duplicates = 0;
+    const historicalFixes: number[] = [];
     store.transaction(() => {
       for (const p of parsed.data.points) {
+        const recordedAt = stamped(p.recordedAt, shiftCache.get(p.shiftId) as Record<string, any>);
         const result = store.run(`INSERT OR IGNORE INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.id, res.locals.user.id, p.shiftId, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.battery,
-          stamped(p.recordedAt, shiftCache.get(p.shiftId) as Record<string, any>), now, 'gps');
-        if (result.changes) accepted++; else duplicates++;
+          recordedAt, now, 'gps');
+        if (result.changes) {
+          accepted++;
+          if (recordedAt < now - 5 * 60000) historicalFixes.push(recordedAt);
+        } else duplicates++;
       }
       store.run('UPDATE users SET last_seen=? WHERE id=?', now, res.locals.user.id);
     });
-    // Raw fixes arrive every second, so they only refresh the live view. The KPI cache expires
-    // on its own; clearing it here would make the report recompute on every single position.
+    // Recent fixes cannot belong to a completed cached day, so they only refresh the live view.
+    // A delayed offline batch can change an older report: evict each affected calendar day and
+    // the short-lived response cache, but do not make every second of a live track rebuild KPIs.
+    for (const recordedAt of historicalFixes) invalidateDistanceDay(res.locals.user.id, recordedAt);
+    if (historicalFixes.length) invalidateKpis();
     broadcast();
     res.json({ accepted, duplicates });
   });
@@ -728,7 +897,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = newVisit.safeParse(req.body);
     if (!parsed.success) {
       const hasLoc = req.body && typeof req.body.location === 'object' && req.body.location !== null && typeof req.body.location.lat === 'number';
-      if (!hasLoc) { res.status(422).json({ error: 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.', code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+      const gpsIssue = parsed.error.issues.some(issue => issue.path[0] === 'location');
+      if (!hasLoc || gpsIssue) {
+        res.status(422).json({
+          error: hasLoc ? 'إشارة GPS غير صالحة أو دقتها أضعف من ١٢٠ مترًا. انتظر حتى تثبت الإشارة.' : 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.',
+          code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })),
+        }); return;
+      }
       res.status(400).json({ error: 'راجع بيانات الزيارة: اسم العميل مطلوب.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
     }
     if (req.body && typeof req.body.deviceId === 'string' && req.body.deviceId.trim().length >= 3) {
@@ -741,10 +916,33 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (existing.userId !== res.locals.user.id) { res.status(409).json({ error: 'معرّف الزيارة مستخدم بالفعل.' }); return; }
       res.status(200).json({ visit: existing, duplicate: true }); return;
     }
-    const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
-    if (!shift) { res.status(409).json({ error: 'ابدأ الوردية أولًا قبل تسجيل الزيارة.' }); return; }
+    /*
+     * A visit typed in a field with no signal is sent later by the phone's outbox, naming the
+     * moment it was actually recorded. The server cannot see that moment, so the only thing it
+     * can check is that the time falls inside one of this engineer's own shifts and inside the
+     * window a phone may hold a visit. The row is marked `recordedOffline` so the manager can
+     * tell a live record from a replayed one.
+     */
+    const now = Date.now();
+    let checkedInAt = now;
+    let offline = false;
+    if (data.recordedAt !== undefined) {
+      const at = Number(data.recordedAt);
+      const insideShift = store.get('SELECT id FROM shifts WHERE user_id=? AND started_at<=? AND (ended_at IS NULL OR ended_at>=?) ORDER BY started_at DESC LIMIT 1',
+        res.locals.user.id, at, at);
+      const reason = at > now + 60000 ? 'الوقت المرسل في المستقبل.'
+        : at < now - OFFLINE_WINDOW_MS ? 'الزيارة أقدم من ٢٤ ساعة، مش ممكن تتسجل بأثر رجعي.'
+        : !insideShift ? 'مفيش وردية مسجلة في الوقت ده.'
+        : '';
+      if (reason) { res.status(422).json({ error: `الزيارة المتأخرة مرفوضة: ${reason}`, code: 'OFFLINE_VISIT_REJECTED' }); return; }
+      checkedInAt = at;
+      offline = true;
+    } else {
+      const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+      if (!shift) { res.status(409).json({ error: 'ابدأ الوردية أولًا قبل تسجيل الزيارة.' }); return; }
+    }
     const open = store.get('SELECT id, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status=?', res.locals.user.id, 'open');
-    if (open) {
+    if (open && !offline) {
       // Saying "لديك زيارة مفتوحة" while the visit is not on this screen is how an engineer
       // gets stuck: name the day so he knows where to look (it is listed under "الزيارات").
       const fromEarlier = localDate(config.timezone, Number(open.checkedInAt)) !== localDate(config.timezone);
@@ -756,15 +954,25 @@ export function createApp(overrides: Partial<Config> = {}) {
       });
       return;
     }
-    const now = Date.now();
-    store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,in_lat,in_lng,in_accuracy,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
-      data.district, data.village, data.phone, data.purpose, data.notes, now,
+    /*
+     * A replayed visit that arrives while another visit is open is already over: it is stored
+     * closed with the automatic marker, which is exactly the "missing result" row the engineer
+     * can finish from the visits screen. Refusing it would silently delete a customer visit that
+     * really happened.
+     */
+    const closedOnArrival = Boolean(open);
+    store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
+      data.district, data.village, data.phone, data.purpose, data.notes,
+      closedOnArrival ? 'closed' : 'open', checkedInAt, closedOnArrival ? checkedInAt : null,
+      closedOnArrival ? 0 : null, closedOnArrival ? 1 : 0, offline ? 1 : 0,
+      closedOnArrival ? AUTO_CLOSED_OUTCOME : '',
       data.location.lat, data.location.lng, data.location.accuracy ?? null, now);
-    store.audit(res.locals.user.id, 'visit.check_in', { visitId: data.id, purpose: data.purpose });
+    store.audit(res.locals.user.id, offline ? 'visit.check_in_offline' : 'visit.check_in',
+      { visitId: data.id, purpose: data.purpose, ...(offline ? { recordedAt: checkedInAt } : {}) });
     io.to('admins').emit('visit', visitRow(data.id));
     invalidateKpis(); broadcast();
-    res.status(201).json({ visit: visitRow(data.id), duplicate: false });
+    res.status(201).json({ visit: visitRow(data.id), duplicate: false, ...(offline ? { recordedOffline: true } : {}) });
   });
   app.post('/api/visits/:id/check-out', repOnly, (req, res) => {
     const parsed = closeVisit.safeParse(req.body ?? {});
@@ -772,6 +980,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات إنهاء الزيارة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const visit = visitRow(String(req.params.id));
     if (!visit || visit.userId !== res.locals.user.id) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
+    const now = Date.now();
     if (visit.status === 'closed') {
       /*
        * A visit the system closed because the shift ended (or the app was killed) never got its
@@ -787,13 +996,30 @@ export function createApp(overrides: Partial<Config> = {}) {
         return;
       }
       const late = parsed.data;
+      // A visit replayed from the outbox knows both ends: the check-in it was queued with and the
+      // moment the phone closed it. Apply the same time window as a normal offline check-out;
+      // silently clamping a future or stale `recordedAt` made the export claim the wrong time.
+      let lateAt: number | null = null;
+      if (late.recordedAt !== undefined) {
+        const at = Number(late.recordedAt);
+        const reason = at > now + 60000 ? 'الوقت المرسل في المستقبل.'
+          : at < now - OFFLINE_WINDOW_MS ? 'الإنهاء أقدم من ٢٤ ساعة، مش ممكن يتسجل بأثر رجعي.'
+          : at < Number(visit.checkedInAt) - 60000 ? 'وقت الإنهاء قبل وقت الزيارة.'
+          : '';
+        if (reason) { res.status(422).json({ error: `الإنهاء المتأخر مرفوض: ${reason}`, code: 'OFFLINE_VISIT_REJECTED' }); return; }
+        lateAt = Math.max(Number(visit.checkedInAt), at);
+      }
+      const lateDuration = lateAt === null ? null : Math.max(0, Math.round((lateAt - Number(visit.checkedInAt)) / 1000));
       store.run('UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=?',
         late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id);
+      if (lateAt !== null) {
+        store.run('UPDATE visits SET checked_out_at=?, duration_seconds=?, recorded_offline=1 WHERE id=?', lateAt, lateDuration, visit.id);
+      }
       if (late.amount !== null && late.amount > 0) {
         store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
           `تحصيل - ${visit.customerName}`, late.outcome || visit.notes, visit.customerName, late.amount,
-          late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, Date.now());
+          late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, lateAt ?? Date.now());
       }
       store.audit(res.locals.user.id, 'visit.result_recorded_late', { visitId: visit.id });
       io.to('admins').emit('visit', visitRow(visit.id));
@@ -802,19 +1028,36 @@ export function createApp(overrides: Partial<Config> = {}) {
       return;
     }
     const data = parsed.data;
-    const now = Date.now();
-    const duration = Math.max(0, Math.round((now - Number(visit.checkedInAt)) / 1000));
+    /*
+     * The outbox sends the instant the visit was closed on the phone. It has to be inside the
+     * visit itself, inside the window a phone may hold, and never in the future — otherwise the
+     * duration would be negative or invented, and a negative duration is worse than none.
+     */
+    let closedAt = now;
+    let offline = false;
+    if (data.recordedAt !== undefined) {
+      const at = Number(data.recordedAt);
+      const reason = at > now + 60000 ? 'الوقت المرسل في المستقبل.'
+        : at < now - OFFLINE_WINDOW_MS ? 'الإنهاء أقدم من ٢٤ ساعة، مش ممكن يتسجل بأثر رجعي.'
+        : at < Number(visit.checkedInAt) - 60000 ? 'وقت الإنهاء قبل وقت الزيارة.'
+        : '';
+      if (reason) { res.status(422).json({ error: `الإنهاء المتأخر مرفوض: ${reason}`, code: 'OFFLINE_VISIT_REJECTED' }); return; }
+      closedAt = Math.max(Number(visit.checkedInAt), at);
+      offline = true;
+    }
+    const duration = Math.max(0, Math.round((closedAt - Number(visit.checkedInAt)) / 1000));
     store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
-      out_lat=?, out_lng=? WHERE id=?`, now, duration, data.outcome, data.notes || visit.notes,
-      data.location?.lat ?? null, data.location?.lng ?? null, visit.id);
+      out_lat=?, out_lng=?, recorded_offline=MAX(recorded_offline, ?) WHERE id=?`, closedAt, duration, data.outcome, data.notes || visit.notes,
+      data.location?.lat ?? null, data.location?.lng ?? null, offline ? 1 : 0, visit.id);
     // A collection is also a financial event: mirror it into the reports feed for the manager.
     if (data.amount !== null && data.amount > 0) {
       store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
         `تحصيل - ${visit.customerName}`, data.outcome || visit.notes, visit.customerName, data.amount,
-        data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, now);
+        data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, closedAt);
     }
-    store.audit(res.locals.user.id, 'visit.check_out', { visitId: visit.id, durationSeconds: duration });
+    store.audit(res.locals.user.id, offline ? 'visit.check_out_offline' : 'visit.check_out',
+      { visitId: visit.id, durationSeconds: duration, ...(offline ? { recordedAt: closedAt } : {}) });
     io.to('admins').emit('visit', visitRow(visit.id));
     invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
@@ -876,8 +1119,11 @@ export function createApp(overrides: Partial<Config> = {}) {
       : dayDistance(user.id, bounds.start, bounds.end);
     const visits = listVisits({ userId: user.id, date });
     const completed = visits.filter(v => v.status === 'closed');
+    const measured = completed.filter(v => !v.autoClosed && v.durationSeconds !== null);
     const open = visits.find(v => v.status === 'open') || null;
-    const avgVisitSeconds = completed.length ? Math.round(completed.reduce((sum, v) => sum + Number(v.durationSeconds || 0), 0) / completed.length) : null;
+    // Auto-closed visits have no measured checkout, so they count as completed but not in an
+    // average. The manager KPI already follows this rule; the engineer summary must agree.
+    const avgVisitSeconds = measured.length ? Math.round(measured.reduce((sum, v) => sum + Number(v.durationSeconds), 0) / measured.length) : null;
     const collections = store.get("SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS total FROM reports WHERE user_id=? AND type='collection' AND created_at>=? AND created_at<?", user.id, bounds.start, bounds.end);
     const daily = store.get('SELECT id, status, created_at AS createdAt FROM daily_reports WHERE user_id=? AND report_date=?', user.id, date);
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
@@ -934,6 +1180,47 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (hasActivity && Number(visitsToday.c) === 0 && now - bounds.start > 2 * 3600000) {
         alerts.push({ id: `${rep.id}:novisit`, level: 'info', code: 'no_visits', repId: rep.id, repName: rep.name, title: 'لا زيارات مسجلة اليوم', detail: 'المهندس في الميدان لكن لم يسجل أي زيارة اليوم.', at: bounds.start });
       }
+      /*
+       * A visit is a claim about being somewhere. The native app now drops fixes the OS marks as
+       * simulated and reports that flag, but a modified/rooted client can still omit it — this is
+       * not hardware attestation. The independent trail checks below remain useful: a visit far
+       * from every fix of that morning, or two visits at the same coordinates to five decimals,
+       * is worth a manager's attention even though it is not proof.
+       */
+      const dayVisits = store.all(`SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt,
+          in_lat AS lat, in_lng AS lng, in_accuracy AS accuracy FROM visits
+          WHERE user_id=? AND checked_in_at>=? AND checked_in_at<? ORDER BY checked_in_at`, rep.id, bounds.start, bounds.end) as Array<Record<string, any>>;
+      const offTrail: string[] = [];
+      const seenPlaces = new Map<string, string>();
+      for (const dayVisit of dayVisits) {
+        if (dayVisit.lat === null || dayVisit.lng === null) continue;
+        const place = `${Number(dayVisit.lat).toFixed(5)},${Number(dayVisit.lng).toFixed(5)}`;
+        const twin = seenPlaces.get(place);
+        if (twin) {
+          alerts.push({
+            id: `${rep.id}:sameplace:${dayVisit.id}`, level: 'info', code: 'same_visit_location', repId: rep.id, repName: rep.name,
+            title: 'زيارتان في نفس الإحداثيات',
+            detail: `زيارة «${dayVisit.customerName}» وزيارة «${twin}» مسجلتان على نفس النقطة بالظبط — راجع الموقع لو المسافة بينهم بعيدة.`,
+            at: Number(dayVisit.checkedInAt),
+          });
+        } else seenPlaces.set(place, String(dayVisit.customerName));
+        const near = store.get(`SELECT lat, lng FROM locations WHERE user_id=? AND recorded_at BETWEEN ? AND ?
+            ORDER BY ABS(recorded_at-?) LIMIT 1`,
+        rep.id, Number(dayVisit.checkedInAt) - 10 * 60000, Number(dayVisit.checkedInAt) + 10 * 60000, Number(dayVisit.checkedInAt)) as Record<string, any> | undefined;
+        // No fix within ten minutes of the check-in at all is a gap, not a contradiction: the
+        // phone may have been in a dead spot. Only a fix that *contradicts* the visit is alerted.
+        if (near && haversine({ lat: Number(dayVisit.lat), lng: Number(dayVisit.lng) }, { lat: Number(near.lat), lng: Number(near.lng) }) > 2000) {
+          offTrail.push(String(dayVisit.customerName));
+        }
+      }
+      if (offTrail.length) {
+        alerts.push({
+          id: `${rep.id}:offtrail`, level: 'warn', code: 'visit_off_trail', repId: rep.id, repName: rep.name,
+          title: 'زيارة مسجلة بعيدًا عن المسار',
+          detail: `${offTrail.length} زيارة (${offTrail.slice(0, 3).join('، ')}) اتسجلت على بعد أكثر من ٢ كيلومتر من أقرب إشارة موقع في نفس الوقت — تُراجع مع المهندس.`,
+          at: now,
+        });
+      }
       // An open visit is what hides "the engineer forgot to close it": the pair check-in /
       // check-out is the record the manager relies on, so an unclosed one must surface.
       const openVisit = store.get('SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status=? ORDER BY checked_in_at LIMIT 1', rep.id, 'open');
@@ -965,6 +1252,18 @@ export function createApp(overrides: Partial<Config> = {}) {
         alerts.push({ id: `${rep.id}:daily`, level: 'warn', code: 'missing_daily_report', repId: rep.id, repName: rep.name, title: 'تقرير يومي غير مُرسل', detail: 'مر وقت العمل ولم يُرسل التقرير اليومي بعد.', at: bounds.start });
       }
     }
+    // This is an operating-system signal reported by the installed app, not forensic proof:
+    // modified/rooted clients can still lie. Keep it visible in the same manager alert feed so
+    // a native mock-provider hit is investigated instead of silently discarded on the phone.
+    const mockEvents = store.all(`SELECT e.id, e.created_at AS at, u.id AS repId, u.name AS repName
+      FROM mock_location_events e JOIN users u ON u.id=e.user_id
+      WHERE e.created_at>? AND u.active=1 ORDER BY e.created_at DESC LIMIT 100`, now - 24 * 3600000) as Array<Record<string, any>>;
+    for (const event of mockEvents) alerts.push({
+      id: `mock-location:${event.id}`, level: 'warn', code: 'mock_gps_detected', repId: String(event.repId), repName: String(event.repName),
+      title: 'اكتُشف موقع مُحاكى من نظام التشغيل',
+      detail: 'الهاتف أبلغ أن مزوّد الموقع وضع علامة «محاكى» على إشارة GPS. تم تجاهل النقطة؛ تحقّق من الجهاز مع المهندس.',
+      at: Number(event.at),
+    });
     const staleReviews = store.get('SELECT COUNT(*) AS c FROM reports WHERE status=? AND created_at<?', 'new', now - 24 * 3600000)!;
     if (Number(staleReviews.c) > 0) {
       alerts.push({ id: 'reports:stale', level: 'info', code: 'stale_reviews', title: 'تقارير بانتظار المراجعة', detail: `${staleReviews.c} تقرير مضى عليه أكثر من ٢٤ ساعة.`, at: now });
@@ -985,10 +1284,19 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.json({ reports: rows.map(r => ({ id: r.id, userId: r.user_id, repName: r.repName, shiftId: r.shift_id, lat: r.lat, lng: r.lng, accuracy: r.accuracy, reason: r.reason, durationMinutes: r.duration_minutes, deviceId: r.device_id, createdAt: r.created_at })) });
   });
   app.post('/api/reps/:id/reset-device', adminOnly, (req, res) => {
-    const user = store.get('SELECT * FROM users WHERE id=?', String(req.params.id));
+    const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
     if (!user) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
-    store.run('UPDATE users SET device_id=? WHERE id=?', '', user.id);
-    store.audit(res.locals.user.id, 'rep.reset_device', { repId: user.id });
+    // A reset means the old phone may be lost. Revoke its sessions and close its shift before
+    // clearing the binding; otherwise its still-valid token could reclaim the empty binding or
+    // keep uploading locations into a shift the replacement phone just took over.
+    store.transaction(() => {
+      endShift(user.id);
+      store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+      store.run('UPDATE users SET device_id=? WHERE id=?', '', user.id);
+      store.run('DELETE FROM push_tokens WHERE user_id=?', user.id);
+      store.audit(res.locals.user.id, 'rep.reset_device', { repId: user.id });
+    });
+    io.in(`user:${user.id}`).disconnectSockets(true);
     invalidateKpis(); broadcast();
     res.json({ ok: true });
   });
@@ -1155,6 +1463,80 @@ export function createApp(overrides: Partial<Config> = {}) {
       sendXlsx(res, `elhelb-kpis-${from}_${to}.xlsx`, 'مؤشرات الأداء', KPI_HEADER, kpiExportRows(from, to), KPI_WIDTHS);
     } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); }
   });
+  /**
+   * The two registers the dashboard shows but could not export.
+   *
+   * A manager who has to justify a month to the owner needs the visits themselves and the
+   * justifications for standing still — not a screenshot of a scrolling list.
+   */
+  const VISIT_HEADER = ['التاريخ', 'المهندس', 'العميل', 'النوع', 'الدخول', 'الخروج', 'المدة (دقيقة)', 'النتيجة', 'ملاحظات', 'من غير شبكة', 'بدون نتيجة'];
+  const VISIT_WIDTHS = [12, 22, 26, 12, 18, 18, 14, 40, 30, 12, 12];
+  function visitExportRows(from: string, to: string): unknown[][] {
+    const start = dayBounds(from, config.timezone).start;
+    const end = dayBounds(to, config.timezone).end;
+    const rows = store.all(`${VISIT_SELECT} WHERE v.checked_in_at>=? AND v.checked_in_at<? ORDER BY v.checked_in_at`, start, end);
+    // Built once, not once per row: a year of visits is tens of thousands of rows, and each
+    // `new Intl.DateTimeFormat` in the old loop cost tens of microseconds inside a request that
+    // blocked the whole server (single process) for seconds.
+    const clock = new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: config.timezone });
+    return rows.map((row: any) => [
+      localDate(config.timezone, Number(row.checkedInAt)),
+      row.repName,
+      row.customerName,
+      row.purpose,
+      clock.format(Number(row.checkedInAt)),
+      row.checkedOutAt ? clock.format(Number(row.checkedOutAt)) : '',
+      row.durationSeconds === null ? '' : Math.round(Number(row.durationSeconds) / 60),
+      row.outcome,
+      row.notes,
+      Number(row.recordedOffline) ? 'نعم' : '',
+      Number(row.pendingResult) ? 'نعم' : '',
+    ]);
+  }
+  function exportRange(req: express.Request, res: express.Response, name: string, build: (from: string, to: string) => { header: string[]; rows: unknown[][]; widths?: number[] }) {
+    const today = localDate(config.timezone);
+    // A date that is there but unreadable is a mistake in the request, not an invitation to
+    // export today's file: the manager would print the wrong register and never notice.
+    const badDate = (value: unknown) => value !== undefined && !(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value));
+    if (badDate(req.query.from) || badDate(req.query.to)) { res.status(400).json({ error: 'التاريخ بصيغة YYYY-MM-DD.' }); return; }
+    const from = typeof req.query.from === 'string' ? req.query.from : today;
+    const to = typeof req.query.to === 'string' ? req.query.to : from;
+    let valid = true;
+    try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); } catch { valid = false; }
+    if (!valid) { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
+    if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+    if (rangeTooLong(from, to)) { res.status(400).json(RANGE_ERROR); return; }
+    const table = build(from, to);
+    if (name.endsWith('.xlsx')) {
+      try { sendXlsx(res, `elhelb-${name.replace('.xlsx', '')}-${from}_${to}.xlsx`, 'السجل', table.header, table.rows as CellValue[][], table.widths ?? table.header.map(() => 16)); }
+      catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); }
+      return;
+    }
+    sendCsv(res, `elhelb-${name.replace('.csv', '')}-${from}_${to}.csv`, table.header, table.rows);
+  }
+  app.get('/api/visits.csv', adminOnly, (req, res) => {
+    exportRange(req, res, 'visits.csv', (from, to) => ({ header: VISIT_HEADER, rows: visitExportRows(from, to), widths: VISIT_WIDTHS }));
+  });
+  app.get('/api/visits.xlsx', adminOnly, (req, res) => {
+    exportRange(req, res, 'visits.xlsx', (from, to) => ({ header: VISIT_HEADER, rows: visitExportRows(from, to), widths: VISIT_WIDTHS }));
+  });
+  const IDLE_HEADER = ['التاريخ', 'المهندس', 'السبب', 'مدة السكون (دقيقة)'];
+  app.get('/api/idle-reports.csv', adminOnly, (req, res) => {
+    exportRange(req, res, 'idle-reports.csv', (from, to) => {
+      const start = dayBounds(from, config.timezone).start;
+      const end = dayBounds(to, config.timezone).end;
+      const rows = store.all(`SELECT i.created_at AS createdAt, i.reason, i.duration_minutes AS minutes, u.name AS repName
+        FROM idle_reports i JOIN users u ON u.id = i.user_id
+        WHERE i.created_at>=? AND i.created_at<? ORDER BY i.created_at`, start, end);
+      return {
+        header: IDLE_HEADER,
+        widths: [12, 22, 60, 16],
+        rows: rows.map((row: any) => [
+          localDate(config.timezone, Number(row.createdAt)), row.repName, row.reason, Number(row.minutes),
+        ]),
+      };
+    });
+  });
   // ---- Monthly register: visits + reports per month (international company requirement) ----
   function monthBounds(month: string) {
     if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('الشهر بصيغة YYYY-MM');
@@ -1220,7 +1602,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     const type = typeof req.query.type === 'string' && (REPORT_TYPES as readonly string[]).includes(req.query.type) ? req.query.type : undefined;
     const status = req.query.status === 'new' || req.query.status === 'reviewed' ? req.query.status : undefined;
     const repId = isAdmin && typeof req.query.repId === 'string' ? req.query.repId : undefined;
-    const reports = listReports({ userId: isAdmin ? undefined : res.locals.user.id, type, status, repId });
+    const badDate = (value: unknown) => value !== undefined && !(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value));
+    if (badDate(req.query.from) || badDate(req.query.to)) { res.status(400).json({ error: 'التاريخ بصيغة YYYY-MM-DD.' }); return; }
+    const from = typeof req.query.from === 'string' ? req.query.from : undefined;
+    const to = typeof req.query.to === 'string' ? req.query.to : undefined;
+    if (from && to && to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
+    if ((from || to) && rangeTooLong(from ?? to!, to ?? from!)) { res.status(400).json(RANGE_ERROR); return; }
+    try { for (const day of [from, to]) if (day) dayBounds(day, config.timezone); }
+    catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
+    const reports = listReports({ userId: isAdmin ? undefined : res.locals.user.id, type, status, repId, from, to });
     res.json({ reports });
   });
   app.get('/api/reports/:id', auth, (req, res) => {
@@ -1236,6 +1626,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (report.status !== 'reviewed') {
       store.run("UPDATE reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
       store.audit(res.locals.user.id, 'report.review', { reportId: report.id });
+      notifyUser(report.userId, 'تمت مراجعة تقريرك', 'مدير المتابعة راجع تقريرك. افتح التطبيق لمراجعة حالته.', { type: 'report_reviewed', reportId: report.id });
       invalidateKpis(); broadcast();
     }
     res.json({ report: reportRow(String(req.params.id)) });
@@ -1293,6 +1684,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (report.status !== 'reviewed') {
       store.run("UPDATE daily_reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
       store.audit(res.locals.user.id, 'daily_report.review', { reportId: report.id });
+      notifyUser(report.userId, 'تمت مراجعة تقريرك اليومي', 'مدير المتابعة راجع تقرير اليوم. افتح التطبيق لمراجعة حالته.', { type: 'daily_report_reviewed', reportId: report.id });
       io.to('admins').emit('daily-report', dailyReportRow(store, report.id));
       invalidateKpis(); broadcast();
     }
@@ -1323,7 +1715,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.status(500).json({ error: 'حدث خطأ في الخادم. حاول مرة أخرى.' });
   });
   store.cleanup(config.retentionDays);
-  const cleanupTimer = setInterval(() => { store.cleanup(config.retentionDays); dayStatsCache.clear(); }, 3600000);
+  const cleanupTimer = setInterval(() => {
+    const cleaned = runCleanup(store, config.retentionDays);
+    dayStatsCache.clear();
+    // A successful sweep may have erased old fixes (and their derived totals), so neither cache
+    // may serve values computed before the retention boundary was applied.
+    if (cleaned) { dayDistanceCache.clear(); invalidateKpis(); }
+  }, 3600000);
   cleanupTimer.unref();
   async function close() {
     closing = true;
