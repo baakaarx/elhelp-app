@@ -93,6 +93,19 @@ test.describe('المتابعة الحية والفريق', () => {
     await expect(page.locator('.login-wrap')).toBeVisible();
   });
 
+  test('an expired session during an Excel export returns the dashboard to login', async ({ page }) => {
+    await signInAsManager(page);
+    await page.getByRole('button', { name: /مؤشرات التأثير/ }).click();
+    await expect(page.locator('.kpi-table')).toBeVisible();
+    const exportButton = page.getByRole('button', { name: /تصدير Excel/ });
+    await expect(exportButton).toBeEnabled();
+    await page.route('**/api/kpis.xlsx*', route => route.fulfill({ status: 401, json: { error: 'انتهت الجلسة' } }));
+
+    await exportButton.click();
+    await expect(page.locator('.login-wrap')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem('mandoub.token'))).toBeNull();
+  });
+
   test('the route replay scrubs the day of the selected representative', async ({ page }) => {
     await signInAsManager(page);
     await page.locator('.rep-list .rep').first().click();
@@ -133,8 +146,10 @@ test.describe('المتابعة الحية والفريق', () => {
     await expect(page.locator('.kpi-table tbody tr').first()).toBeVisible();
     // Excel only: the CSV buttons were removed from the interface on request.
     await expect(page.getByRole('button', { name: /CSV/ })).toHaveCount(0);
+    const exportButton = page.getByRole('button', { name: /تصدير Excel/ });
+    await expect(exportButton).toBeEnabled();
     const download = page.waitForEvent('download');
-    await page.getByRole('button', { name: /تصدير Excel/ }).click();
+    await exportButton.click();
     expect((await download).suggestedFilename()).toMatch(/\.xlsx$/);
   });
 
@@ -143,8 +158,10 @@ test.describe('المتابعة الحية والفريق', () => {
     await page.getByRole('button', { name: 'السجل الشهري' }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'السجل الشهري' })).toBeVisible();
     await expect(page.locator('.kpi-table')).toBeVisible();
+    const exportButton = page.getByRole('button', { name: /تصدير الشهر \(Excel\)/ });
+    await expect(exportButton).toBeEnabled();
     const download = page.waitForEvent('download');
-    await page.getByRole('button', { name: /تصدير الشهر \(Excel\)/ }).click();
+    await exportButton.click();
     expect((await download).suggestedFilename()).toMatch(/^elhelb-monthly-\d{4}-\d{2}\.xlsx$/);
   });
 });

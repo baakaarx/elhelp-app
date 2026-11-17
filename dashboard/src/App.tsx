@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { ApiError, api, getToken, patch, post, setToken } from './api';
+import { API_AUTH_REQUIRED_EVENT, ApiError, api, getToken, patch, post, setToken } from './api';
 import { localDay } from './dates';
 import { ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
@@ -49,7 +49,26 @@ export default function App() {
   const bumpReports = useCallback(() => setReportsVersion(value => value + 1), []);
   const socketRef = useRef<Socket | null>(null);
   const liveRef = useRef(false);
+  const clearSession = useCallback(() => {
+    setToken(null);
+    liveRef.current = false;
+    setUser(null);
+    setOverview(null);
+    setAlerts([]);
+    setIdleReports([]);
+    setSelectedId(null);
+    setVisits([]);
+    setRoute(null);
+    setRouteDate('');
+    setConnected(false);
+    setSyncedAt(null);
+    setError('');
+  }, []);
 
+  useEffect(() => {
+    window.addEventListener(API_AUTH_REQUIRED_EVENT, clearSession);
+    return () => window.removeEventListener(API_AUTH_REQUIRED_EVENT, clearSession);
+  }, [clearSession]);
   useEffect(() => { me().then(setUser).catch(() => setUser(null)); }, []);
   useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 5000); return () => clearInterval(timer); }, []);
 
@@ -74,15 +93,12 @@ export default function App() {
       // api() removes an expired/invalid token on 401. Move back to login as well, rather than
       // leaving the manager-looking dashboard mounted with requests that can never succeed.
       if (e instanceof ApiError && (e.status === 401 || e.code === 'CLIENT_ROLE_MISMATCH')) {
-        setUser(null);
-        setOverview(null);
-        setAlerts([]);
-        setIdleReports([]);
+        clearSession();
         return;
       }
       setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.');
     }
-  }, [bumpReports]);
+  }, [bumpReports, clearSession]);
 
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
@@ -191,11 +207,8 @@ export default function App() {
           <div className="topbar-actions">
             <button className="btn ghost sm" onClick={() => refresh()}>تحديث</button>
             <button className="btn ghost sm" onClick={async () => {
-              try { await logout(); } catch { /* The local session is cleared even if the API is unreachable. */ }
-              setUser(null);
-              setOverview(null);
-              setAlerts([]);
-              setIdleReports([]);
+              try { await logout(); } catch { /* Local logout still wins if the API is unreachable. */ }
+              clearSession();
             }}>خروج</button>
           </div>
         </header>
@@ -290,7 +303,7 @@ export default function App() {
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} />}
         {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
-        {tab === 'account' && <Account user={user} overview={overview} onDeleted={() => setUser(null)} />}
+        {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
     </div>
   );

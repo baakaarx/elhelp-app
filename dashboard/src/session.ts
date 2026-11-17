@@ -1,19 +1,5 @@
-import { api, post, setToken, getToken } from './api';
+import { api, apiBlob, post, setToken, getToken } from './api';
 import type { User } from './types';
-
-/**
- * Surface the reason the server actually gave instead of a blanket "try again" message.
- * A bare status code with no explanation is the only clue an operator can act on, so the
- * server's own message always wins over the generic fallback.
- */
-async function failureText(res: Response, fallback: string): Promise<string> {
-  try {
-    const body = await res.clone().json() as { error?: unknown };
-    const message = typeof body?.error === 'string' ? body.error.trim() : '';
-    if (message) return message;
-  } catch { /* proxies can answer with HTML; fall back to the status code below */ }
-  return `${fallback} (${res.status})`;
-}
 
 /** `code` is the six-digit second factor, sent only on the second attempt. */
 export async function login(email: string, password: string, code?: string) {
@@ -31,13 +17,7 @@ export async function logout() {
   try { await post('/api/auth/logout', {}); } finally { setToken(null); }
 }
 export async function downloadDailyReportPdf(id: string, fileName: string) {
-  const token = getToken();
-  const res = await fetch(`/api/daily-reports/${id}/pdf`, {
-    headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : { 'X-Mandoub-Client': 'admin' },
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error(await failureText(res, 'تعذر تنزيل التقرير. حاول مرة أخرى.'));
-  const blob = await res.blob();
+  const blob = await apiBlob(`/api/daily-reports/${id}/pdf`, {}, 'تعذر تنزيل التقرير. حاول مرة أخرى.');
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -48,13 +28,8 @@ export async function downloadDailyReportPdf(id: string, fileName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 export async function downloadKpisExcel(from: string, to: string) {
-  const token = getToken();
-  const res = await fetch(`/api/kpis.xlsx?from=${from}&to=${to}`, {
-    headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : { 'X-Mandoub-Client': 'admin' },
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error(await failureText(res, 'تعذر تصدير المؤشرات. حاول مرة أخرى.'));
-  const blob = await res.blob();
+  const query = new URLSearchParams({ from, to });
+  const blob = await apiBlob(`/api/kpis.xlsx?${query}`, {}, 'تعذر تصدير المؤشرات. حاول مرة أخرى.');
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

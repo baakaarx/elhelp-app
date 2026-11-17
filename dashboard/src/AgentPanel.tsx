@@ -25,7 +25,8 @@ export default function AgentPanel({ reps, timezone }: { reps: { id: string; nam
   // The date the task runs for is a calendar day on the installation's clock, not UTC.
   const [task, setTask] = useState<TaskName>('field-alerts');
   const [repId, setRepId] = useState('');
-  const [date, setDate] = useState(() => localDay(timezone));
+  const [dateOverride, setDateOverride] = useState<string | null>(null);
+  const date = dateOverride ?? localDay(timezone);
 
   const load = async () => {
     try {
@@ -109,11 +110,11 @@ export default function AgentPanel({ reps, timezone }: { reps: { id: string; nam
         {(task === 'summarize-day' || task === 'analyze-route') && (
           <label className="field">
             <span>التاريخ</span>
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+            <input type="date" value={date} onChange={e => setDateOverride(e.target.value)} disabled={!timezone} />
           </label>
         )}
 
-        <button className="btn" onClick={run} disabled={loading}>
+        <button className="btn" onClick={run} disabled={loading || ((task === 'summarize-day' || task === 'analyze-route') && !timezone)}>
           {loading ? 'جاري التشغيل…' : 'شغّل الـ Agent ▶'}
         </button>
         {error && <p className="error" role="alert">{error}</p>}
