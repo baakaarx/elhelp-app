@@ -172,11 +172,6 @@ cp .env.example server/.env    # DB_PATH=/var/lib/elhelp/mandoub.db
 sudo cp deploy/elhelp.service /etc/systemd/system/ && sudo systemctl enable --now elhelp
 ```
 
-> نسخة Vercel السابقة (serverless + `/tmp`) **أُزيلت** مع بيانات العرض: كل نسخة من الدالة كانت
-> بقاعدة بيانات منفصلة تُصفَّر، وهذا لا يصلح لبيانات ميدانية حقيقية. إعداد مشروع Vercel القديم ما زال
-> يطلب `npm run build:vercel`؛ سيظهر `Missing script` لأن الأمر أُزيل عمدًا. لا تُعِد تفعيله لمجرد
-> تمرير البناء: النشر يحتاج عملية Express/Socket.IO واحدة وقاعدة SQLite دائمة، وأي عودة إلى Vercel
-> تتطلب أولًا نقل التخزين والجلسات والبث إلى بنية مشتركة ودائمة. طريقة النشر المدعومة حاليًا هي VPS.
 
 ## الهوية البصرية
 
