@@ -48,7 +48,7 @@ test.describe('تسجيل الدخول', () => {
 
   test('the manager login explains that engineers use the mobile app', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('.login-engineer-note')).toContainText('موقع المهندس على iPhone');
+    await expect(page.locator('.login-engineer-note')).toContainText('مهندسو iPhone يستخدمون موقع المهندس');
     await expect(page.locator('.login-engineer-note')).toContainText('مخصصة للمديرين');
     await expect(page.locator('a[href="/app"]')).toHaveCount(0);
   });
