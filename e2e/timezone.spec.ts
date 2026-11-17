@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
-import { signInAsManager } from './helpers';
+import { E2E_ADMIN } from './fixtures';
+import { submitLogin } from './helpers';
 
 test.use({ timezoneId: 'UTC' });
 
 test('report date defaults follow a late server timezone and preserve manual choices', async ({ page }) => {
   // UTC is still January, but Kiritimati is already February at this instant. Cairo (the
   // dashboard fallback) is also January, making the initial-to-server transition observable.
-  await page.clock.install({ time: new Date('2026-01-31T12:30:00.000Z') });
+  await page.clock.setFixedTime(new Date('2026-01-31T12:30:00.000Z'));
 
   // Keep the REST overview as the only source of timezone changes in this test. The data stream
   // would otherwise publish the same value immediately and hide the late-overview race.
@@ -24,7 +25,9 @@ test('report date defaults follow a late server timezone and preserve manual cho
     await route.fulfill({ response, json: { ...body, timezone: nextTimezone } });
   });
 
-  await signInAsManager(page);
+  await page.goto('/');
+  await submitLogin(page, E2E_ADMIN.email, E2E_ADMIN.password);
+  await expect(page.getByRole('button', { name: 'خروج' })).toBeVisible();
 
   // Monthly mounts before /api/overview completes. Its provisional Cairo default must not be
   // queried or left selected once the configured timezone arrives.
@@ -36,6 +39,7 @@ test('report date defaults follow a late server timezone and preserve manual cho
   releaseInitialOverview();
   await expect(monthSelect).toBeEnabled();
   await expect(monthSelect).toHaveValue('2026-02');
+  await expect(page.locator('.sidebar-foot')).toContainText('Pacific/Kiritimati');
 
   // The manager's explicit month survives a later overview timezone update.
   await monthSelect.selectOption('2025-12');
