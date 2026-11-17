@@ -29,7 +29,7 @@ test.describe('تسجيل الدخول', () => {
   test('an engineer account cannot sign into the manager website', async ({ page }) => {
     await page.goto('/');
     await submitLogin(page, E2E_REPS[0].email, E2E_REP_PASSWORD);
-    await expect(page.getByRole('alert')).toContainText('تطبيق الهاتف');
+    await expect(page.getByRole('alert')).toContainText('موقع المهندس على iPhone');
     await expect(page).toHaveURL('/');
     expect(await page.evaluate(() => window.localStorage.getItem('mandoub.token'))).toBeNull();
     // The manager shell must never render for a representative account.
