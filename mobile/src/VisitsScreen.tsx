@@ -33,8 +33,8 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   // (the system closed them) and one left open by a shift that ended somewhere else. Every
   // figure in the header is about today, so the average is not a mix of several days.
   const todayVisits = field.visits.filter(visit => isToday(visit.checkedInAt, timeZone));
-  const closed = todayVisits.filter(v => v.status === 'closed');
-  const avgMinutes = closed.length ? Math.round(closed.reduce((sum, v) => sum + (v.durationSeconds ?? 0), 0) / closed.length / 60) : 0;
+  const measuredClosed = todayVisits.filter(v => v.status === 'closed' && !v.autoClosed && v.durationSeconds !== null);
+  const avgMinutes = measuredClosed.length ? Math.round(measuredClosed.reduce((sum, v) => sum + Number(v.durationSeconds), 0) / measuredClosed.length / 60) : 0;
   const todayCount = todayVisits.length;
   const pendingCount = field.visits.filter(visit => visit.pendingResult).length;
   const earlierOpen = field.visits.some(visit => visit.status === 'open' && !isToday(visit.checkedInAt, timeZone));
@@ -47,7 +47,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>زيارات اليوم</Text>
-            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{closed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
+            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{measuredClosed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
           </View>
           <View style={styles.count}><Text style={styles.countText}>{todayCount}</Text></View>
         </View>
@@ -100,7 +100,9 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
                   <Text style={styles.name}>{visit.customerName}</Text>
                   <Text style={styles.meta}>
                     {visitPurposeLabels[visit.purpose]} · {isToday(visit.checkedInAt, timeZone) ? '' : `${dayText(visit.checkedInAt, timeZone)} · `}{timeText(visit.checkedInAt, timeZone)}
-                    {visit.status === 'closed' && visit.durationSeconds !== null ? ` ← ${timeText(visit.checkedOutAt ?? visit.checkedInAt, timeZone)} · ${Math.max(1, Math.round(visit.durationSeconds / 60))} د` : ' · جارية'}
+                    {visit.status === 'open' ? ' · جارية'
+                      : visit.durationSeconds === null ? (visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية')
+                      : ` ← ${timeText(visit.checkedOutAt ?? visit.checkedInAt, timeZone)} · ${Math.max(1, Math.round(visit.durationSeconds / 60))} د`}
                   </Text>
                   {visit.outcome ? <Text style={styles.outcome} numberOfLines={2}>{visit.outcome}</Text> : null}
                   {visit.village || visit.district ? <Text style={styles.meta}>{[visit.governorate, visit.district, visit.village].filter(Boolean).join(' · ')}</Text> : null}

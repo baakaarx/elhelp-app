@@ -13,13 +13,13 @@
   "scripts": {
     "dev": "concurrently -k -n API,Dashboard -c green,cyan \"npm run dev -w @mandoub/server\" \"npm run dev -w @mandoub/dashboard\"",
     "dev:mobile": "npm run start -w @mandoub/mobile",
-    "build": "npm run build -w @mandoub/server && npm run build -w @mandoub/dashboard",
+    "build": "npm run build -w @mandoub/server && npm run build -w @mandoub/dashboard && npm run export:web -w @mandoub/mobile",
     "start": "npm run start -w @mandoub/server",
     "test": "npm run test -w @mandoub/server",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "export:mobile": "npm run export:web -w @mandoub/mobile",
     "test:e2e": "node scripts/reset-e2e-db.mjs && playwright test",
     "smoke": "node scripts/smoke.mjs",
+    "totp": "node --experimental-strip-types scripts/totp.mjs",
     "preview": "node scripts/preview.mjs",
     "agent": "npm run agent -w @mandoub/server",
     "agent:skills": "npm run agent -w @mandoub/server -- skills",
@@ -30,5 +30,10 @@
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "concurrently": "^9.2.1"
+  },
+  "overrides": {
+    "@expo/fingerprint": {
+      "minimatch": "11.0.8"
+    }
   }
 }

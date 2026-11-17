@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { myRoute, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
-import { flushOutbox } from './reports';
+import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, requestPermissions, startTracking, stopTracking } from './tracking';
-import { captureOnce } from './location';
+import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
 import type { RepSummary, RouteResponse, User, Visit, VisitInput } from './types';
@@ -24,6 +24,11 @@ export interface FieldBundle {
   trackingActive: boolean;
   /** An actionable message from the sync loop (e.g. the phone clock is ahead of the server). */
   syncNotice: string;
+  /**
+   * A visit was kept on the phone because there was no signal. It is not an error — nothing was
+   * lost — but the engineer must know the manager cannot see it yet.
+   */
+  offlineNotice: string;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -44,7 +49,11 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [trackingActive, setTrackingActive] = useState(false);
   const [error, setError] = useState('');
   const [syncNotice, setSyncNotice] = useState('');
+  const [offlineNotice, setOfflineNotice] = useState('');
   const mounted = useRef(true);
+  const pendingVisitNotice = (count: number) => count > 0
+    ? `هناك ${count} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.`
+    : '';
   /**
    * True while one sync tick is still running.
    *
@@ -104,18 +113,23 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (syncing.current) return;
       syncing.current = true;
       void (async () => {
-        const result = await flushOutbox().catch(() => null);
+        const result = await flushOutbox(user.id).catch(() => null);
         if (result && mounted.current) {
           setPending(result.pending);
           // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
           // leave a stale warning pinned to the screen all day.
           setSyncNotice(result.notice ?? '');
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
         }
         await refresh();
       })().catch(() => undefined).finally(() => { syncing.current = false; });
     }, 15000);
-    void flushOutbox().then(result => {
-      if (mounted.current) { setPending(result.pending); setSyncNotice(result.notice ?? ''); }
+    void flushOutbox(user.id).then(result => {
+      if (mounted.current) {
+        setPending(result.pending);
+        setSyncNotice(result.notice ?? '');
+        setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+      }
     }).catch(() => undefined);
     return () => clearInterval(timer);
   }, [user, refresh]);
@@ -130,6 +144,8 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const resumeTracking = useCallback(async ({ background }: { background: boolean }) => {
     setBusy(true); setError('');
     try {
+      const outboxState = await outboxOwnerStatus(user?.id ?? null);
+      if (outboxState.blockedByOwner) throw new Error(outboxState.notice || 'بيانات معلّقة لحساب آخر؛ لا يمكن بدء التتبع قبل حلها.');
       const permission = await requestPermissions(background);
       if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن تشغيل التتبع بدونها.');
       const shift = summary?.shift ?? (await shiftState()).shift;
@@ -140,7 +156,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, summary]);
+  }, [refresh, summary, user?.id]);
 
   // A closed app or a killed foreground service leaves the shift open but the watcher off.
   // When the app comes back and permission is still granted, re-attach without asking anything.
@@ -149,6 +165,11 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     if (!shift || trackingActive || busy) return;
     let cancelled = false;
     (async () => {
+      const outboxState = await outboxOwnerStatus(user?.id ?? null);
+      if (outboxState.blockedByOwner) {
+        if (!cancelled) setError(outboxState.notice || 'بيانات معلّقة لحساب آخر؛ لا يمكن استئناف التتبع قبل حلها.');
+        return;
+      }
       if (!(await hasForegroundPermission())) return;
       const background = await hasBackgroundPermission();
       if (cancelled) return;
@@ -156,15 +177,18 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (!cancelled) setTrackingActive(true);
     })().catch(() => undefined);
     return () => { cancelled = true; };
-  }, [summary?.shift?.id, summary?.shift?.started_at, trackingActive, busy]);
+  }, [summary?.shift?.id, summary?.shift?.started_at, trackingActive, busy, user?.id]);
 
   const beginShift = useCallback(async ({ background }: { background: boolean }) => {
     setBusy(true); setError('');
     try {
+      const outboxState = await outboxOwnerStatus(user?.id ?? null);
+      if (outboxState.blockedByOwner) throw new Error(outboxState.notice || 'بيانات معلّقة لحساب آخر؛ لا يمكن بدء وردية جديدة قبل حلها.');
       const permission = await requestPermissions(background);
       if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن بدء التتبع بدونها.');
-      const fix = await captureOnce({ maxAgeMs: 15000 });
-      if (!fix) throw new Error('GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل بدء الوردية.');
+      // Starting a shift is a claim about the phone's current location; do not reuse cached GPS.
+      const fix = await captureOnce({ maxAgeMs: 0 });
+      if (!fix) throw new Error(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل بدء الوردية.');
       const deviceId = await getDeviceId();
       const deviceName = await getDeviceName();
       const res = await startShift('1.0', fix, deviceId, deviceName);
@@ -182,7 +206,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh]);
+  }, [refresh, user?.id]);
 
   const finishShift = useCallback(async () => {
     // Ending the shift with a customer visit still open left the server to close it without a
@@ -203,32 +227,64 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await stopShift();
       await stopTracking();
       setTrackingActive(false);
-      await flushOutbox();
+      await flushOutbox(user?.id);
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh]);
+  }, [refresh, user?.id]);
 
+  /**
+   * The visit is the one record the whole product exists for, and a farm with no bars used to
+   * make it impossible to record: the sheet answered "لا يوجد اتصال" and the visit was gone.
+   * With no signal it is now kept on the phone, with the time it happened, and sent by the same
+   * outbox that carries the positions.
+   */
   const checkIn = useCallback(async (input: VisitInput) => {
     setBusy(true); setError('');
     try {
-      await checkInVisit(input);
+      try {
+        await checkInVisit(input);
+      } catch (e) {
+        if ((e as { status?: number }).status !== 0) throw e;
+        await enqueueVisitCheckIn({ ...input, recordedAt: Date.now() }, user?.id);
+        setOfflineNotice('الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        const result = await flushOutbox(user?.id).catch(() => null);
+        if (result && mounted.current) {
+          setPending(result.pending);
+          setSyncNotice(result.notice ?? '');
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+        }
+        return;
+      }
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh]);
+  }, [refresh, user?.id]);
 
   const checkOut = useCallback(async (id: string, input: CheckOutInput) => {
     setBusy(true); setError('');
     try {
-      await checkOutVisit(id, input);
+      try {
+        await checkOutVisit(id, input);
+      } catch (e) {
+        if ((e as { status?: number }).status !== 0) throw e;
+        await enqueueVisitCheckOut(id, { ...input, recordedAt: Date.now() }, user?.id);
+        setOfflineNotice('نتيجة الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        const result = await flushOutbox(user?.id).catch(() => null);
+        if (result && mounted.current) {
+          setPending(result.pending);
+          setSyncNotice(result.notice ?? '');
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+        }
+        return;
+      }
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh]);
+  }, [refresh, user?.id]);
 
   return {
-    summary, visits, route, pending, loading, busy, trackingActive, syncNotice, error,
+    summary, visits, route, pending, loading, busy, trackingActive, syncNotice, offlineNotice, error,
     clearError: () => setError(''),
     refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };

@@ -1,7 +1,9 @@
 const TOKEN_KEY = 'mandoub.token';
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) { super(message); this.status = status; }
+  /** The server's machine-readable reason (`TOTP_REQUIRED`, `TOTP_INVALID`, `LAST_ADMIN`, …). */
+  code?: string;
+  constructor(message: string, status: number, code?: string) { super(message); this.status = status; if (code) this.code = code; }
 }
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
 export const setToken = (token: string | null) => {
@@ -19,8 +21,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   if (!res.ok) {
     const body = isJson ? await res.json().catch(() => null) : null;
-    if (res.status === 401) setToken(null);
-    throw new ApiError(body?.error || `فشل الطلب (${res.status})`, res.status);
+    if (res.status === 401 || body?.code === 'CLIENT_ROLE_MISMATCH') setToken(null);
+    throw new ApiError(body?.error || `فشل الطلب (${res.status})`, res.status, typeof body?.code === 'string' ? body.code : undefined);
   }
   return (isJson ? res.json() : res.text()) as Promise<T>;
 }

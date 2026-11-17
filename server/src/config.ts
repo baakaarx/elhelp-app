@@ -77,6 +77,12 @@ export interface Config {
   loginRateLimit: { windowMs: number; limit: number };
   /** General API budget: per session token when signed in, per address otherwise. */
   apiRateLimit: { windowMs: number; limit: number };
+  /**
+   * Base32 secret of the manager's authenticator app. Empty means two-factor is off — the default,
+   * because a manager locked out of his own installation on the day he enabled it would be a worse
+   * failure than the one this protects against. `npm run totp` prints a secret and its QR link.
+   */
+  adminTotpSecret: string;
 }
 
 /** Comma-separated env value → trimmed list, keeping only plausible OAuth client ids. */
@@ -135,6 +141,7 @@ export function readConfig(): Config {
     oauthGoogleClientIds: splitList(process.env.GOOGLE_CLIENT_IDS),
     oauthAppleClientIds: splitList(process.env.APPLE_CLIENT_IDS),
     loginAccountLimit: 10,
+    adminTotpSecret: String(process.env.ADMIN_TOTP_SECRET || '').trim(),
     loginRateLimit: { windowMs: 15 * 60000, limit: 15 },
     apiRateLimit: { windowMs: 60000, limit: 600 },
   };

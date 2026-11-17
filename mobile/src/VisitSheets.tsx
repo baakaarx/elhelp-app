@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { parseNumberText } from './format';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { captureOnce, type Fix } from './location';
+import { captureOnce, locationIssueMessage, type Fix } from './location';
 import { getDeviceId } from './device';
 import { randomUUID } from './tracking';
 import { colors, fonts, radius, space } from './theme';
@@ -30,15 +30,19 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
     if (!visible) return;
     setCustomerName(''); setPurpose('visit'); setGovernorate(''); setDistrict(''); setVillage(''); setPhone(''); setNotes(''); setError('');
     setLocating(true);
-    void captureOnce({ maxAgeMs: 0 }).then(setFix).finally(() => setLocating(false));
+    void captureOnce({ maxAgeMs: 0 }).then(next => {
+      setFix(next);
+      if (!next) setError(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.');
+    }).catch(() => setError('تعذر قراءة الموقع. تحقق من أذونات GPS ثم حاول مرة أخرى.')).finally(() => setLocating(false));
   }, [visible]);
 
   async function submit() {
     if (customerName.trim().length < 2) { setError('اكتب اسم العميل أو المزرعة.'); return; }
     setSaving(true); setError('');
     try {
-      const location = fix ?? await captureOnce({ maxAgeMs: 0 });
-      if (!location) throw new Error('GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل تسجيل الزيارة.');
+      // Never reuse the preview fix for the actual check-in: the OS mock bit must be checked at commit time.
+      const location = await captureOnce({ maxAgeMs: 0 });
+      if (!location) throw new Error(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل تسجيل الزيارة.');
       const deviceId = await getDeviceId();
       await field.checkIn({
         id: randomUUID(), customerName: customerName.trim(), purpose,
@@ -76,7 +80,15 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
       <Field label="ملاحظات" value={notes} onChangeText={setNotes} multiline placeholder="ملخص سريع قبل الدخول" style={{ minHeight: 70 }} />
       <View style={styles.fixRow}>
         <Pill label={locating ? 'جارٍ تحديد موقعك…' : fix ? `تم تثبيت الموقع ±${fix.accuracy ? Math.round(fix.accuracy) : '—'} م` : 'بدون موقع'} tone={fix ? 'mint' : 'warn'} />
-        <Pressable onPress={async () => { setLocating(true); setFix(await captureOnce({ maxAgeMs: 0 })); setLocating(false); }}>
+        <Pressable onPress={async () => {
+          setLocating(true); setError('');
+          try {
+            const next = await captureOnce({ maxAgeMs: 0 });
+            setFix(next);
+            if (!next) setError(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.');
+          } catch { setError('تعذر قراءة الموقع. تحقق من أذونات GPS ثم حاول مرة أخرى.'); }
+          finally { setLocating(false); }
+        }}>
           <Text style={styles.retry}>تحديث الموقع</Text>
         </Pressable>
       </View>
@@ -109,6 +121,8 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
     setSaving(true); setError('');
     try {
       const location = await captureOnce();
+      const locationError = locationIssueMessage();
+      if (locationError) throw new Error(locationError);
       const parsedAmount = parseNumberText(amount);
       if (amount.trim() !== '' && (parsedAmount === null || parsedAmount < 0)) throw new Error('المبلغ غير صحيح — اكتب رقمًا (مثال: ٥٠٠ أو 500).');
       await field.checkOut(visit!.id, {

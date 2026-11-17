@@ -1,6 +1,20 @@
 import * as Location from 'expo-location';
+import { announceMockLocation, isMockedLocation, MOCK_LOCATION_MESSAGE, trustedFix, type TrustedFix } from './locationIntegrity';
+import { cacheFix, clearLocationCache, discardCachedFixForMockLocation, getCachedFix } from './locationCache';
 
-export interface Fix { lat: number; lng: number; accuracy: number | null }
+export type Fix = TrustedFix;
+export { MOCK_LOCATION_MESSAGE, onMockLocationDetected } from './locationIntegrity';
+
+let lastLocationIssue: 'mocked' | null = null;
+/** Read and clear the last reason a location capture returned no fix. */
+export function takeLocationIssue(): 'mocked' | null {
+  const issue = lastLocationIssue;
+  lastLocationIssue = null;
+  return issue;
+}
+export function locationIssueMessage(): string | null {
+  return takeLocationIssue() === 'mocked' ? MOCK_LOCATION_MESSAGE : null;
+}
 
 /** Anything worse than this is a cell-tower/network guess, not a usable field position. */
 export const MAX_ACCURACY_M = 120;
@@ -26,14 +40,16 @@ async function ensurePermission(): Promise<boolean> {
   } catch { return false; }
 }
 
-/** Turn a platform position into a fix, rejecting coordinates the GPS could not have meant. */
+/** Keep the native mock bit explicit instead of treating a rejected fix as a generic GPS timeout. */
 function toFix(position: Location.LocationObject | null): Fix | null {
   if (!position) return null;
-  const { latitude, longitude, accuracy } = position.coords;
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
-  if (accuracy != null && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > MAX_ACCURACY_M)) return null;
-  return { lat: latitude, lng: longitude, accuracy: accuracy ?? null };
+  if (isMockedLocation(position)) {
+    lastLocationIssue = 'mocked';
+    discardCachedFixForMockLocation();
+    announceMockLocation();
+    return null;
+  }
+  return trustedFix(position, MAX_ACCURACY_M);
 }
 
 /** Never let a stalled native call block a check-in; the caller gets null and explains it. */
@@ -47,8 +63,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null
   } finally { if (timer) clearTimeout(timer); }
 }
 
-let cached: { fix: Fix; at: number } | null = null;
-
 /**
  * One high-accuracy position for a check-in, a shift start or a report.
  *
@@ -59,30 +73,39 @@ let cached: { fix: Fix; at: number } | null = null;
  * phone indoors still returns something usable instead of hanging.
  */
 export async function captureOnce(options: { maxAgeMs?: number; timeoutMs?: number } = {}): Promise<Fix | null> {
+  lastLocationIssue = null;
   const maxAge = options.maxAgeMs ?? 30000;
-  if (cached && Date.now() - cached.at < maxAge) return cached.fix;
+  const cachedFix = getCachedFix(maxAge);
+  if (cachedFix) return cachedFix;
   if (!(await ensurePermission())) return null;
   const budget = Math.max(4000, options.timeoutMs ?? 14000);
 
   const candidates: Fix[] = [];
-  const precise = toFix(await withTimeout(Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.BestForNavigation }), budget));
+  const precisePosition = await withTimeout(Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.BestForNavigation }), budget);
+  const precise = toFix(precisePosition);
+  if (lastLocationIssue === 'mocked') return null;
   if (precise) candidates.push(precise);
   if (!precise || (precise.accuracy ?? 999) > CACHE_ACCURACY_M) {
     // A reading the OS already has (often far better indoors) beats a fresh coarse one.
-    const known = toFix(await withTimeout(
-      Location.getLastKnownPositionAsync({ maxAge: 120000, requiredAccuracy: MAX_ACCURACY_M }), 3000));
+    const knownPosition = await withTimeout(
+      Location.getLastKnownPositionAsync({ maxAge: 120000, requiredAccuracy: MAX_ACCURACY_M }), 3000);
+    const known = toFix(knownPosition);
+    if (lastLocationIssue === 'mocked') return null;
     if (known) candidates.push(known);
   }
   if (!candidates.length) {
-    const medium = toFix(await withTimeout(
-      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }), Math.min(budget, 8000)));
+    const mediumPosition = await withTimeout(
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }), Math.min(budget, 8000));
+    const medium = toFix(mediumPosition);
+    if (lastLocationIssue === 'mocked') return null;
     if (medium) candidates.push(medium);
   }
-  if (!candidates.length) { cached = null; return null; }
+  if (!candidates.length) { clearLocationCache(); return null; }
 
   const best = candidates.sort((a, b) => (a.accuracy ?? 999) - (b.accuracy ?? 999))[0];
-  cached = (best.accuracy ?? 999) <= CACHE_ACCURACY_M ? { fix: best, at: Date.now() } : null;
+  if ((best.accuracy ?? 999) <= CACHE_ACCURACY_M) cacheFix(best);
+  else clearLocationCache();
   return best;
 }
 
-export const clearLocationCache = () => { cached = null; };
+export { clearLocationCache };

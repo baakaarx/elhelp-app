@@ -18,6 +18,8 @@ playwright-report/
 test-results/
 *-preview.png
 mobile/dist-android/
+# Firebase app config contains project identifiers and must be supplied out of band for EAS builds.
+mobile/google-services.json
 # Android build outputs and signing material never belong in git.
 *.apk
 *.aab

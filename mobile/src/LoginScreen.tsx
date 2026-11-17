@@ -11,9 +11,9 @@ import type { User } from './types';
 /**
  * Engineer sign-in.
  *
- * The engineer app is also shipped as a web build under /app, so the layout has to survive a
- * desktop viewport: everything lives in a centred column instead of stretching edge to edge.
- * On the phone the same column simply fills the screen.
+ * A local Expo web preview can be opened on a desktop during development, so the layout stays
+ * in a centered column instead of stretching edge to edge. Production engineers use the native
+ * phone app, where the same column fills the screen.
  */
 export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
   const [email, setEmail] = useState('');
@@ -28,8 +28,13 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
 
   useEffect(() => {
     let alive = true;
-    authProviders().then(value => { if (alive) setProviders(value); }).catch(() => undefined);
-    appleAvailable().then(value => { if (alive) setAppleReady(value); }).catch(() => undefined);
+    authProviders().then(async value => {
+      if (!alive) return;
+      setProviders(value);
+      if (!value.apple) { setAppleReady(false); return; }
+      const ready = await appleAvailable().catch(() => false);
+      if (alive) setAppleReady(ready);
+    }).catch(() => undefined);
     return () => { alive = false; };
   }, []);
 

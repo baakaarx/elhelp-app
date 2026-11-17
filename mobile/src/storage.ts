@@ -4,6 +4,8 @@ import * as SecureStore from 'expo-secure-store';
 const TOKEN_KEY = 'mandoub_token';
 const CONSENT_KEY = 'mandoub_consent_at';
 const SHIFT_KEY = 'mandoub_active_shift';
+const OUTBOX_OWNER_KEY = 'mandoub_outbox_owner';
+const ACTIVE_USER_KEY = 'mandoub_active_user';
 
 // SecureStore has no web implementation; the packaged web build uses localStorage.
 const web = Platform.OS === 'web' && typeof localStorage !== 'undefined';
@@ -35,12 +37,31 @@ export async function setConsentAt(value: number | null): Promise<void> {
   } catch { /* non-fatal */ }
 }
 
+async function getPrivateString(key: string): Promise<string | null> {
+  try { return web ? localStorage.getItem(key) : await SecureStore.getItemAsync(key); }
+  catch { return null; }
+}
+async function setPrivateString(key: string, value: string | null): Promise<void> {
+  try {
+    if (web) { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); return; }
+    if (value === null) await SecureStore.deleteItemAsync(key);
+    else await SecureStore.setItemAsync(key, value);
+  } catch { /* local identity hints are recoverable by signing in again */ }
+}
+
+/** Account whose unsent work is currently stored in the shared on-device outbox. */
+export const getOutboxOwner = () => getPrivateString(OUTBOX_OWNER_KEY);
+export const setOutboxOwner = (userId: string | null) => setPrivateString(OUTBOX_OWNER_KEY, userId);
+/** Current authenticated account, also read by a headless background location task. */
+export const getActiveUserId = () => getPrivateString(ACTIVE_USER_KEY);
+export const setActiveUserId = (userId: string | null) => setPrivateString(ACTIVE_USER_KEY, userId);
+
 /**
  * Removes everything this device keeps about the signed-in engineer: token, consent stamp and
  * the active shift. Used by logout and by account deletion (the store-mandated path).
  */
 export async function clearDeviceData(): Promise<void> {
-  await Promise.all([setToken(null), setActiveShift(null), setConsentAt(null)]);
+  await Promise.all([setToken(null), setActiveShift(null), setConsentAt(null), setActiveUserId(null)]);
 }
 
 export async function getActiveShift(): Promise<string | null> {

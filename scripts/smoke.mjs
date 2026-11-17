@@ -61,7 +61,7 @@ const fix = (lat = 31.2, lng = 29.9, accuracy = 8) => ({ lat, lng, accuracy });
 /** The login route is limited per address (15 per quarter of an hour) on purpose. A smoke run
  *  spends about eight of them, so a second run from the same address in the same window will be
  *  answered with 429 — say so instead of reporting a password as broken. */
-const signIn = (email, password) => post('/api/auth/login', null, { email, password });
+const signIn = (email, password, client = 'admin') => post('/api/auth/login', null, { email, password }, client);
 const limiterHint = res => (res?.status === 429 ? ' — the login limiter (15 per 15 min per address) is in the way: wait a quarter of an hour or run from another address' : '');
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(Date.now());
 const runaway = `smoke.${Date.now()}@smoke.test`;
@@ -99,9 +99,11 @@ const created = await post('/api/reps', admin, { name: 'مهندس الدخان'
 check('the account is created', created.status === 201, JSON.stringify(created.body).slice(0, 120));
 const repId = String(created.body?.user?.id || '');
 check('the same address cannot be used twice', [400, 409].includes((await post('/api/reps', admin, { name: 'مهندس مكرر', email: runaway, password: REP_PASSWORD })).status));
-const repLogin = await signIn(runaway, REP_PASSWORD);
+const repLogin = await signIn(runaway, REP_PASSWORD, 'rep');
 const rep = repLogin.body?.token;
-check('the engineer can sign in', Boolean(rep), `${repLogin.status}${limiterHint(repLogin)}`);
+check('the engineer can sign in from the mobile client', Boolean(rep), `${repLogin.status}${limiterHint(repLogin)}`);
+const engineerOnWebsite = await signIn(runaway, REP_PASSWORD, 'admin');
+check('the engineer account is refused by the manager website and guided to the right client', engineerOnWebsite.status === 403 && engineerOnWebsite.body?.code === 'CLIENT_ROLE_MISMATCH' && engineerOnWebsite.body?.error?.includes('iPhone'));
 check('and cannot read the team dashboard', (await get('/api/kpis', rep, 'rep')).status === 403);
 check('nor the manager alerts', (await get('/api/alerts', rep, 'rep')).status === 403);
 check('nor the agent console', (await get('/api/agent/status', rep, 'rep')).status === 403);
@@ -141,6 +143,19 @@ check('the duration is measured, not zero', Number(closed.body?.visit?.durationS
 check('sending the same check-out again is a duplicate', (await post(`/api/visits/${visitId}/check-out`, rep, { outcome: 'نتيجة تانية', notes: '', amount: null, location: null }, 'rep')).body?.duplicate === true);
 const collections = (await get('/api/reports?type=collection', admin)).body?.reports?.filter(report => report.id === `visit:${visitId}`) || [];
 check('a collection reaches the manager feed exactly once', collections.length === 1 && Number(collections[0].amount) === 1500, JSON.stringify(collections.map(item => item.amount)));
+
+section('a visit typed where there is no signal');
+const offlineId = crypto.randomUUID();
+const offline = await post('/api/visits/check-in', rep, {
+  id: offlineId, customerName: 'مزرعة بدون شبكة', purpose: 'visit', location: fix(31.2, 29.9, 9), recordedAt: Date.now(),
+}, 'rep');
+check('the replayed check-in is accepted', offline.status === 201 && offline.body?.recordedOffline === true, JSON.stringify(offline.body).slice(0, 120));
+const offlineClosed = await post(`/api/visits/${offlineId}/check-out`, rep, { outcome: 'اتقفلت من غير شبكة', notes: '', amount: null, location: null, recordedAt: Date.now() }, 'rep');
+check('and its check-out too, with a measured duration', offlineClosed.status === 200 && Number(offlineClosed.body?.visit?.durationSeconds) >= 0, JSON.stringify(offlineClosed.body).slice(0, 100));
+const staleReplay = await post('/api/visits/check-in', rep, {
+  id: crypto.randomUUID(), customerName: 'مزرعة قديمة', location: fix(), recordedAt: Date.now() - 30 * 3600000,
+}, 'rep');
+check('a replay older than a day is refused', staleReplay.status === 422 && staleReplay.body?.code === 'OFFLINE_VISIT_REJECTED', JSON.stringify(staleReplay.body).slice(0, 100));
 
 section('the shift ends, and no visit is left without a result');
 const shifted = await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: 'مزرعة الإقفال', location: fix() }, 'rep');
@@ -203,6 +218,18 @@ check('a month that does not exist is refused', (await get('/api/monthly?month=2
 check('an inverted date range is refused', (await get(`/api/kpis?from=${today}&to=2000-01-01`, admin)).status === 400);
 check('two years at once is refused', (await get('/api/kpis?from=2020-01-01&to=2026-01-01', admin)).status === 400);
 
+section('the registers the owner asks for on paper');
+const visitsCsv = await get(`/api/visits.csv?from=${today}&to=${today}`, admin);
+check('the visits register exports', visitsCsv.status === 200 && visitsCsv.text.includes('مزرعة بدون شبكة'), String(visitsCsv.status));
+const visitsXlsx = await get(`/api/visits.xlsx?from=${today}&to=${today}`, admin);
+check('and as a workbook', visitsXlsx.status === 200 && visitsXlsx.text.startsWith('PK'), visitsXlsx.text.slice(0, 4));
+const idleCsv = await get('/api/idle-reports.csv', admin);
+check('the justifications export', idleCsv.status === 200 && idleCsv.text.includes('مستني'), String(idleCsv.status));
+check('an engineer cannot export them', (await get('/api/visits.csv', rep, 'rep')).status === 403);
+check('a malformed date is refused, not exported as today', (await get('/api/visits.csv?from=nonsense', admin)).status === 400);
+const narrowed = await get(`/api/reports?from=${today}&to=${today}`, admin);
+check('the reports feed narrows by date', narrowed.status === 200 && Array.isArray(narrowed.body?.reports), String(narrowed.status));
+
 section('the escape hatches are closed');
 check('social login says it is unavailable instead of trusting a token', [400, 503].includes((await post('/api/auth/oauth', null, { provider: 'google', idToken: 'x' })).status));
 const lastAdmin = await del('/api/me', admin, { confirm: true, email: ADMIN_EMAIL });
@@ -246,32 +273,53 @@ try {
   repSocket?.close();
 }
 
-section('the web surfaces the stores and the manager open');
+section('the web surfaces the manager and engineers open');
 const root = await get('/', null, 'web');
 check('the manager dashboard is served', root.status === 200 && root.text.includes('<div id="root"'), String(root.status));
 const asset = (root.text.match(/src="([^"]+\.js)"/) || [])[1];
 const assetRes = asset ? await get(asset, null, 'web') : { status: 0, text: '' };
-check('its bundle loads from the same origin', assetRes.status === 200 && String(assetRes.text).length > 1000, `${asset} → ${assetRes.status}`);
+check('the manager bundle loads from the same origin', assetRes.status === 200 && String(assetRes.text).length > 1000, `${asset} → ${assetRes.status}`);
 const rootScriptSrc = ((root.headers.get('content-security-policy') || '').match(/script-src[^;]*/) || [''])[0];
 check('the dashboard policy forbids inline script', rootScriptSrc === "script-src 'self'", rootScriptSrc);
-const appPage = await get('/app', null, 'web');
-check('the engineer web build has its own page', appPage.status === 200);
+check('the manager dashboard keeps strict cross-origin opener isolation', root.headers.get('cross-origin-opener-policy') === 'same-origin');
+
+const engineerPage = await get('/app', null, 'web');
+check('the engineer web client is served separately from the dashboard', engineerPage.status === 200 && engineerPage.text.includes('مهندس الميدان'), String(engineerPage.status));
+check('the engineer page declares Arabic right-to-left layout', engineerPage.text.includes('<html lang="ar" dir="rtl">'));
+check('the engineer OAuth page preserves its popup opener without weakening the manager', engineerPage.headers.get('cross-origin-opener-policy') === 'same-origin-allow-popups');
+const engineerAsset = (engineerPage.text.match(/src="([^"]+\.js)"/) || [])[1];
+check('the engineer bundle stays under its /app base path', Boolean(engineerAsset?.startsWith('/app/')), String(engineerAsset));
+const engineerAssetRes = engineerAsset ? await get(engineerAsset, null, 'web') : { status: 0, text: '' };
+check('the engineer bundle loads without authentication', engineerAssetRes.status === 200 && engineerAssetRes.text.length > 1000, `${engineerAsset} → ${engineerAssetRes.status}`);
+check('the engineer bundle includes the OAuth popup return handler', engineerAssetRes.text.includes('maybeCompleteAuthSession'), 'callback handler missing');
+const engineerFont = (engineerAssetRes.text.match(/\/app\/assets\/[^"' ]+\.ttf/) || [])[0];
+const engineerFontRes = engineerFont ? await fetch(`${BASE}${engineerFont}`) : { status: 0, headers: new Headers() };
+check('the engineer Arabic font is served locally under /app', engineerFontRes.status === 200 && /font|octet-stream/.test(engineerFontRes.headers.get('content-type') || ''), `${engineerFont} → ${engineerFontRes.status}`);
+const engineerScriptSrc = ((engineerPage.headers.get('content-security-policy') || '').match(/script-src[^;]*/) || [''])[0];
+check('the engineer site keeps scripts strict and does not permit eval', engineerScriptSrc.includes("'self'") && !engineerScriptSrc.includes('unsafe-eval') && !engineerScriptSrc.includes('unsafe-inline'), engineerScriptSrc);
+const deepAppPage = await fetch(`${BASE}/app/settings`, { headers: { Accept: 'text/html' } });
+const deepAppText = await deepAppPage.text();
+check('an engineer deep link opens the engineer client, not the manager SPA', deepAppPage.status === 200 && deepAppText.includes('مهندس الميدان'), String(deepAppPage.status));
+const oauthCallbackPage = await fetch(`${BASE}/app/oauth?state=smoke`, { headers: { Accept: 'text/html' } });
+check('the same-origin OAuth popup callback returns to the engineer client', oauthCallbackPage.status === 200 && (await oauthCallbackPage.text()).includes('مهندس الميدان'), String(oauthCallbackPage.status));
+const missingEngineerAsset = await fetch(`${BASE}/app/_expo/missing.js`, { headers: { Accept: 'text/html' } });
+check('a missing engineer asset returns 404 instead of the dashboard shell', missingEngineerAsset.status === 404, String(missingEngineerAsset.status));
 
 section('a password change locks the other devices out');
-const secondLogin = await signIn(runaway, REP_PASSWORD);
+const secondLogin = await signIn(runaway, REP_PASSWORD, 'rep');
 const secondSession = secondLogin.body?.token;
 check('a second session signs in', Boolean(secondSession), `${secondLogin.status}${limiterHint(secondLogin)}`);
 check('the password is changed', (await post('/api/me/password', rep, { currentPassword: REP_PASSWORD, newPassword: 'RepPassword456!' }, 'rep')).status === 200);
 check('the other device is signed out', (await get('/api/auth/me', secondSession, 'rep')).status === 401);
 check('the session that changed it stays alive', (await get('/api/auth/me', rep, 'rep')).status === 200);
-const oldPassword = await signIn(runaway, REP_PASSWORD);
+const oldPassword = await signIn(runaway, REP_PASSWORD, 'rep');
 check('and the old password no longer signs in', oldPassword.status === 401, `${oldPassword.status}${limiterHint(oldPassword)}`);
 
 section('an engineer cannot read another engineer paper');
 const otherEmail = `smoke.other.${Date.now()}@smoke.test`;
 const other = await post('/api/reps', admin, { name: 'مهندس تاني', email: otherEmail, password: REP_PASSWORD });
 check('a second engineer exists', other.status === 201, JSON.stringify(other.body).slice(0, 90));
-const otherLogin = await signIn(otherEmail, REP_PASSWORD);
+const otherLogin = await signIn(otherEmail, REP_PASSWORD, 'rep');
 const otherToken = otherLogin.body?.token;
 const otherReport = await post('/api/reports', otherToken, { id: crypto.randomUUID(), type: 'note', title: 'تقرير المهندس التاني', body: '', customer: '', amount: null, location: fix() }, 'rep');
 check('his report is stored', otherReport.status === 201);
@@ -282,15 +330,19 @@ section('a forgotten password is reset by the manager');
 const otherId = String(other.body?.user?.id || '');
 const reset = await post(`/api/reps/${otherId}/password`, admin, { password: 'RepPassword000!' });
 check('the manager sets a new password', reset.status === 200, JSON.stringify(reset.body).slice(0, 90));
-const stalePassword = await signIn(otherEmail, REP_PASSWORD);
+const stalePassword = await signIn(otherEmail, REP_PASSWORD, 'rep');
 check('the old one stops working', stalePassword.status === 401, `${stalePassword.status}${limiterHint(stalePassword)}`);
-const freshPassword = await signIn(otherEmail, 'RepPassword000!');
+const freshPassword = await signIn(otherEmail, 'RepPassword000!', 'rep');
 check('the new one signs in', freshPassword.status === 200, `${freshPassword.status}${limiterHint(freshPassword)}`);
 
 section('the device binding can be reset by the manager');
 check('the engineer is bound to his phone', (await post('/api/shifts/start', rep, { consentVersion: '1.0', deviceId: 'brand-new-phone', location: fix() }, 'rep')).status === 403);
 check('the manager resets the binding', (await post(`/api/reps/${repId}/reset-device`, admin, {})).status === 200, '');
-check('and the new phone can work', (await post('/api/shifts/start', rep, { consentVersion: '1.0', deviceId: 'brand-new-phone', location: fix() }, 'rep')).status === 200);
+check('the lost phone session is revoked', (await get('/api/auth/me', rep, 'rep')).status === 401);
+const replacementLogin = await signIn(runaway, 'RepPassword456!', 'rep');
+const replacementToken = replacementLogin.body?.token;
+check('the engineer can sign in again on the replacement phone', Boolean(replacementToken), `${replacementLogin.status}${limiterHint(replacementLogin)}`);
+check('and start a fresh shift on it', (await post('/api/shifts/start', replacementToken, { consentVersion: '1.0', deviceId: 'brand-new-phone', location: fix() }, 'rep')).status === 200);
 
 section('the monthly register the company files');
 check('as a workbook', (await get('/api/monthly.xlsx?month=' + today.slice(0, 7), admin)).status === 200);
@@ -327,10 +379,10 @@ for (const [method, path] of junkRoutes) {
 check(`no request crashes the server (${answered} hostile requests)`, crashes === 0, `${crashes} answered 5xx`);
 
 section('an account can erase itself');
-check('the engineer confirms with his email', (await del('/api/me', rep, { confirm: true, email: runaway }, 'rep')).status === 200);
-const afterErase = await signIn(runaway, 'RepPassword456!');
+check('the engineer confirms with his email', (await del('/api/me', replacementToken, { confirm: true, email: runaway }, 'rep')).status === 200);
+const afterErase = await signIn(runaway, 'RepPassword456!', 'rep');
 check('then he cannot sign in again', afterErase.status === 401, `${afterErase.status}${limiterHint(afterErase)}`);
-check('and his token is dead', (await get('/api/auth/me', rep, 'rep')).status === 401);
+check('and his token is dead', (await get('/api/auth/me', replacementToken, 'rep')).status === 401);
 
 console.log(`\n${passed}/${passed + failures.length} checks passed`);
 if (failures.length) {

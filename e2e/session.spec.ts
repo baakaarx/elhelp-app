@@ -26,10 +26,12 @@ test.describe('تسجيل الدخول', () => {
     await expect(page.getByText('الفريق الآن')).toBeVisible();
   });
 
-  test('a representative is redirected from the dashboard to the engineer app', async ({ page }) => {
+  test('an engineer account cannot sign into the manager website', async ({ page }) => {
     await page.goto('/');
     await submitLogin(page, E2E_REPS[0].email, E2E_REP_PASSWORD);
-    await expect(page).toHaveURL(/\/app/);
+    await expect(page.getByRole('alert')).toContainText('تطبيق الهاتف');
+    await expect(page).toHaveURL('/');
+    expect(await page.evaluate(() => window.localStorage.getItem('mandoub.token'))).toBeNull();
     // The manager shell must never render for a representative account.
     await expect(page.getByRole('button', { name: 'خروج' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /مركز العمليات/ })).toHaveCount(0);
@@ -44,11 +46,11 @@ test.describe('تسجيل الدخول', () => {
     await expect(page.locator('body')).toContainText('privacy@');
   });
 
-  test('the login screen links to the engineer app', async ({ page }) => {
+  test('the manager login explains that engineers use the mobile app', async ({ page }) => {
     await page.goto('/');
-    const link = page.getByRole('link', { name: /تطبيق المهندس/ });
-    await expect(link).toBeVisible();
-    await expect(link).toHaveAttribute('href', '/app');
+    await expect(page.locator('.login-engineer-note')).toContainText('موقع المهندس على iPhone');
+    await expect(page.locator('.login-engineer-note')).toContainText('مخصصة للمديرين');
+    await expect(page.locator('a[href="/app"]')).toHaveCount(0);
   });
 });
 

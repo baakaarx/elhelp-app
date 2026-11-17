@@ -3,7 +3,7 @@ import { normalizeDigits, parseNumberText } from './format';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { sendDailyReport } from './api';
-import { captureOnce } from './location';
+import { captureOnce, locationIssueMessage } from './location';
 import { enqueueDailyReport, flushOutbox } from './reports';
 import { shouldQueue } from './retry';
 import { randomUUID } from './tracking';
@@ -82,9 +82,14 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
       onDone?.();
     } catch (e) {
       if (shouldQueue(e)) {
-        await enqueueDailyReport(payload);
-        setMessage('تعذّر الإرسال الآن. حفظنا التقرير وسيُرسل تلقائيًا.');
-        setConfirmed(false);
+        try {
+          await enqueueDailyReport(payload, user.id);
+          const result = await flushOutbox(user.id).catch(() => null);
+          setMessage(result?.notice || 'تعذّر الإرسال الآن. حفظنا التقرير وسيُرسل تلقائيًا.');
+          setConfirmed(false);
+        } catch (queueError) {
+          setError(queueError instanceof Error ? queueError.message : 'تعذر حفظ التقرير على الهاتف.');
+        }
       } else setError((e as Error).message);
     } finally { setBusy(false); }
   }
@@ -156,7 +161,14 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
       <Card tone="mint">
         <SectionTitle title="الموقع والتوقيع" />
         <Row style={{ gap: space.sm }}>
-          <Button style={{ flex: 1 }} variant="ghost" label={fix ? `موقع مثبت ±${fix.accuracy ? Math.round(fix.accuracy) : '—'} م` : 'إرفاق موقعي'} onPress={async () => setFix(await captureOnce({ maxAgeMs: 0 }))} />
+          <Button style={{ flex: 1 }} variant="ghost" label={fix ? `موقع مثبت ±${fix.accuracy ? Math.round(fix.accuracy) : '—'} م` : 'إرفاق موقعي'} onPress={async () => {
+            try {
+              const next = await captureOnce({ maxAgeMs: 0 });
+              setFix(next);
+              const issue = locationIssueMessage();
+              if (issue) setError(issue);
+            } catch { setError('تعذر قراءة الموقع. تحقق من أذونات GPS ثم حاول مرة أخرى.'); }
+          }} />
           {fix ? <Button style={{ flex: 1 }} variant="soft" label="مسح الموقع" onPress={() => setFix(null)} /> : null}
         </Row>
         <Field label="التوقيع الإلكتروني: اكتب اسمك *" value={signedName} onChangeText={setSignedName} placeholder="الاسم كما سيظهر في التقرير" />
@@ -170,8 +182,8 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
       {message ? <Text style={styles.ok}>{message}</Text> : null}
       <Button label={busy ? 'جارٍ الإرسال…' : 'إرسال التقرير اليومي'} onPress={submit} loading={busy} icon="↗" />
       <Button variant="ghost" label="مزامنة ما لم يُرسل" onPress={async () => {
-        const result = await flushOutbox();
-        Alert.alert('المزامنة', result.pending ? `تم إرسال ${result.sent} وبقي ${result.pending}.` : 'كل البيانات مُرسلة.');
+        const result = await flushOutbox(user.id, { retryRejected: true });
+        Alert.alert('المزامنة', result.notice || (result.pending ? `تم إرسال ${result.sent} وبقي ${result.pending}.` : 'كل البيانات مُرسلة.'));
       }} />
     </ScrollView>
   );

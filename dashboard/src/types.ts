@@ -151,6 +151,11 @@ export interface Visit {
   inAccuracy: number | null;
   outLat: number | null;
   outLng: number | null;
+  /** Typed on the phone while it had no signal, then sent when the bars came back. */
+  recordedOffline: boolean;
+  /** Closed by the system (killed app, phone died) before a result was typed. */
+  pendingResult: boolean;
+  autoClosed: boolean;
   repName: string;
   repColor: string;
 }

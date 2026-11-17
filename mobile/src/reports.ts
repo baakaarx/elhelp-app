@@ -1,56 +1,133 @@
-import { pushLocations, sendDailyReport, sendReport } from './api';
+import { checkInVisit, checkOutVisit, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
 import { createQueue, type Outbox } from './queue';
 import { sendLocationChunks } from './locationQueue';
-import type { DailyReportInput, GeoPoint, ReportInput } from './types';
+import { replayOutboxActions } from './outboxReplay';
+import { outboxOwnership } from './outboxOwnership';
+import { getActiveUserId, getOutboxOwner, setActiveUserId, setOutboxOwner } from './storage';
+import type { DailyReportInput, GeoPoint, OutboxItem, ReportInput, VisitInput } from './types';
 
 /** Matches the server's window: nothing older than this can still belong to a shift. */
 const STALE_FIX_MS = 24 * 3600000;
 
 let queuePromise: Promise<Outbox> | null = null;
+let activeUserId: string | null = null;
 const outbox = () => (queuePromise ??= createQueue());
 
+/**
+ * The outbox is shared by the installation, not by the signed-in account. Remember which account
+ * owns its pending rows so a session expiry followed by another engineer's login cannot upload the
+ * first engineer's reports under the second engineer's name.
+ */
+export async function activateOutboxUser(userId: string): Promise<void> {
+  activeUserId = userId;
+  await setActiveUserId(userId);
+  const queue = await outbox();
+  if (await queue.count() === 0) await setOutboxOwner(userId);
+}
+export async function deactivateOutboxUser(): Promise<void> {
+  activeUserId = null;
+  await setActiveUserId(null);
+}
+
+async function ownerForCurrentSession(): Promise<string | null> {
+  return activeUserId ?? await getActiveUserId();
+}
+async function addOutboxItem(kind: OutboxItem['kind'], payload: unknown, requestedOwnerId?: string): Promise<void> {
+  const queue = await outbox();
+  const ownerId = requestedOwnerId ?? await ownerForCurrentSession();
+  if (!ownerId) throw new Error('انتهت الجلسة؛ سجّل الدخول من جديد قبل حفظ بيانات للمزامنة.');
+  const count = await queue.count();
+  const savedOwner = await getOutboxOwner();
+  const ownership = outboxOwnership(savedOwner, ownerId, count);
+  if (!ownership.allowed) {
+    throw new Error(`${ownership.notice || 'لا يمكن إضافة البيانات إلى قائمة المزامنة الحالية.'} لم يُحفظ الطلب الجديد.`);
+  }
+  if (count === 0) {
+    await setOutboxOwner(ownerId);
+    if (await getOutboxOwner() !== ownerId) throw new Error('تعذر تسجيل ملكية البيانات المحفوظة على هذا الهاتف؛ لم نحفظ الطلب.');
+  }
+  await queue.add(kind, payload);
+}
+
 /** Locations are batched so one offline flap does not create a burst of requests. */
-export async function enqueueLocation(point: GeoPoint) { await (await outbox()).add('location', point); }
-export async function enqueueReport(report: ReportInput) { await (await outbox()).add('report', report); }
-export async function enqueueDailyReport(report: DailyReportInput) { await (await outbox()).add('daily-report', report); }
+export async function enqueueLocation(point: GeoPoint) { await addOutboxItem('location', point); }
+export async function enqueueReport(report: ReportInput, userId?: string) { await addOutboxItem('report', report, userId); }
+export async function enqueueDailyReport(report: DailyReportInput, userId?: string) { await addOutboxItem('daily-report', report, userId); }
+/**
+ * A visit typed in a field with no signal. It is queued with the moment it happened, because by
+ * the time the phone gets a bar the server's clock no longer says anything true about it.
+ */
+export async function enqueueVisitCheckIn(visit: VisitInput & { recordedAt: number }, userId?: string) { await addOutboxItem('visit-checkin', visit, userId); }
+export async function enqueueVisitCheckOut(visitId: string, body: CheckOutBody & { recordedAt: number }, userId?: string) {
+  // The `id` is the queue key only; it is never part of the body the server sees.
+  await addOutboxItem('visit-checkout', { id: `checkout:${visitId}`, visitId, body }, userId);
+}
+
+/** Clear only after the engineer confirms pending work should be discarded. */
+export async function clearOutbox(): Promise<void> {
+  activeUserId = null;
+  await (await outbox()).clear();
+  await Promise.all([setOutboxOwner(null), setActiveUserId(null)]);
+}
+
+/** Fast local ownership check used before opening or resuming a shift; it does no network work. */
+export async function outboxOwnerStatus(userId: string | null): Promise<{ blockedByOwner: boolean; notice?: string }> {
+  const queue = await outbox();
+  const ownership = outboxOwnership(await getOutboxOwner(), userId, await queue.count());
+  return ownership.allowed ? { blockedByOwner: false } : { blockedByOwner: true, notice: ownership.notice };
+}
 
 /**
  * `notice` carries a message the engineer has to act on (today: the phone clock is ahead, so
  * the server refuses every fix). It is not an error of ours — nothing is lost — so the caller
  * shows it and keeps the queue intact instead of splitting and dropping the batches.
  */
-export interface FlushResult { sent: number; pending: number; notice?: string }
-
-let flushing: Promise<FlushResult> | null = null;
-export function flushOutbox(): Promise<FlushResult> {
-  if (!flushing) flushing = flushOnce().finally(() => { flushing = null; });
-  return flushing;
+export interface FlushResult {
+  sent: number; pending: number; pendingVisits: number; notice?: string;
+  /** A non-empty queue belongs to another account (or has no recoverable owner). */
+  blockedByOwner?: boolean;
 }
 
-async function flushOnce(): Promise<FlushResult> {
+const flushing = new Map<string, Promise<FlushResult>>();
+export function flushOutbox(userId?: string, options: { retryRejected?: boolean } = {}): Promise<FlushResult> {
+  const key = `${userId ?? activeUserId ?? 'background'}:${options.retryRejected ? 'manual' : 'automatic'}`;
+  const existing = flushing.get(key);
+  if (existing) return existing;
+  const task = flushOnce(userId, options.retryRejected === true).finally(() => { flushing.delete(key); });
+  flushing.set(key, task);
+  return task;
+}
+
+async function flushOnce(requestedUserId?: string, retryRejected = false): Promise<FlushResult> {
   const queue = await outbox();
+  const pendingBefore = await queue.count();
+  const userId = requestedUserId ?? await ownerForCurrentSession();
+  if (pendingBefore === 0) {
+    if (userId) await setOutboxOwner(userId);
+    return { sent: 0, pending: 0, pendingVisits: 0 };
+  }
+  const savedOwner = await getOutboxOwner();
+  const ownership = outboxOwnership(savedOwner, userId, pendingBefore);
+  if (!ownership.allowed) {
+    const pendingVisits = await queue.count('visit-checkin') + await queue.count('visit-checkout');
+    return { sent: 0, pending: pendingBefore, pendingVisits, notice: ownership.notice, blockedByOwner: true };
+  }
   const items = await queue.list(200);
-  let sent = 0;
+  const replay = await replayOutboxActions(items, queue, {
+    checkIn: checkInVisit,
+    checkOut: checkOutVisit,
+    report: sendReport,
+    dailyReport: sendDailyReport,
+  }, { retryRejected });
+  let sent = replay.sent;
+  let notice = replay.notice;
   const locations: GeoPoint[] = [];
   for (const item of items) {
-    try {
-      // Parsed separately: a truncated payload is not a network error, and bumping it would
-      // keep the same dead row at the head of the queue for the life of the install.
-      let payload: GeoPoint | ReportInput | DailyReportInput;
-      try { payload = JSON.parse(item.payload) as GeoPoint | ReportInput | DailyReportInput; }
-      catch { await queue.remove(item.key); continue; }
-      if (item.kind === 'location') { locations.push(payload as GeoPoint); continue; }
-      if (item.kind === 'report') await sendReport(payload as ReportInput);
-      else await sendDailyReport(payload as DailyReportInput);
-      await queue.remove(item.key);
-      sent++;
-    } catch (error) {
-      const status = (error as { status?: number }).status ?? 0;
-      await queue.bump(item.key);
-      // Permanent validation errors are dropped instead of blocking the queue forever.
-      if (status >= 400 && status < 500 && status !== 401 && status !== 429) await queue.remove(item.key);
-      if (status === 401) break;
-    }
+    if (item.kind !== 'location') continue;
+    // Parsed separately: a truncated payload is not a network error, and bumping it would keep
+    // the same dead row at the head of the queue for the life of the install.
+    try { locations.push(JSON.parse(item.payload) as GeoPoint); }
+    catch { await queue.remove(item.key); }
   }
   /*
    * A fix older than a day cannot belong to any open shift (the server closes a shift that has
@@ -65,14 +142,16 @@ async function flushOnce(): Promise<FlushResult> {
     else await queue.remove(point.id);
   }
   // Preserve unsent fixes on transient errors and isolate invalid points.
-  let notice: string | undefined;
   try {
     sent += await sendLocationChunks(fresh, pushLocations, id => queue.remove(id));
   } catch (error) {
     // The clock is the engineer's to fix, and every fix in the queue is still good.
     if ((error as { code?: string }).code !== 'CLOCK_SKEW') throw error;
-    notice = (error as Error).message;
+    const gpsNotice = (error as Error).message;
+    notice = notice ? `${notice} ${gpsNotice}` : gpsNotice;
   }
   const pending = await queue.count();
-  return notice ? { sent, pending, notice } : { sent, pending };
+  const pendingVisits = await queue.count('visit-checkin') + await queue.count('visit-checkout');
+  if (pending === 0) await setOutboxOwner(userId);
+  return notice ? { sent, pending, pendingVisits, notice } : { sent, pending, pendingVisits };
 }

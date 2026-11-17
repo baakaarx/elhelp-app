@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { api, getToken, patch, post, setToken } from './api';
 import { localDay } from './dates';
-import { ENGINEER_APP_PATH, ago, durationText, formatNumber, isManager, logout, me } from './session';
+import { ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
 import MapView from './MapView';
 import LocationName from './LocationName';
@@ -133,7 +133,7 @@ export default function App() {
 
   if (user === undefined) return <div className="boot">جارٍ التحقق من الجلسة…</div>;
   if (!user) return <Login onLogin={setUser} />;
-  if (!isManager(user)) return <EngineerRedirect />;
+  if (!isManager(user)) return <EngineerOnlyNotice />;
 
   return (
     <div className="app">
@@ -230,7 +230,19 @@ export default function App() {
                           {visits.slice(0, 6).map(visit => (
                             <li key={visit.id}>
                               <span className="dot" style={{ background: visit.status === 'open' ? '#b45309' : '#2f7a5f' }} aria-hidden="true" />
-                              <span className="grow"><strong>{visit.customerName}</strong><small>{visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}{visit.status === 'open' ? ' · مفتوحة' : ` · ${durationText(visit.durationSeconds)}`}</small></span>
+                              <span className="grow">
+                                <strong>{visit.customerName}</strong>
+                                <small>{visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}{visit.status === 'open' ? ' · مفتوحة' : visit.durationSeconds === null ? (visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية') : ` · ${durationText(visit.durationSeconds)}`}</small>
+                                {/* The two marks a manager has to be able to see without exporting:
+                                    a visit typed with no signal, and one that ended without a result. */}
+                                {(visit.recordedOffline || visit.pendingResult) && (
+                                  <small className="visit-marks">
+                                    {visit.recordedOffline ? 'من غير شبكة' : ''}
+                                    {visit.recordedOffline && visit.pendingResult ? ' · ' : ''}
+                                    {visit.pendingResult ? 'بدون نتيجة' : ''}
+                                  </small>
+                                )}
+                              </span>
                             </li>
                           ))}
                         </ul>
@@ -254,26 +266,18 @@ export default function App() {
 }
 
 /**
- * A representative who signs in here is sent to the engineer app instead of seeing an
- * empty manager shell (every admin endpoint would 403). The dashboard token is cleared
- * first so /app cannot bounce back into this same redirect.
+ * A defensive fallback for an old or mis-scoped browser session. Engineer accounts belong in
+ * the engineer client at /app; this manager dashboard never transfers the session there.
  */
-function EngineerRedirect() {
-  useEffect(() => {
-    // Hand the session over so the engineer lands signed in instead of typing the same
-    // credentials twice. The key matches mobile/src/storage.ts on web; the dashboard token
-    // is cleared immediately so /app cannot bounce back into this redirect.
-    const token = getToken();
-    if (token) {
-      try { window.localStorage.setItem('mandoub_token', token); } catch { /* private mode */ }
-    }
-    setToken(null);
-    window.location.replace(ENGINEER_APP_PATH);
-  }, []);
+function EngineerOnlyNotice() {
+  useEffect(() => { setToken(null); }, []);
   return (
-    <div className="boot redirect">
-      <p>هذا الحساب لمهندس مبيعات — جارٍ تحويلك إلى تطبيق المهندس…</p>
-      <p className="small"><a href={ENGINEER_APP_PATH}>افتح تطبيق المهندس</a></p>
+    <div className="boot redirect" role="alert">
+      <div>
+        <strong>حساب المهندس لا يدخل لوحة الإدارة.</strong>
+        <p>استخدم APK على Android أو موقع المهندس على iPhone لمتابعة عملك.</p>
+        <p className="small"><a href="/">الرجوع إلى دخول الإدارة</a></p>
+      </div>
     </div>
   );
 }
@@ -362,6 +366,9 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
   const passwordButton = (rep: Rep) => (
     <button className="btn ghost sm" onClick={() => { setError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); }}>كلمة المرور</button>
   );
+  const deviceButton = (rep: Rep) => (rep as any).deviceId ? (
+    <button className="btn ghost sm" onClick={() => void resetDevice(rep)}>فك ربط الجهاز</button>
+  ) : null;
   async function toggle(rep: Rep) {
     try { await patch(`/api/reps/${rep.id}`, { active: !rep.active }); onChange(); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث الحساب.'); }
@@ -390,7 +397,8 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
               <li key={rep.id} className="team-row" style={{ borderColor: '#f0c27a', background: '#fffaf0' }}>
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                 <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {rep.createdAt ? `انضم ${new Date(rep.createdAt).toLocaleDateString('ar-EG')}` : 'تاريخ الانضمام غير مسجّل'}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
-                <span style={{ display: 'flex', gap: 6 }}>
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {deviceButton(rep)}
                   <button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button>
                   <button className="btn ghost sm" onClick={() => approve(rep, 'rejected')}>رفض</button>
                 </span>
@@ -408,23 +416,24 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                 <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.tracking ? '● في وردية الآن' : '○ متصل'} · {rep.region || 'بدون منطقة'} · {formatNumber(rep.visitsToday)} زيارة اليوم · {rep.shiftStartedAt ? `بدأ ${new Date(rep.shiftStartedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {(rep as any).deviceId && <button className="btn ghost sm" onClick={() => resetDevice(rep)}>فك ربط الجهاز</button>}
+                  {deviceButton(rep)}
                   {passwordButton(rep)}
                   <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                 </span>
               </li>
             ))}
           </ul>
-          {reps.filter(r => !inWork.includes(r) && r.active && (r as any).approvalStatus !== 'pending').length > 0 && (
+          {reps.filter(r => !inWork.includes(r) && (r as any).approvalStatus !== 'pending').length > 0 && (
             <>
               <h4 className="muted small" style={{ marginTop: 12 }}>باقي الفريق (خارج الوردية)</h4>
               <ul className="rep-list muted">
-                {reps.filter(r => !inWork.includes(r) && r.active && (r as any).approvalStatus !== 'pending').slice(0, 8).map(rep => (
-                  <li key={rep.id} className="team-row" style={{ opacity: 0.85 }}>
+                {reps.filter(r => !inWork.includes(r) && (r as any).approvalStatus !== 'pending').map(rep => (
+                  <li key={rep.id} className="team-row" style={{ opacity: rep.active ? 0.85 : 0.65 }}>
                     <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
-                    <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}</small></span>
+                    <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}{rep.active ? '' : ' · الحساب متوقف'}</small></span>
+                    {deviceButton(rep)}
                     {passwordButton(rep)}
-                    <button className="btn ghost sm" onClick={() => toggle(rep)}>إيقاف</button>
+                    <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                   </li>
                 ))}
               </ul>
