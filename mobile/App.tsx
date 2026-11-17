@@ -114,34 +114,6 @@ function Root() {
   }, [field.refresh]);
 
   useEffect(() => {
-    const unsubscribe = onMockLocationDetected(() => Alert.alert('تم اكتشاف موقع محاكى', MOCK_LOCATION_MESSAGE));
-    void initializePushHandling().catch(() => undefined);
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
-    if (Platform.OS === 'web') return;
-    let active = true;
-    let subscription: { remove: () => void } | undefined;
-    const openForNotification = (response: import('expo-notifications').NotificationResponse) => {
-      const data = response.notification.request.content.data as { type?: string };
-      if (data.type === 'report_reviewed') { setTab('reports'); setPushRefresh(value => value + 1); }
-      else if (data.type === 'daily_report_reviewed') setTab('daily');
-      void field.refresh();
-    };
-    void import('expo-notifications').then(async Notifications => {
-      if (!active) return;
-      subscription = Notifications.addNotificationResponseReceivedListener(openForNotification);
-      const last = await Notifications.getLastNotificationResponseAsync();
-      if (active && last) {
-        openForNotification(last);
-        await Notifications.clearLastNotificationResponseAsync();
-      }
-    }).catch(() => undefined);
-    return () => { active = false; subscription?.remove(); };
-  }, [field.refresh]);
-
-  useEffect(() => {
     (async () => {
       try {
         const token = await getToken();

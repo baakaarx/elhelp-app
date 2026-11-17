@@ -61,23 +61,6 @@ export function touchSession(store: Store, token: string): boolean {
   nextExpiry, MAX_SESSION_MS);
   return Number(result.changes) > 0;
 }
-/**
- * A session in use never dies mid-shift.
- *
- * The expiry was fixed at twelve hours from the login, so an engineer who signed in at eight in
- * the morning was signed out at eight in the evening — in the middle of his day, on a phone that
- * then stopped reporting his position. A used session now slides forward; the write is skipped
- * unless the row is at least a minute old, so this costs at most one UPDATE per minute per
- * session, not one per request.
- */
-export function touchSession(store: Store, token: string): boolean {
-  const now = Date.now();
-  // `MIN` is the ceiling: the row slides, but never past the day this session was born.
-  const result = store.run(`UPDATE sessions SET expires_at=MIN(?, created_at + ?)
-    WHERE token_hash=? AND expires_at>? AND expires_at<=?`,
-  now + SESSION_MS, MAX_SESSION_MS, tokenHash(token), now, now + SESSION_MS - 60000);
-  return Number(result.changes) > 0;
-}
 export function createSession(store: Store, userId: string) {
   const now = Date.now();
   const expiresAt = now + SESSION_MS;
