@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api } from './api';
+import { api, apiBlob } from './api';
 import { ago, durationText, formatNumber } from './session';
 import { localMonth, shiftMonth } from './dates';
 import type { KpiResponse, KpiRow, Rep } from './types';
@@ -8,20 +8,23 @@ type MonthlyResponse = KpiResponse & { month: string };
 
 export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: string }) {
   const currentMonth = localMonth(timezone);
-  const [month, setMonth] = useState(() => localMonth(timezone));
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  // Derive the default from the server timezone when it arrives; keep only explicit user choices.
+  const month = selectedMonth ?? currentMonth;
   const [data, setData] = useState<MonthlyResponse | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
+    if (!timezone) return;
     setLoading(true); setError('');
     try { setData(await api<MonthlyResponse>(`/api/monthly?month=${month}`)); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحميل السجل الشهري.'); }
     finally { setLoading(false); }
-  }, [month]);
+  }, [month, timezone]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (timezone) void load(); }, [load, timezone]);
 
   const rows = useMemo(() => [...(data?.rows ?? [])].sort((a, b) => b.visits - a.visits || b.dailyReports - a.dailyReports), [data]);
   const totals = useMemo(() => rows.reduce((a, r) => ({
@@ -38,10 +41,7 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
   async function exportExcel() {
     setExporting(true);
     try {
-      const token = localStorage.getItem('mandoub.token');
-      const res = await fetch(`/api/monthly.xlsx?month=${month}`, { headers: token ? { 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'admin' } : {}, credentials: 'include' });
-      if (!res.ok) throw new Error('فشل التصدير');
-      const blob = await res.blob();
+      const blob = await apiBlob(`/api/monthly.xlsx?month=${month}`, {}, 'تعذر تصدير السجل الشهري. حاول مرة أخرى.');
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = `elhelb-monthly-${month}.xlsx`; document.body.appendChild(a); a.click(); a.remove();
       // Let the browser finish starting the download before releasing its blob URL.
@@ -69,12 +69,12 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
       <div className="panel filters">
         <label className="field inline">
           <span>الشهر</span>
-          <select value={month} onChange={e => setMonth(e.target.value)}>
+          <select value={month} onChange={e => setSelectedMonth(e.target.value)} disabled={!timezone}>
             {months.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </label>
-        <button className="btn primary sm" onClick={() => void load()} disabled={loading}>{loading ? 'جارٍ التحميل…' : 'تحديث'}</button>
-        <button className="btn primary sm" onClick={() => void exportExcel()} disabled={exporting}>{exporting ? 'جارٍ التصدير…' : 'تصدير الشهر (Excel)'}</button>
+        <button className="btn primary sm" onClick={() => void load()} disabled={loading || !timezone}>{loading ? 'جارٍ التحميل…' : 'تحديث'}</button>
+        <button className="btn primary sm" onClick={() => void exportExcel()} disabled={exporting || !timezone}>{exporting ? 'جارٍ التصدير…' : 'تصدير الشهر (Excel)'}</button>
         {error && <p className="error" role="alert">{error}</p>}
       </div>
 

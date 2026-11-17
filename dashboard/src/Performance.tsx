@@ -9,21 +9,31 @@ import type { KpiResponse, KpiRow, Rep } from './types';
 export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { reps: Rep[]; staleGpsMinutes?: number; timezone?: string }) {
   const today = () => localDay(timezone);
   const daysAgo = (days: number) => dayBefore(days, timezone);
-  const [from, setFrom] = useState(() => dayBefore(6, timezone));
-  const [to, setTo] = useState(() => localDay(timezone));
+  const [rangeOverride, setRangeOverride] = useState<{ from: string; to: string } | null>(null);
+  const from = rangeOverride?.from ?? dayBefore(6, timezone);
+  const to = rangeOverride?.to ?? localDay(timezone);
+  const setFrom = (value: string) => setRangeOverride(current => ({
+    from: value,
+    to: current?.to ?? today(),
+  }));
+  const setTo = (value: string) => setRangeOverride(current => ({
+    from: current?.from ?? daysAgo(6),
+    to: value,
+  }));
   const [data, setData] = useState<KpiResponse | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
+    if (!timezone) return;
     setLoading(true); setError('');
     try { setData(await api<KpiResponse>(`/api/kpis?from=${from}&to=${to}`)); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحميل المؤشرات.'); }
     finally { setLoading(false); }
-  }, [from, to]);
+  }, [from, to, timezone]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (timezone) void load(); }, [load, timezone]);
 
   const rows = useMemo(() => [...(data?.rows ?? [])].sort((a, b) => b.visits - a.visits || b.distanceMeters - a.distanceMeters), [data]);
   const totals = useMemo(() => rows.reduce((acc, row) => ({
@@ -33,6 +43,11 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
     collected: acc.collected + row.collected,
     dailyReports: acc.dailyReports + row.dailyReports,
   }), { visits: 0, distanceMeters: 0, reports: 0, collected: 0, dailyReports: 0 }), [rows]);
+
+  const applyPreset = (days: number) => setRangeOverride({
+    from: daysAgo(days - 1),
+    to: today(),
+  });
 
   async function exportExcel() {
     setExporting(true);
@@ -49,16 +64,16 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
           <p className="muted">زيارات ومسافات وتحصيل لكل مهندس خلال الفترة — للمتابعة لا للحوافز.</p>
         </div>
         <div className="row">
-          <button className="btn ghost sm" onClick={() => { setFrom(daysAgo(0)); setTo(daysAgo(0)); }}>اليوم</button>
-          <button className="btn ghost sm" onClick={() => { setFrom(daysAgo(6)); setTo(daysAgo(0)); }}>٧ أيام</button>
-          <button className="btn ghost sm" onClick={() => { setFrom(daysAgo(29)); setTo(daysAgo(0)); }}>٣٠ يوم</button>
+          <button className="btn ghost sm" onClick={() => applyPreset(1)} disabled={!timezone}>اليوم</button>
+          <button className="btn ghost sm" onClick={() => applyPreset(7)} disabled={!timezone}>٧ أيام</button>
+          <button className="btn ghost sm" onClick={() => applyPreset(30)} disabled={!timezone}>٣٠ يوم</button>
         </div>
       </header>
       <div className="panel filters">
-        <label className="field inline"><span>من</span><input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)} /></label>
-        <label className="field inline"><span>إلى</span><input type="date" value={to} min={from} max={today()} onChange={e => setTo(e.target.value)} /></label>
-        <button className="btn primary sm" onClick={() => void load()} disabled={loading}>{loading ? 'جارٍ التحميل…' : 'تحديث'}</button>
-        <button className="btn primary sm" onClick={() => void exportExcel()} disabled={exporting}>{exporting ? 'جارٍ التصدير…' : 'تصدير Excel (.xlsx)'}</button>
+        <label className="field inline"><span>من</span><input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)} disabled={!timezone} /></label>
+        <label className="field inline"><span>إلى</span><input type="date" value={to} min={from} max={today()} onChange={e => setTo(e.target.value)} disabled={!timezone} /></label>
+        <button className="btn primary sm" onClick={() => void load()} disabled={loading || !timezone}>{loading ? 'جارٍ التحميل…' : 'تحديث'}</button>
+        <button className="btn primary sm" onClick={() => void exportExcel()} disabled={exporting || !timezone}>{exporting ? 'جارٍ التصدير…' : 'تصدير Excel (.xlsx)'}</button>
         {error && <p className="error" role="alert">{error}</p>}
       </div>
       <div className="stats">
