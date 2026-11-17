@@ -94,7 +94,7 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
                 </tr>
               </thead>
               <tbody>
-                {rows.map(row => <KpiTableRow key={row.repId} row={row} rep={reps.find(rep => rep.id === row.repId)} staleMinutes={staleGpsMinutes} />)}
+                {rows.map(row => <KpiTableRow key={row.repId} row={row} rep={reps.find(rep => rep.id === row.repId)} staleMinutes={staleGpsMinutes} timezone={timezone} />)}
               </tbody>
               <tfoot>
                 <tr>
@@ -115,12 +115,12 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
   );
 }
 
-function KpiTableRow({ row, rep, staleMinutes }: { row: KpiRow; rep?: Rep; staleMinutes: number }) {
+function KpiTableRow({ row, rep, staleMinutes, timezone }: { row: KpiRow; rep?: Rep; staleMinutes: number; timezone?: string }) {
   const bar = Math.min(100, row.visits * 12);
   return (
     <tr>
       <td><span className="dot" style={{ background: row.color }} aria-hidden="true" /> {row.name}{row.active ? null : <em className="muted small"> · موقوف</em>}</td>
-      <td>{row.region && row.region !== 'موقعك الحقيقي' ? <div>{row.region} <small className="muted">(مسجلة)</small></div> : null}{rep ? <div>{movementStatus(rep, Date.now(), staleMinutes * 60000)}</div> : null}<LocationName location={rep?.location ?? null} /></td>
+      <td>{row.region && row.region !== 'موقعك الحقيقي' ? <div>{row.region} <small className="muted">(مسجلة)</small></div> : null}{rep ? <div>{movementStatus(rep, Date.now(), staleMinutes * 60000)}</div> : null}<LocationName location={rep?.location ?? null} timezone={timezone} /></td>
       <td className="mono">{formatNumber(row.daysWithData)}</td>
       <td>
         <div className="bar-cell"><span className="mono">{formatNumber(row.visits)}</span><span className="bar"><i style={{ width: `${bar}%` }} /></span></div>

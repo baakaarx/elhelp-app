@@ -112,6 +112,12 @@ test('an engineer cannot read the other engineer\'s work', async () => {
 
   const report = await client.get(`/api/reports/${otherReportId}`).set(as(repToken));
   assert.equal(report.status, 403);
+  const replay = await client.post('/api/reports').set(as(repToken)).send({
+    id: otherReportId, type: 'note', title: 'محاولة إعادة إرسال بمعرّف زميل', body: '', customer: '', amount: null, location: null,
+  });
+  assert.equal(replay.status, 409, 'a report id owned by another engineer is not an idempotent replay');
+  assert.equal(replay.body.code, 'REPORT_ID_IN_USE');
+  assert.equal(replay.body.report, undefined, 'the conflicting report payload is never returned');
   const daily = await client.get(`/api/daily-reports/${otherDailyId}`).set(as(repToken));
   assert.equal(daily.status, 403);
   const pdf = await client.get(`/api/daily-reports/${otherDailyId}/pdf`).set(as(repToken));

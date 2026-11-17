@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API_AUTH_REQUIRED_EVENT, ApiError, api, getToken, patch, post, setToken } from './api';
-import { localDay } from './dates';
+import { dateTimeText, localDay, localDateText, timeText } from './dates';
 import { ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
 import MapView from './MapView';
@@ -202,7 +202,7 @@ export default function App() {
         <header className="topbar">
           <div>
             <h1>{tabs.find(t => t.id === tab)?.label}</h1>
-            <p className="muted small">{new Date(clock).toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short' })} · {user.name}</p>
+            <p className="muted small">{dateTimeText(clock, overview?.timezone)} · {user.name}</p>
           </div>
           <div className="topbar-actions">
             <button className="btn ghost sm" onClick={() => refresh()}>تحديث</button>
@@ -225,7 +225,7 @@ export default function App() {
             </div>
             <div className="live-grid">
               <div className="panel map-panel">
-                <MapView reps={reps} selectedId={selectedId} route={route} live={connected} syncedAt={syncedAt} />
+                <MapView reps={reps} selectedId={selectedId} route={route} live={connected} syncedAt={syncedAt} timezone={overview?.timezone} />
                 <div className="map-controls">
                   <label className="field inline">
                     <span>يوم المسار</span>
@@ -257,13 +257,13 @@ export default function App() {
                   <div className="selected-summary">
                     <h4>{selected.name}</h4>
                     <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock, staleMs)}</p>
-                    <LocationName key={selected.id} location={selected.location} />
+                    <LocationName key={selected.id} location={selected.location} timezone={overview?.timezone} />
                     {selectedIdle && <p className="muted small">آخر تبرير وقوف: {selectedIdle.reason} · {ago(selectedIdle.createdAt, clock)}</p>}
                     <dl>
                       <div><dt>آخر موقع</dt><dd>{ago(selected.location?.recordedAt ?? null, clock)}</dd></div>
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
                       <div><dt>البطارية</dt><dd>{selected.location?.battery !== null && selected.location?.battery !== undefined ? `${formatNumber(selected.location.battery)}٪` : '—'}</dd></div>
-                      <div><dt>بداية الوردية</dt><dd>{selected.shiftStartedAt ? new Date(selected.shiftStartedAt).toLocaleTimeString('ar-EG') : '—'}</dd></div>
+                      <div><dt>بداية الوردية</dt><dd>{selected.shiftStartedAt ? timeText(selected.shiftStartedAt, overview?.timezone) : '—'}</dd></div>
                       <div><dt>زيارات اليوم</dt><dd>{formatNumber(selected.visitsToday)}</dd></div>
                       <div><dt>زيارة مفتوحة</dt><dd>{selected.openVisit ? selected.openVisit.customerName : 'لا'}</dd></div>
                     </dl>
@@ -276,7 +276,7 @@ export default function App() {
                               <span className="dot" style={{ background: visit.status === 'open' ? '#b45309' : '#2f7a5f' }} aria-hidden="true" />
                               <span className="grow">
                                 <strong>{visit.customerName}</strong>
-                                <small>{visitPurposeLabels[visit.purpose]} · {new Date(visit.checkedInAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}{visit.status === 'open' ? ' · مفتوحة' : visit.durationSeconds === null ? (visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية') : ` · ${durationText(visit.durationSeconds)}`}</small>
+                                <small>{visitPurposeLabels[visit.purpose]} · {timeText(visit.checkedInAt, overview?.timezone)}{visit.status === 'open' ? ' · مفتوحة' : visit.durationSeconds === null ? (visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية') : ` · ${durationText(visit.durationSeconds)}`}</small>
                                 {/* The two marks a manager has to be able to see without exporting:
                                     a visit typed with no signal, and one that ended without a result. */}
                                 {(visit.recordedOffline || visit.pendingResult) && (
@@ -300,8 +300,8 @@ export default function App() {
         )}
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
-        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} />}
-        {tab === 'team' && <Team reps={reps} onChange={refresh} />}
+        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} timezone={overview?.timezone} />}
+        {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
         {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
@@ -386,7 +386,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
   return <div className="stat"><span className="label">{label}</span><strong>{value}</strong><small>{hint}</small></div>;
 }
 
-function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
+function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void; timezone?: string }) {
   const [error, setError] = useState('');
   // A representative who forgets their password cannot sign in and cannot be emailed: the
   // manager has to hand out a new one. Kept inline instead of a browser prompt so the field is
@@ -440,7 +440,7 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
             {pending.map(rep => (
               <li key={rep.id} className="team-row" style={{ borderColor: '#f0c27a', background: '#fffaf0' }}>
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
-                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {rep.createdAt ? `انضم ${new Date(rep.createdAt).toLocaleDateString('ar-EG')}` : 'تاريخ الانضمام غير مسجّل'}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
+                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {rep.createdAt ? `انضم ${localDateText(rep.createdAt, timezone)}` : 'تاريخ الانضمام غير مسجّل'}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {deviceButton(rep)}
                   <button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button>
@@ -458,7 +458,7 @@ function Team({ reps, onChange }: { reps: Rep[]; onChange: () => void }) {
             {inWork.map(rep => (
               <li key={rep.id} className="team-row">
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
-                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.tracking ? '● في وردية الآن' : '○ متصل'} · {rep.region || 'بدون منطقة'} · {formatNumber(rep.visitsToday)} زيارة اليوم · {rep.shiftStartedAt ? `بدأ ${new Date(rep.shiftStartedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
+                <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.tracking ? '● في وردية الآن' : '○ متصل'} · {rep.region || 'بدون منطقة'} · {formatNumber(rep.visitsToday)} زيارة اليوم · {rep.shiftStartedAt ? `بدأ ${timeText(rep.shiftStartedAt, timezone)}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {deviceButton(rep)}
                   {passwordButton(rep)}
@@ -609,7 +609,12 @@ function Account({ user, overview, onDeleted }: { user: User; overview: Overview
           <h3 className="panel-title">الخصوصية والاحتفاظ</h3>
           <ul>
             <li>لا يبدأ التتبع إلا بعد موافقة صريحة داخل التطبيق، ويظهر مؤشر دائم أثناء التسجيل.</li>
-            <li>تُرسل النقاط في دفعات كل ثانية تقريبًا، وتُحذف تلقائيًا بعد <b>{formatNumber(overview?.retentionDays ?? 30)}</b> يومًا.</li>
+            <li>
+              تُرسل النقاط في دفعات كل ثانية تقريبًا.{' '}
+              {overview
+                ? <>تُحذف تلقائيًا بعد <b>{formatNumber(overview.retentionDays)}</b> يومًا.</>
+                : <span className="muted">مدة الاحتفاظ غير متاحة حاليًا.</span>}
+            </li>
             <li>المسافات تقديرية لأغراض المتابعة، ولا تُستخدم كأساس وحيد للرواتب أو البدلات.</li>
             <li>كل عملية حساسة (بدء وردية، إنهاء زيارة، إيقاف حساب، تنزيل تقرير) تُسجل في سجل تدقيق.</li>
           </ul>
