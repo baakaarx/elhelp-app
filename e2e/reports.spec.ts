@@ -38,6 +38,24 @@ test.describe('التقارير اليومية والميدانية', () => {
     await expect(reviewed).toHaveCount(before + 1);
   });
 
+  test('reviewing a field report refreshes every open manager dashboard', async ({ page }) => {
+    await openReports(page);
+    const observer = await page.context().newPage();
+    await openReports(observer);
+    await page.getByRole('tab', { name: /تقارير الميدان/ }).click();
+    await observer.getByRole('tab', { name: /تقارير الميدان/ }).click();
+
+    const title = 'طلبية سماد';
+    const reviewedBy = page.locator('.report').filter({ hasText: title });
+    const observed = observer.locator('.report').filter({ hasText: title });
+    await expect(reviewedBy).toContainText('جديد');
+    await expect(observed).toContainText('جديد');
+    await reviewedBy.getByRole('button', { name: 'تمت المراجعة' }).click();
+    await expect(reviewedBy).toContainText('تمت المراجعة');
+    await expect(observed).toContainText('تمت المراجعة');
+    await observer.close();
+  });
+
   test('the status filter only keeps the requested state', async ({ page }) => {
     await openReports(page);
     await page.getByLabel('الحالة').selectOption('new');

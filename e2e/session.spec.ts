@@ -62,6 +62,14 @@ test.describe('الجلسة', () => {
     await expect(page.getByLabel('كلمة المرور')).toHaveCount(0);
   });
 
+  test('logout still clears the local session when the API is unavailable', async ({ page }) => {
+    await signInAsManager(page);
+    await page.route('**/api/auth/logout', route => route.fulfill({ status: 503, json: { error: 'الخادم غير متاح' } }));
+    await page.getByRole('button', { name: 'خروج' }).click();
+    await expect(page.locator('.login-wrap')).toBeVisible();
+    expect(await page.evaluate(() => window.localStorage.getItem('mandoub.token'))).toBeNull();
+  });
+
   test('logging out returns to the login screen and clears the session', async ({ page }) => {
     await signInAsManager(page);
     await page.getByRole('button', { name: 'خروج' }).click();

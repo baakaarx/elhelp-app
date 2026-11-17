@@ -43,7 +43,9 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
       if (!res.ok) throw new Error('فشل التصدير');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `elhelb-monthly-${month}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      const a = document.createElement('a'); a.href = url; a.download = `elhelb-monthly-${month}.xlsx`; document.body.appendChild(a); a.click(); a.remove();
+      // Let the browser finish starting the download before releasing its blob URL.
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر التصدير.'); }
     finally { setExporting(false); }
   }

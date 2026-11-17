@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { api, getToken, patch, post, setToken } from './api';
+import { ApiError, api, getToken, patch, post, setToken } from './api';
 import { localDay } from './dates';
 import { ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
@@ -70,7 +70,18 @@ export default function App() {
       // With no live socket the poll is the only thing that can notice a new report, so the
       // reports screen follows it; when the socket is up its events do that job instead.
       if (!liveRef.current) bumpReports();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.'); }
+    } catch (e) {
+      // api() removes an expired/invalid token on 401. Move back to login as well, rather than
+      // leaving the manager-looking dashboard mounted with requests that can never succeed.
+      if (e instanceof ApiError && (e.status === 401 || e.code === 'CLIENT_ROLE_MISMATCH')) {
+        setUser(null);
+        setOverview(null);
+        setAlerts([]);
+        setIdleReports([]);
+        return;
+      }
+      setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.');
+    }
   }, [bumpReports]);
 
   useEffect(() => {
@@ -101,12 +112,23 @@ export default function App() {
 
   const reps = overview?.reps ?? [];
   const selected = useMemo(() => reps.find(r => r.id === selectedId) ?? null, [reps, selectedId]);
-  const activeToday = reps.filter(r => r.location).length;
   const trackingNow = reps.filter(r => r.tracking).length;
   const totalKm = reps.reduce((sum, r) => sum + r.distanceMeters, 0);
   const warnCount = alerts.filter(a => a.level === 'warn').length;
-  // Server owns the threshold so the map text and the alert list agree.
-  const staleMs = (overview?.staleGpsMinutes ?? 10) * 60000;
+  // Server owns the threshold so the map text, alert list and fresh-signal count agree.
+  const staleGpsMinutes = overview?.staleGpsMinutes ?? 10;
+  const staleMs = staleGpsMinutes * 60000;
+  // Compare GPS timestamps with the API clock, then advance it locally between refreshes; this
+  // avoids a manager laptop's clock skew changing who appears to have a current signal.
+  const serverNow = overview?.serverTime !== undefined && syncedAt !== null
+    ? overview.serverTime + Math.max(0, clock - syncedAt)
+    : clock;
+  const freshSignalCount = reps.filter(rep => {
+    const recordedAt = rep.location?.recordedAt;
+    return rep.tracking && typeof recordedAt === 'number'
+      && recordedAt <= serverNow + 120_000
+      && serverNow - recordedAt <= staleMs;
+  }).length;
   const selectedIdle = useMemo(() => idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId]);
 
   // The trail is refreshed on its own slow clock. Tying it to `overview.serverTime` meant every
@@ -114,6 +136,9 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) { setRoute(null); setVisits([]); return; }
     let cancelled = false;
+    // Do not leave the previous engineer/day visible while the new route is loading.
+    setRoute(null);
+    setVisits([]);
     // The panel is labelled "زيارات اليوم" when no date is picked, so it has to ask for that day:
     // without it the list showed every visit the engineer ever made under a "today" heading.
     const day = routeDate || localDay(overview?.timezone);
@@ -165,7 +190,13 @@ export default function App() {
           </div>
           <div className="topbar-actions">
             <button className="btn ghost sm" onClick={() => refresh()}>تحديث</button>
-            <button className="btn ghost sm" onClick={async () => { await logout(); setUser(null); }}>خروج</button>
+            <button className="btn ghost sm" onClick={async () => {
+              try { await logout(); } catch { /* The local session is cleared even if the API is unreachable. */ }
+              setUser(null);
+              setOverview(null);
+              setAlerts([]);
+              setIdleReports([]);
+            }}>خروج</button>
           </div>
         </header>
         {error && <p className="error banner" role="alert">{error}</p>}
@@ -174,8 +205,8 @@ export default function App() {
             {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
             {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={repId => setSelectedId(repId)} />}
             <div className="stats">
-              <Stat label="مهندسون في الميدان" value={formatNumber(activeToday)} hint={`من ${formatNumber(reps.length)} مهندس`} />
-              <Stat label="يتتبع الآن" value={formatNumber(trackingNow)} hint="وردية مفتوحة" />
+              <Stat label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
+              <Stat label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
               <Stat label="إجمالي مسافة اليوم" value={`${formatNumber(totalKm / 1000)} كم`} hint="تقديري بعد استبعاد النقاط الضعيفة" />
               <Stat label="بانتظار المراجعة" value={formatNumber(overview?.newReports ?? 0)} hint="تقارير ميدان ويومية" />
             </div>
@@ -285,7 +316,7 @@ function EngineerOnlyNotice() {
 function AlertsPanel({ alerts, staleMinutes, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; onPick: (repId?: string) => void }) {
   const [open, setOpen] = useState(true);
   const warn = alerts.filter(a => a.level === 'warn');
-  const shown = open ? alerts.slice(0, 8) : alerts.slice(0, 2);
+  const shown = open ? alerts : alerts.slice(0, 2);
   return (
     <div className="alerts-panel" role="region" aria-label="تنبيهات الميدان">
       <div className="alerts-head">
@@ -310,7 +341,7 @@ function AlertsPanel({ alerts, staleMinutes, onPick }: { alerts: ManagerAlert[];
 
 function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]; clock: number; onPick: (repId: string) => void }) {
   const [open, setOpen] = useState(false);
-  const shown = open ? reports.slice(0, 10) : reports.slice(0, 3);
+  const shown = open ? reports : reports.slice(0, 3);
   return (
     <div className="alerts-panel" role="region" aria-label="تبريرات الوقوف">
       <div className="alerts-head">
