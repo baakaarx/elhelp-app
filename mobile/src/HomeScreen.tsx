@@ -9,6 +9,7 @@ import type { FieldBundle } from './useField';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId } from './device';
 import { reportIdle } from './api';
+import { openBatteryExemption, openBatterySettings } from './battery';
 
 type Props = {
   user: User;
@@ -217,6 +218,14 @@ function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, se
         </>
       )}
       {Platform.OS === 'web' ? <Body muted>على المتصفح قد يتوقف تسجيل الموقع عند إغلاق الصفحة أو قفل الشاشة.</Body> : <Toggle checked={background} onChange={() => setBackground(!background)} label="السماح بالتسجيل في الخلفية (موصى به حتى لو الشاشة مقفولة)" />}
+      {Platform.OS !== 'web' && (
+        <>
+          <Body>عشان التتبع ما يقفش والشاشة مقفولة، اسمح للبطارية تشتغل من غير قيود:</Body>
+          <Button label="السماح بتتبع بدون قيود للبطارية" variant="ghost" onPress={() => { void openBatteryExemption().catch(() => undefined); }} />
+          <Body muted>على سامسونج كمان: الإعدادات ← البطارية ← حدود الخلفية ← تطبيقات لا تنام أبداً ← ضيف التطبيق.</Body>
+          <Button label="فتح إعدادات البطارية" variant="ghost" onPress={() => { void openBatterySettings().catch(() => undefined); }} />
+        </>
+      )}
       {resume ? null : <Toggle checked={agreed} onChange={() => setAgreed(!agreed)} label="أوافق على تسجيل موقعي طوال الوردية وأقر بأن هذا توقيعي على الموافقة." />}
       {error ? <Text accessibilityRole="alert" style={{ color: colors.danger, textAlign: 'right', fontFamily: fonts.regular }}>{error}</Text> : null}
       <Button label={resume ? 'استئناف التتبع' : 'موافق، ابدأ الوردية'} onPress={onStart} disabled={!agreed || busy} loading={busy} />
