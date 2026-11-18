@@ -431,12 +431,12 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* ---------- Visits inside the selected rep card ---------- */
 .selected-visits { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
-.selected-visits h5 { margin: 0 0 6px; font-size: .82rem; color: var(--muted); font-weight: 600; }
-.selected-visits ul { display: grid; gap: 6px; }
-.selected-visits li { display: flex; align-items: center; gap: 8px; font-size: .82rem; }
-.selected-visits small { display: block; color: var(--muted); font-size: .74rem; }
+.selected-visits h5 { margin: 0 0 8px; font-size: .82rem; color: var(--muted); font-weight: 600; }
+.visit-cards { display: grid; gap: 10px; }
+.visit-cards .visit-card h3 { font-size: 1rem; }
+.visit-cards .visit-card p { margin: 0; }
 /* A visit typed with no signal, or one that ended without a result: worth a second look. */
-.selected-visits .visit-marks { color: #b45309; font-weight: 600; }
+.visit-marks { color: #b45309; font-weight: 600; font-size: .8rem; }
 
 /* ---------- KPI table ---------- */
 .kpi-table-wrap { overflow-x: auto; }

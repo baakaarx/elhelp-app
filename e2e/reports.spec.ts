@@ -55,6 +55,15 @@ test.describe('التقارير اليومية والميدانية', () => {
     await observer.close();
   });
 
+  test('the visits tab lists the recorded visits with their details', async ({ page }) => {
+    await openReports(page);
+    await page.getByRole('tab', { name: /الزيارات/ }).click();
+    const cards = page.locator('.report');
+    await expect(cards.first()).toBeVisible();
+    await expect(page.locator('.report').filter({ hasText: 'مزرعة النور' })).toHaveCount(1);
+    await expect(page.locator('.report').filter({ hasText: 'مزرعة النور' })).toContainText('البحيرة');
+  });
+
   test('the status filter only keeps the requested state', async ({ page }) => {
     await openReports(page);
     await page.getByLabel('الحالة').selectOption('new');
