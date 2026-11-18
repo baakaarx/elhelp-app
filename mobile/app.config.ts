@@ -70,7 +70,9 @@ const config: ExpoConfig = {
     // Matches the artwork's own corner colour, so the mask edge never shows a different navy.
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: '#020305' },
     // POST_NOTIFICATIONS is required at runtime on Android 13+ for the opt-in review alerts.
-    permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'ACCESS_BACKGROUND_LOCATION', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_LOCATION', 'POST_NOTIFICATIONS'],
+    // REQUEST_IGNORE_BATTERY_OPTIMIZATIONS lets the setup sheet offer the one-tap battery
+    // exemption, without which Samsung/Xiaomi kill background tracking with the screen locked.
+    permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'ACCESS_BACKGROUND_LOCATION', 'FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_LOCATION', 'POST_NOTIFICATIONS', 'REQUEST_IGNORE_BATTERY_OPTIMIZATIONS'],
   },
   web: { bundler: 'metro', output: 'single', favicon: './assets/favicon.png' },
   plugins: [
