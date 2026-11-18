@@ -3,7 +3,7 @@ import { E2E_REPS } from './fixtures';
 import { signInAsManager } from './helpers';
 
 test.describe('المتابعة الحية والفريق', () => {
-  test('the overview lists the real team that signed up', async ({ page }) => {
+  test('the overview lists the real team created for the browser suite', async ({ page }) => {
     await signInAsManager(page);
     await expect(page.getByText('مهندسون بإشارة حديثة')).toBeVisible();
     await expect(page.getByText('إجمالي مسافة اليوم')).toBeVisible();
@@ -44,6 +44,22 @@ test.describe('المتابعة الحية والفريق', () => {
     await page.getByRole('button', { name: /هويتي/ }).click();
     await expect(page.getByRole('heading', { name: 'الخصوصية والاحتفاظ' })).toBeVisible();
     await expect(page.getByText(/لا يبدأ التتبع إلا بعد موافقة/)).toBeVisible();
+  });
+
+  test('a manager creates an engineer account from the team page', async ({ page }) => {
+    await signInAsManager(page);
+    await page.getByRole('button', { name: /فريق الميدان/ }).click();
+
+    const email = `new-rep-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.test`;
+    await page.getByLabel('اسم المهندس').fill('مهندس حساب جديد');
+    await page.getByLabel('البريد الإلكتروني').fill(email);
+    await page.getByLabel('كلمة المرور الأولية').fill('NewRepPassword123!');
+    await page.getByLabel('الهاتف').fill('01012345678');
+    await page.getByLabel('المنطقة').fill('الإسكندرية');
+    await page.getByRole('button', { name: 'إنشاء حساب المهندس' }).click();
+
+    await expect(page.getByRole('status')).toContainText(email);
+    await expect(page.locator('.rep-list').filter({ hasText: email })).toBeVisible();
   });
 
   test('the field alerts panel lists exceptions with a jump-to-rep action', async ({ page }) => {

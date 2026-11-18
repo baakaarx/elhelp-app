@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API_AUTH_REQUIRED_EVENT, ApiError, api, getToken, patch, post, setToken } from './api';
 import { dateTimeText, localDay, localDateText, timeText } from './dates';
@@ -388,6 +388,25 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
 
 function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void; timezone?: string }) {
   const [error, setError] = useState('');
+  const [newRep, setNewRep] = useState({ name: '', email: '', password: '', phone: '', region: '' });
+  const [creatingRep, setCreatingRep] = useState(false);
+  const [createdRepMessage, setCreatedRepMessage] = useState('');
+  async function createRep(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setCreatedRepMessage('');
+    setCreatingRep(true);
+    try {
+      const result = await post<{ user: User }>('/api/reps', {
+        name: newRep.name.trim(), email: newRep.email.trim(), password: newRep.password,
+        phone: newRep.phone.trim(), region: newRep.region.trim(),
+      });
+      setNewRep({ name: '', email: '', password: '', phone: '', region: '' });
+      setCreatedRepMessage(`تم إنشاء حساب ${result.user.name} (${result.user.email}). أرسل له كلمة المرور التي اخترتها بأمان.`);
+      onChange();
+    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إنشاء حساب المهندس.'); }
+    finally { setCreatingRep(false); }
+  }
   // A representative who forgets their password cannot sign in and cannot be emailed: the
   // manager has to hand out a new one. Kept inline instead of a browser prompt so the field is
   // masked and the rule (ten characters) is visible while typing.
@@ -431,10 +450,49 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void;
     <section className="page">
       <header className="page-head"><div><h2>الفريق</h2><p className="muted">إدارة الفريق — من في الميدان حالاً وطابور القبول للمنضمين الجدد.</p></div></header>
       {error && <p className="error banner" role="alert">{error}</p>}
+      <div className="panel">
+        <h3 className="panel-title">إنشاء حساب مهندس</h3>
+        <p className="muted small">أنشئ الحساب من هنا، ثم أرسل للمهندس بريده وكلمة المرور التي اخترتها عبر قناة آمنة. كلمة المرور ١٠ أحرف على الأقل.</p>
+        <form className="stack" onSubmit={event => void createRep(event)}>
+          <div className="two-col">
+            <label className="field">
+              <span>اسم المهندس</span>
+              <input required minLength={2} maxLength={80} autoComplete="name" value={newRep.name}
+                onChange={event => setNewRep(current => ({ ...current, name: event.target.value }))} />
+            </label>
+            <label className="field">
+              <span>البريد الإلكتروني</span>
+              <input type="email" dir="ltr" required maxLength={254} autoComplete="email" value={newRep.email}
+                onChange={event => setNewRep(current => ({ ...current, email: event.target.value }))} />
+            </label>
+            <label className="field">
+              <span>كلمة المرور الأولية</span>
+              <input type="password" dir="ltr" required minLength={10} maxLength={200} autoComplete="new-password"
+                value={newRep.password} onChange={event => setNewRep(current => ({ ...current, password: event.target.value }))} />
+            </label>
+            <label className="field">
+              <span>الهاتف <span className="muted">(اختياري)</span></span>
+              <input type="tel" dir="ltr" maxLength={30} autoComplete="tel" value={newRep.phone}
+                onChange={event => setNewRep(current => ({ ...current, phone: event.target.value }))} />
+            </label>
+            <label className="field">
+              <span>المنطقة <span className="muted">(اختياري)</span></span>
+              <input maxLength={80} autoComplete="address-level1" value={newRep.region}
+                onChange={event => setNewRep(current => ({ ...current, region: event.target.value }))} />
+            </label>
+          </div>
+          <div className="filters">
+            <button className="btn primary" type="submit" disabled={creatingRep}>
+              {creatingRep ? 'جارٍ إنشاء الحساب…' : 'إنشاء حساب المهندس'}
+            </button>
+          </div>
+        </form>
+        {createdRepMessage && <p className="ok-text" role="status">{createdRepMessage}</p>}
+      </div>
       <div className="two-col">
         <div className="panel">
           <h3 className="panel-title">قبول المهندسين <span className="pill warn">{formatNumber(pending.length)} بانتظار الموافقة</span></h3>
-          <p className="muted small">الحسابات بتتعمل من «فريق الميدان». أي حساب حالته «بانتظار الموافقة» مش هيقدر يدخل لحد ما تقبله هنا.</p>
+          <p className="muted small">الحساب الذي تنشئه من النموذج أعلاه يصبح جاهزًا للدخول مباشرة. طلبات الانضمام المعلّقة (إن وُجدت) لا يمكنها الدخول حتى توافق عليها هنا.</p>
           <ul className="rep-list">
             {pending.length === 0 && <li className="empty">لا يوجد طلبات جديدة — كل المهندسين مقبولين.</li>}
             {pending.map(rep => (
