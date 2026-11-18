@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Platform } from 'react-native';
 import { mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
-import { hasBackgroundPermission, hasForegroundPermission, requestPermissions, startTracking, stopTracking } from './tracking';
+import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
@@ -28,6 +29,12 @@ export interface FieldBundle {
    * lost — but the engineer must know the manager cannot see it yet.
    */
   offlineNotice: string;
+  /**
+   * Background tracking is not running while a shift is open, so locations stop the moment the
+   * screen locks. Shown as a persistent warning — this used to fail silently and the manager
+   * only found out from a stale signal.
+   */
+  backgroundNotice: string;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -37,6 +44,12 @@ export interface FieldBundle {
   checkIn: (input: VisitInput) => Promise<void>;
   checkOut: (id: string, input: CheckOutInput) => Promise<void>;
 }
+
+/** Shown in the consent sheet when background tracking was asked for but cannot run. */
+const BACKGROUND_PERMISSION_MESSAGE = 'لم يتم منح إذن الموقع في الخلفية. فعّل «السماح دائمًا» من إعدادات التطبيق عشان التتبع يشتغل والشاشة مقفولة — أو اقفل خيار «التسجيل في الخلفية» لو مش عايزه.';
+const BACKGROUND_START_FAILED = 'تعذر تشغيل تتبع الخلفية. تأكد من إذن الموقع «السماح دائمًا» ومن إن البطارية «بدون قيود» ثم حاول مجددًا.';
+/** Persistent warning while a shift is open without background tracking. */
+const BACKGROUND_NOTICE = 'تتبع الخلفية مش شغال — الموقع هيقف لما الشاشة تتقفل. فعّل إذن الموقع «السماح دائمًا» من إعدادات التطبيق عشان التتبع يفضل شغال.';
 
 export function useField(user: User | null, onSessionExpired: () => void): FieldBundle {
   const [summary, setSummary] = useState<RepSummary | null>(null);
@@ -48,6 +61,8 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [error, setError] = useState('');
   const [syncNotice, setSyncNotice] = useState('');
   const [offlineNotice, setOfflineNotice] = useState('');
+  const [backgroundNotice, setBackgroundNotice] = useState('');
+  const trackingActiveRef = useRef(false);
   const mounted = useRef(true);
   const pendingVisitNotice = (count: number) => count > 0
     ? `هناك ${count} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.`
@@ -63,6 +78,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const syncing = useRef(false);
 
   useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => { trackingActiveRef.current = trackingActive; }, [trackingActive]);
 
   const refresh = useCallback(async () => {
     if (!user) return;
@@ -113,6 +129,12 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
           setSyncNotice(result.notice ?? '');
           setOfflineNotice(pendingVisitNotice(result.pendingVisits));
         }
+        // If the OS killed the background service mid-shift, the engineer must know now —
+        // not when the manager reports a stale signal.
+        if (trackingActiveRef.current && Platform.OS !== 'web') {
+          const running = await isBackgroundTracking();
+          if (mounted.current) setBackgroundNotice(running ? '' : BACKGROUND_NOTICE);
+        }
         await refresh();
       })().catch(() => undefined).finally(() => { syncing.current = false; });
     }, 15000);
@@ -140,11 +162,16 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (outboxState.blockedByOwner) throw new Error(outboxState.notice || 'بيانات معلّقة لحساب آخر؛ لا يمكن بدء التتبع قبل حلها.');
       const permission = await requestPermissions(background);
       if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن تشغيل التتبع بدونها.');
+      // Asked for background tracking but the phone said no: stop here with a clear reason
+      // instead of running foreground-only and dying the moment the screen locks.
+      if (background && !permission.background) throw new Error(BACKGROUND_PERMISSION_MESSAGE);
       const shift = summary?.shift ?? (await shiftState()).shift;
       const shiftId = shift?.id ?? await getActiveShift();
       if (!shiftId) throw new Error('لا توجد وردية مفتوحة على هذا الجهاز. ابدأ وردية جديدة.');
-      await startTracking(shiftId, { background: background && permission.background, startedAt: shift ? Number(shift.started_at) : undefined });
+      const tracking = await startTracking(shiftId, { background: background && permission.background, startedAt: shift ? Number(shift.started_at) : undefined });
+      if (background && !tracking.backgroundRunning) throw new Error(BACKGROUND_START_FAILED);
       setTrackingActive(true);
+      setBackgroundNotice('');
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
@@ -165,8 +192,13 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (!(await hasForegroundPermission())) return;
       const background = await hasBackgroundPermission();
       if (cancelled) return;
-      await startTracking(shift.id, { background, startedAt: Number(shift.started_at) });
-      if (!cancelled) setTrackingActive(true);
+      const tracking = await startTracking(shift.id, { background, startedAt: Number(shift.started_at) });
+      if (!cancelled) {
+        setTrackingActive(true);
+        // The shift is already open, so a missing background permission cannot block here —
+        // warn persistently instead of going quiet until the screen locks.
+        setBackgroundNotice(Platform.OS !== 'web' && !tracking.backgroundRunning ? BACKGROUND_NOTICE : '');
+      }
     })().catch(() => undefined);
     return () => { cancelled = true; };
   }, [summary?.shift?.id, summary?.shift?.started_at, trackingActive, busy, user?.id]);
@@ -178,6 +210,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (outboxState.blockedByOwner) throw new Error(outboxState.notice || 'بيانات معلّقة لحساب آخر؛ لا يمكن بدء وردية جديدة قبل حلها.');
       const permission = await requestPermissions(background);
       if (!permission.foreground) throw new Error('لم يتم منح صلاحية الموقع. لا يمكن بدء التتبع بدونها.');
+      // Asked for background tracking but the phone said no: stop here with a clear reason
+      // instead of running foreground-only and dying the moment the screen locks.
+      if (background && !permission.background) throw new Error(BACKGROUND_PERMISSION_MESSAGE);
       // Starting a shift is a claim about the phone's current location; do not reuse cached GPS.
       const fix = await captureOnce({ maxAgeMs: 0 });
       if (!fix) throw new Error(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل بدء الوردية.');
@@ -185,15 +220,19 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       const deviceName = await getDeviceName();
       const res = await startShift('1.0', fix, deviceId, deviceName);
       try {
-        await startTracking(res.shift.id, { background: background && permission.background, startedAt: res.shift.started_at });
+        const tracking = await startTracking(res.shift.id, { background: background && permission.background, startedAt: res.shift.started_at });
+        if (background && !tracking.backgroundRunning) throw new Error(BACKGROUND_START_FAILED);
         setTrackingActive(true);
-      } catch {
+        setBackgroundNotice('');
+      } catch (e) {
         await stopTracking().catch(() => undefined);
         setTrackingActive(false);
         // The server may already have opened the shift. Refresh its state rather than
         // pretending it didn't, and let the engineer retry from the consent sheet.
         await refresh();
-        throw new Error('تم بدء الوردية، لكن تعذر تشغيل تتبع الموقع. تأكد من صلاحية الموقع ثم حاول مجددًا.');
+        // Keep a specific background-tracking failure visible instead of replacing it with
+        // the generic one.
+        throw e instanceof Error && e.message === BACKGROUND_START_FAILED ? e : new Error('تم بدء الوردية، لكن تعذر تشغيل تتبع الموقع. تأكد من صلاحية الموقع ثم حاول مجددًا.');
       }
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
@@ -219,6 +258,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await stopShift();
       await stopTracking();
       setTrackingActive(false);
+      setBackgroundNotice('');
       await flushOutbox(user?.id);
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
@@ -276,7 +316,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [refresh, user?.id]);
 
   return {
-    summary, visits, pending, loading, busy, trackingActive, syncNotice, offlineNotice, error,
+    summary, visits, pending, loading, busy, trackingActive, syncNotice, offlineNotice, backgroundNotice, error,
     clearError: () => setError(''),
     refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };
