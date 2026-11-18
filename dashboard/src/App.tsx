@@ -389,8 +389,13 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
 function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void | Promise<void>; timezone?: string }) {
   const [error, setError] = useState('');
   const [newRep, setNewRep] = useState({ name: '', email: '', password: '', phone: '', region: '' });
+  const [createdReps, setCreatedReps] = useState<Rep[]>([]);
   const [creatingRep, setCreatingRep] = useState(false);
   const [createdRepMessage, setCreatedRepMessage] = useState('');
+  const teamReps = useMemo(() => {
+    const existingIds = new Set(reps.map(rep => rep.id));
+    return [...reps, ...createdReps.filter(rep => !existingIds.has(rep.id))];
+  }, [reps, createdReps]);
   async function createRep(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
@@ -401,6 +406,10 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
         name: newRep.name.trim(), email: newRep.email.trim(), password: newRep.password,
         phone: newRep.phone.trim(), region: newRep.region.trim(),
       });
+      setCreatedReps(current => [{
+        ...result.user, online: false, createdAt: Date.now(), tracking: false, shiftStartedAt: null,
+        lastSeen: null, location: null, distanceMeters: 0, pointCount: 0, visitsToday: 0, openVisit: null,
+      }, ...current.filter(rep => rep.id !== result.user.id)]);
       setNewRep({ name: '', email: '', password: '', phone: '', region: '' });
       await onChange();
       setCreatedRepMessage(`تم إنشاء حساب ${result.user.name} (${result.user.email}). أرسل له كلمة المرور التي اخترتها بأمان.`);
@@ -444,8 +453,8 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     try { await post(`/api/reps/${rep.id}/reset-device`, {}); onChange(); }
     catch (e) { setError(e instanceof Error ? e.message : 'تعذر إعادة ربط الجهاز.'); }
   }
-  const pending = reps.filter(r => (r as any).approvalStatus === 'pending');
-  const inWork = reps.filter(r => r.tracking || r.online);
+  const pending = teamReps.filter(r => (r as any).approvalStatus === 'pending');
+  const inWork = teamReps.filter(r => r.tracking || r.online);
   return (
     <section className="page">
       <header className="page-head"><div><h2>الفريق</h2><p className="muted">إدارة الفريق — من في الميدان حالاً وطابور القبول للمنضمين الجدد.</p></div></header>
@@ -509,7 +518,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
           </ul>
         </div>
         <div className="panel">
-          <h3 className="panel-title">الناس اللي في الشغل حالاً ({formatNumber(inWork.length)} / {formatNumber(reps.filter(r => r.active).length)})</h3>
+          <h3 className="panel-title">الناس اللي في الشغل حالاً ({formatNumber(inWork.length)} / {formatNumber(teamReps.filter(r => r.active).length)})</h3>
           <p className="muted small">يظهر فقط المهندسين اللي فاتحين وردية أو متصلين الآن — مربوط بجهازهم.</p>
           <ul className="rep-list">
             {inWork.length === 0 && <li className="empty">مفيش حد في الشغل دلوقتي — أول ما يفتح وردية هيظهر هنا بعلامة خضراء.</li>}
@@ -525,11 +534,11 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
               </li>
             ))}
           </ul>
-          {reps.filter(r => !inWork.includes(r) && (r as any).approvalStatus !== 'pending').length > 0 && (
+          {teamReps.filter(r => !inWork.includes(r) && (r as any).approvalStatus !== 'pending').length > 0 && (
             <>
               <h4 className="muted small" style={{ marginTop: 12 }}>باقي الفريق (خارج الوردية)</h4>
               <ul className="rep-list muted">
-                {reps.filter(r => !inWork.includes(r) && (r as any).approvalStatus !== 'pending').map(rep => (
+                {teamReps.filter(r => !inWork.includes(r) && (r as any).approvalStatus !== 'pending').map(rep => (
                   <li key={rep.id} className="team-row" style={{ opacity: rep.active ? 0.85 : 0.65 }}>
                     <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                     <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}{rep.active ? '' : ' · الحساب متوقف'}</small></span>
