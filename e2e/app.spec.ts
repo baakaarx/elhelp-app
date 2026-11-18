@@ -59,6 +59,18 @@ test.describe('المتابعة الحية والفريق', () => {
     await page.getByRole('button', { name: 'إنشاء حساب المهندس' }).click();
 
     await expect(page.getByRole('status')).toContainText(email);
+    const listedReps = await page.evaluate(async () => {
+      const token = window.localStorage.getItem('mandoub.token');
+      const response = await fetch('/api/reps', { headers: token ? { 'X-Mandoub-Token': token } : {} });
+      const body = await response.json() as { reps?: { email: string }[] };
+      return { status: response.status, emails: (body.reps ?? []).map(rep => rep.email) };
+    });
+    expect(listedReps.status).toBe(200);
+    expect(listedReps.emails).toContain(email);
+
+    await page.reload();
+    await expect(page.getByRole('heading', { level: 1, name: 'مركز العمليات' })).toBeVisible();
+    await page.getByRole('button', { name: /فريق الميدان/ }).click();
     await expect(page.locator('.rep-list').filter({ hasText: email })).toBeVisible();
   });
 
