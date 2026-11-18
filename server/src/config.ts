@@ -142,7 +142,7 @@ export function readConfig(): Config {
     oauthAppleClientIds: splitList(process.env.APPLE_CLIENT_IDS),
     loginAccountLimit: 10,
     adminTotpSecret: String(process.env.ADMIN_TOTP_SECRET || '').trim(),
-    loginRateLimit: { windowMs: 15 * 60000, limit: 15 },
+    loginRateLimit: { windowMs: 60000, limit: 15 },
     apiRateLimit: { windowMs: 60000, limit: 600 },
   };
 }

@@ -254,7 +254,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const kpiCache = new Map<string, { at: number; rows: ReturnType<typeof kpiRows> }>();
   function invalidateKpis() { kpiCache.clear(); }
   // A leaked password list is replayed from many addresses, so the per-IP limiter alone is not
-  // enough: too many failures on one account also freeze that account for a quarter of an hour.
+  // enough: too many failures on one account also freeze that account for a minute.
   const LOGIN_FAILURE_LIMIT = config.loginAccountLimit;
   const LOGIN_FAILURE_WINDOW = config.loginRateLimit.windowMs;
   const loginFailures = new Map<string, { count: number; resetAt: number }>();
@@ -488,11 +488,11 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
 
   app.get('/api/health', (_req, res) => { res.json({ ok: true, timezone: config.timezone, retentionDays: config.retentionDays, consentVersion: CONSENT_VERSION, staleGpsMinutes: config.staleGpsMinutes, idleReasonMinutes: config.idleReasonMinutes }); });
-  app.post('/api/auth/login', rateLimit({ ...config.loginRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ربع ساعة.' } }), (req, res) => {
+  app.post('/api/auth/login', rateLimit({ ...config.loginRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر دقيقة.' } }), (req, res) => {
     const parsed = credentials.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'أدخل بريدًا إلكترونيًا صحيحًا وكلمة مرور.' }); return; }
     if (loginIsFrozen(parsed.data.email)) {
-      res.status(429).json({ error: 'محاولات دخول كثيرة على هذا الحساب. انتظر ١٥ دقيقة أو اطلب من مدير المتابعة تغيير كلمة المرور.', code: 'ACCOUNT_THROTTLED' }); return;
+      res.status(429).json({ error: 'محاولات دخول كثيرة على هذا الحساب. انتظر دقيقة أو اطلب من مدير المتابعة تغيير كلمة المرور.', code: 'ACCOUNT_THROTTLED' }); return;
     }
     const user = store.get('SELECT * FROM users WHERE email=? AND active=1', parsed.data.email);
     // Run scrypt even for unknown accounts to reduce account-enumeration timing differences.
@@ -534,7 +534,7 @@ export function createApp(overrides: Partial<Config> = {}) {
      server verifies the signature and the claims, then issues the same session a password
      login would. Accounts are never created here: an unknown address gets a clear "ask your
      manager", because the app is an internal tool and a Google account is not a licence. */
-  app.post('/api/auth/oauth', rateLimit({ ...config.loginRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر ربع ساعة.' } }), async (req, res) => {
+  app.post('/api/auth/oauth', rateLimit({ ...config.loginRateLimit, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'محاولات دخول كثيرة. انتظر دقيقة.' } }), async (req, res) => {
     const parsed = oauthLogin.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'طلب تسجيل دخول غير صالح.' }); return; }
     const { provider, idToken, name } = parsed.data;
