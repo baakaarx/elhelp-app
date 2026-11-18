@@ -13,12 +13,11 @@ test.describe('التقارير اليومية والميدانية', () => {
     await expect(page.getByRole('tab', { name: /التقارير اليومية/ })).toHaveAttribute('aria-selected', 'true');
     const reports = page.locator('.report');
     await expect(reports.first()).toBeVisible();
-    await expect(reports.first().getByRole('button', { name: 'عرض التفاصيل' })).toBeVisible();
+    await expect(reports.first().locator('.visits table')).toBeVisible();
   });
 
-  test('expanding a daily report shows the visit table and electronic signature', async ({ page }) => {
+  test('a daily report shows the visit table and electronic signature', async ({ page }) => {
     await openReports(page);
-    await page.locator('.report').first().getByRole('button', { name: 'عرض التفاصيل' }).click();
     await expect(page.locator('.visits table')).toBeVisible();
     await expect(page.getByText(/توقيع إلكتروني:/)).toBeVisible();
   });
