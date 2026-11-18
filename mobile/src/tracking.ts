@@ -68,7 +68,13 @@ export async function currentBattery(): Promise<number | null> {
   } catch { return battery; }
 }
 
-export async function startTracking(id: string, opts: { background: boolean; startedAt?: number } = { background: true }) {
+/** True only while the OS background location task is actually running. */
+export async function isBackgroundTracking(): Promise<boolean> {
+  if (Platform.OS === 'web') return false;
+  return Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false);
+}
+
+export async function startTracking(id: string, opts: { background: boolean; startedAt?: number } = { background: true }): Promise<{ backgroundRunning: boolean }> {
   shiftId = id;
   lastQueued = null;
   await setActiveShift(id);
@@ -117,21 +123,33 @@ export async function startTracking(id: string, opts: { background: boolean; sta
       },
     );
   }
-  if (opts.background && Platform.OS !== 'web' && !(await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false))) {
-    await Location.startLocationUpdatesAsync(BACKGROUND_TASK, {
-      accuracy: Location.Accuracy.High,
-      timeInterval: 5000,
-      distanceInterval: 10,
-      deferredUpdatesInterval: 5000,
-      pausesUpdatesAutomatically: false,
-      showsBackgroundLocationIndicator: true,
-      foregroundService: {
-        notificationTitle: 'الهلب · تسجيل الموقع',
-        notificationBody: 'يتم تسجيل موقعك أثناء الوردية. أوقف التتبع من التطبيق لإيقافه.',
-        notificationColor: '#1f513f',
-      },
-    }).catch(() => undefined);
+  // The foreground service is what keeps locations flowing with the screen locked. Starting it
+  // can fail (permission revoked, OS refusal) — that used to be swallowed, so the engineer
+  // believed tracking was on while it died the moment the phone locked. Report the truth.
+  let backgroundRunning = false;
+  if (opts.background && Platform.OS !== 'web') {
+    try {
+      if (!(await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false))) {
+        await Location.startLocationUpdatesAsync(BACKGROUND_TASK, {
+          accuracy: Location.Accuracy.High,
+          timeInterval: 5000,
+          distanceInterval: 10,
+          deferredUpdatesInterval: 5000,
+          pausesUpdatesAutomatically: false,
+          showsBackgroundLocationIndicator: true,
+          foregroundService: {
+            notificationTitle: 'الهلب · تسجيل الموقع',
+            notificationBody: 'يتم تسجيل موقعك أثناء الوردية. أوقف التتبع من التطبيق لإيقافه.',
+            notificationColor: '#1f513f',
+          },
+        });
+      }
+      backgroundRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false);
+    } catch {
+      backgroundRunning = false;
+    }
   }
+  return { backgroundRunning };
 }
 export async function stopTracking() {
   shiftId = null;
