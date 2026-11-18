@@ -43,6 +43,17 @@ export function timeText(at: number, timeZone: string = DEFAULT_TIMEZONE): strin
   return new Date(at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone });
 }
 
+/** Daily-report work times are stored as `HH:MM`; show them with صباحاً/مساءً. */
+export function formatClockArabic(value: string): string {
+  const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return value || '—';
+  const hour = Number(match[1]);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return value;
+  const period = hour >= 12 ? 'مساءً' : 'صباحاً';
+  const hour12 = hour % 12 || 12;
+  return `${String(hour12).padStart(2, '0')}:${match[2]} ${period}`;
+}
+
 /** A date and time for an event, formatted on the installation's clock. */
 export function dateTimeText(at: number, timeZone: string = DEFAULT_TIMEZONE): string {
   return new Date(at).toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short', timeZone });

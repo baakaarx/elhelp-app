@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
 import './src/trackingTask';
@@ -18,7 +18,7 @@ import { stopTracking } from './src/tracking';
 import { useField } from './src/useField';
 import { onMockLocationDetected, MOCK_LOCATION_MESSAGE } from './src/location';
 import { initializePushHandling } from './src/push';
-import { colors, fonts, space } from './src/theme';
+import { colors, fonts, radius, space } from './src/theme';
 import type { User } from './src/types';
 
 type Tab = 'home' | 'visits' | 'reports' | 'daily' | 'settings';
@@ -29,6 +29,35 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'daily', label: 'اليومي', icon: '▤' },
   { id: 'settings', label: 'حسابي', icon: '⚙' },
 ];
+
+/**
+ * A render error in one tab must not take the whole app down. The boundary keeps the
+ * bottom navigation alive and sends the engineer back to the home tab instead.
+ */
+class ScreenBoundary extends Component<{ children: ReactNode; onReset: () => void }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error) { console.warn('[app] screen error', error); }
+  render() {
+    if (this.state.error) {
+      return (
+        <View style={styles.screenError}>
+          <Text style={styles.screenErrorTitle}>تعذر فتح هذه الشاشة</Text>
+          <Text style={styles.screenErrorText}>حدثت مشكلة أثناء عرض البيانات. ارجع للرئيسية وحاول مرة أخرى.</Text>
+          <Pressable
+            onPress={() => { this.setState({ error: null }); this.props.onReset(); }}
+            accessibilityRole="button"
+            accessibilityLabel="العودة للرئيسية"
+            style={styles.screenErrorButton}
+          >
+            <Text style={styles.screenErrorButtonText}>العودة للرئيسية</Text>
+          </Pressable>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const [fontsLoaded] = useFonts({ NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold });
@@ -49,6 +78,7 @@ export default function App() {
 }
 
 function Root() {
+  const insets = useSafeAreaInsets();
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('home');
   const [pushRefresh, setPushRefresh] = useState(0);
@@ -60,6 +90,12 @@ function Root() {
     setUser(null);
   }, []);
   const field = useField(user ?? null, onSessionExpired);
+  const selectTab = useCallback((next: Tab) => {
+    setTab(next);
+    // Visits and reports are the tabs engineers open most; refresh them on entry so a
+    // stale poll never looks like a broken button.
+    if (next === 'visits' || next === 'reports') void field.refresh();
+  }, [field.refresh]);
 
   const completeLogout = useCallback(async () => {
     await stopTracking().catch(() => undefined);
@@ -165,44 +201,55 @@ function Root() {
         ) : null}
         {field.error && <View style={styles.errorBar}><Text style={styles.errorText}>{field.error}</Text></View>}
         <View style={styles.body}>
-          {tab === 'home' && (
-            <HomeScreen
-              user={user}
-              field={field}
-              onOpenVisits={() => setTab('visits')}
-              onOpenReports={() => setTab('reports')}
-              onOpenDaily={() => setTab('daily')}
-            />
-          )}
-          {tab === 'visits' && <VisitsScreen user={user} field={field} />}
-          {tab === 'reports' && <ReportScreen ownerId={user.id} onPending={() => void field.refresh()} refreshKey={pushRefresh} />}
-          {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} timezone={field.summary?.timezone} />}
-          {tab === 'settings' && (
-            <SettingsScreen
-              user={user}
-              field={field}
-              onLogout={() => { void requestLogout(user.id); }}
-              // The server has deleted the account. Stop all producers before clearing its on-device work.
-              onDeleted={async () => {
-                await stopTracking().catch(() => undefined);
-                await deactivateOutboxUser();
-                setUser(null);
-                let outboxCleared = true;
-                try { await clearOutbox(); } catch { outboxCleared = false; }
-                await clearDeviceData();
-                if (!outboxCleared) {
-                  Alert.alert('تم حذف الحساب', 'لكن تعذر محو بعض البيانات المعلقة من الهاتف. لا تسجّل الدخول بحساب آخر على هذا الجهاز قبل التواصل مع المسؤول.');
-                }
-              }}
-            />
-          )}
+          <ScreenBoundary key={tab} onReset={() => setTab('home')}>
+            {tab === 'home' && (
+              <HomeScreen
+                user={user}
+                field={field}
+                onOpenVisits={() => selectTab('visits')}
+                onOpenReports={() => selectTab('reports')}
+                onOpenDaily={() => selectTab('daily')}
+              />
+            )}
+            {tab === 'visits' && <VisitsScreen user={user} field={field} />}
+            {tab === 'reports' && <ReportScreen ownerId={user.id} onPending={() => void field.refresh()} refreshKey={pushRefresh} />}
+            {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} timezone={field.summary?.timezone} />}
+            {tab === 'settings' && (
+              <SettingsScreen
+                user={user}
+                field={field}
+                onLogout={() => { void requestLogout(user.id); }}
+                // The server has deleted the account. Stop all producers before clearing its on-device work.
+                onDeleted={async () => {
+                  await stopTracking().catch(() => undefined);
+                  await deactivateOutboxUser();
+                  setUser(null);
+                  let outboxCleared = true;
+                  try { await clearOutbox(); } catch { outboxCleared = false; }
+                  await clearDeviceData();
+                  if (!outboxCleared) {
+                    Alert.alert('تم حذف الحساب', 'لكن تعذر محو بعض البيانات المعلقة من الهاتف. لا تسجّل الدخول بحساب آخر على هذا الجهاز قبل التواصل مع المسؤول.');
+                  }
+                }}
+              />
+            )}
+          </ScreenBoundary>
         </View>
       </SafeAreaView>
-      <View style={styles.tabBar}>
+      <View style={[styles.tabBar, { paddingBottom: Math.max(8, insets.bottom) }]}>
         {TABS.map(item => {
           const active = tab === item.id;
           return (
-            <Pressable key={item.id} style={styles.tab} onPress={() => setTab(item.id)} accessibilityRole="tab" accessibilityState={{ selected: active }} accessibilityLabel={item.label}>
+            <Pressable
+              key={item.id}
+              style={({ pressed }) => [styles.tab, pressed && styles.tabPressed]}
+              onPress={() => selectTab(item.id)}
+              hitSlop={10}
+              android_ripple={{ borderless: true }}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={item.label}
+            >
               <View style={[styles.tabIconWrap, active && styles.tabIconActive]}>
                 <Text style={[styles.tabIcon, active && styles.tabIconTextActive]}>{item.icon}</Text>
               </View>
@@ -246,11 +293,17 @@ const styles = StyleSheet.create({
   errorText: { fontFamily: fonts.regular, fontSize: 12, color: colors.danger, textAlign: 'right' },
   noticeBar: { backgroundColor: '#fdf3d7', borderBottomColor: '#e8d08a' },
   noticeText: { fontFamily: fonts.regular, fontSize: 12, color: '#7a5a12', textAlign: 'right', lineHeight: 19 },
+  screenError: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.sm, padding: space.xl, backgroundColor: colors.cream },
+  screenErrorTitle: { fontFamily: fonts.bold, fontSize: 17, color: colors.green900, textAlign: 'center' },
+  screenErrorText: { fontFamily: fonts.regular, fontSize: 13, color: colors.muted, textAlign: 'center', lineHeight: 22 },
+  screenErrorButton: { marginTop: space.sm, borderRadius: radius.md, backgroundColor: colors.green700, paddingHorizontal: 18, paddingVertical: 12 },
+  screenErrorButtonText: { fontFamily: fonts.bold, fontSize: 14, color: '#fdf8ec' },
   tabBar: {
     flexDirection: 'row-reverse', backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.line,
-    paddingBottom: 8, paddingTop: 8, paddingHorizontal: 6,
+    paddingBottom: 8, paddingTop: 8, paddingHorizontal: 6, elevation: 8, zIndex: 10,
   },
-  tab: { flex: 1, alignItems: 'center', gap: 3 },
+  tab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, minHeight: 56, borderRadius: 12 },
+  tabPressed: { backgroundColor: colors.mint },
   tabIconWrap: { width: 34, height: 26, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   tabIconActive: { backgroundColor: colors.mint },
   tabIcon: { fontSize: 16, color: colors.muted },

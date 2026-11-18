@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { myRoute, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
+import { mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
-import type { RepSummary, RouteResponse, User, Visit, VisitInput } from './types';
+import type { RepSummary, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
   outcome: string;
@@ -17,7 +17,6 @@ export interface CheckOutInput {
 export interface FieldBundle {
   summary: RepSummary | null;
   visits: Visit[];
-  route: RouteResponse | null;
   pending: number;
   loading: boolean;
   busy: boolean;
@@ -42,7 +41,6 @@ export interface FieldBundle {
 export function useField(user: User | null, onSessionExpired: () => void): FieldBundle {
   const [summary, setSummary] = useState<RepSummary | null>(null);
   const [visits, setVisits] = useState<Visit[]>([]);
-  const [route, setRoute] = useState<RouteResponse | null>(null);
   const [pending, setPending] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -66,18 +64,13 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
 
   useEffect(() => () => { mounted.current = false; }, []);
 
-  // The day's trail is large, so it follows a slower clock than the counters and visits.
-  const refreshCount = useRef(0);
   const refresh = useCallback(async () => {
     if (!user) return;
     try {
-      refreshCount.current += 1;
-      const withRoute = refreshCount.current % 4 === 1;
-      const [state, nextSummary, nextVisits, nextRoute] = await Promise.all([
+      const [state, nextSummary, nextVisits] = await Promise.all([
         shiftState(),
         mySummary(),
         myVisits(),
-        withRoute ? myRoute(user.id).catch(() => null) : Promise.resolve(undefined),
       ]);
       // A single empty answer used to look like "the shift ended". If the phone believes a
       // shift is open, ask once more before dropping the engineer out mid-workday.
@@ -94,9 +87,8 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         }
       }
       if (!mounted.current) return;
-      setSummary({ ...nextSummary, shift } as RepSummary);
-      setVisits(nextVisits.visits);
-      if (nextRoute !== undefined) setRoute(nextRoute);
+      setSummary({ ...(nextSummary ?? {}), shift } as RepSummary);
+      setVisits(Array.isArray(nextVisits.visits) ? nextVisits.visits : []);
     } catch (e) {
       const status = (e as { status?: number }).status ?? 0;
       if (status === 401) { onSessionExpired(); return; }
@@ -107,7 +99,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [user, onSessionExpired]);
 
   useEffect(() => {
-    if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setRoute(null); setError(''); return; }
+    if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setError(''); return; }
     void refresh();
     const timer = setInterval(() => {
       if (syncing.current) return;
@@ -284,7 +276,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [refresh, user?.id]);
 
   return {
-    summary, visits, route, pending, loading, busy, trackingActive, syncNotice, offlineNotice, error,
+    summary, visits, pending, loading, busy, trackingActive, syncNotice, offlineNotice, error,
     clearError: () => setError(''),
     refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };

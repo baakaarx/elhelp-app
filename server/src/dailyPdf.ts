@@ -43,6 +43,17 @@ const cell = (value: string | number | null | undefined, width: number, opts: Re
   text: wrapText(value, width - 8, Number(opts.fontSize || 9), !!opts.bold) || '—', alignment: 'right', ...opts,
 });
 const head = (value: string, width: number, opts: Record<string, unknown> = {}): Content => cell(value, width, { alignment: 'center', bold: true, fillColor: '#eef2e7', ...opts });
+
+/** Work times are stored as `HH:MM`; the paper form shows them with صباحاً/مساءً. */
+function formatClockArabic(value: string): string {
+  const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return value || '—';
+  const hour = Number(match[1]);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return value;
+  const period = hour >= 12 ? 'مساءً' : 'صباحاً';
+  const hour12 = hour % 12 || 12;
+  return `${String(hour12).padStart(2, '0')}:${match[2]} ${period}`;
+}
 const line = { hLineWidth: () => 0.7, vLineWidth: () => 0.7, hLineColor: () => '#5c6f63', vLineColor: () => '#5c6f63', paddingLeft: () => 4, paddingRight: () => 4, paddingTop: () => 5, paddingBottom: () => 5 };
 
 export function dailyReportPdf(report: DailyReport, timezone: string): Promise<Buffer> {
@@ -73,21 +84,17 @@ export function dailyReportPdf(report: DailyReport, timezone: string): Promise<B
         table: { widths: [250, 120, 120, 250], body: [[
           cell(`اسم المهندس / ${report.engineerName}`, 250, { alignment: 'right', bold: true }),
           cell('التاريخ /', 120, { alignment: 'right' }),
-          { text: report.reportDate, alignment: 'left', fontSize: 9 },
-          cell(`اليوم / ${report.dayName}`, 250, { alignment: 'left' }),
+          { text: report.reportDate, alignment: 'right', fontSize: 9 },
+          cell(`اليوم / ${report.dayName}`, 250, { alignment: 'right' }),
         ]] }, layout: 'noBorders', margin: [0, 0, 0, 6],
       },
       {
-        table: { widths: [300, 80, 220, 80], body: [[
+        table: { widths: [300, 110, 220, 110], body: [[
           cell('تم الخروج إلى العمل بهذا اليوم الساعة /', 300, { alignment: 'right' }),
-          { text: report.leftAt || '—', alignment: 'left', fontSize: 9 },
+          { text: formatClockArabic(report.leftAt), alignment: 'right', fontSize: 9 },
           cell('الرجوع من العمل الساعة /', 220, { alignment: 'right' }),
-          { text: report.returnedAt || '—', alignment: 'left', fontSize: 9 },
-        ]] }, layout: 'noBorders', margin: [0, 0, 0, 6],
-      },
-      {
-        table: { widths: ['*'], body: [[cell(`ظروف طارئة / اجازات / ${report.circumstances || 'لا يوجد'}`, 780)]] },
-        layout: line, margin: [0, 0, 0, 10],
+          { text: formatClockArabic(report.returnedAt), alignment: 'right', fontSize: 9 },
+        ]] }, layout: 'noBorders', margin: [0, 0, 0, 10],
       },
       { text: wrapText('وقمت بزيارة الآتي:', 780, 11, true), bold: true, fontSize: 11, margin: [0, 0, 0, 5] },
       {

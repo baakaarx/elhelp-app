@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { normalizeDigits, parseNumberText } from './format';
+import { clockPeriod, normalizeDigits, parseClockInput, parseNumberText, type DayPeriod } from './format';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { sendDailyReport } from './api';
@@ -25,14 +25,14 @@ const dayName = (date: string, timezone: string) =>
   new Intl.DateTimeFormat('ar-EG', { weekday: 'long', timeZone: timezone }).format(new Date(`${date}T12:00:00Z`));
 /** The server refuses a report with more than thirty visits; the form refuses it first. */
 const MAX_VISITS = 30;
-const timeOk = (value: string) => value.trim().length === 0 || value.trim().length < 30;
 
 export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }: { user: User; onDone?: () => void; timezone?: string }) {
   const [engineerName, setEngineerName] = useState(user.name);
   const [reportDate, setReportDate] = useState(() => todayIn(timezone));
   const [leftAt, setLeftAt] = useState('');
   const [returnedAt, setReturnedAt] = useState('');
-  const [circumstances, setCircumstances] = useState('');
+  const [leftPeriod, setLeftPeriod] = useState<DayPeriod>('AM');
+  const [returnedPeriod, setReturnedPeriod] = useState<DayPeriod>('PM');
   const [visits, setVisits] = useState<DailyVisitInput[]>([emptyVisit()]);
   const [signedName, setSignedName] = useState('');
   const [confirmed, setConfirmed] = useState(false);
@@ -53,7 +53,7 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
   function validate(): string | null {
     if (engineerName.trim().length < 2) return 'اكتب اسم المهندس.';
     if (!dateValid) return 'التاريخ غير صحيح أو في المستقبل.';
-    if (!timeOk(leftAt) || !timeOk(returnedAt)) return 'الوقت طويل جداً — اختصره.';
+    if (parseClockInput(leftAt, leftPeriod) === null || parseClockInput(returnedAt, returnedPeriod) === null) return 'اكتب الوقت بصيغة صحيحة مثل 08:30 أو 05:00.';
     if (!filled) return 'أضف زيارة واحدة على الأقل مع اسم العميل / المزرعة.';
     if (visits.length > MAX_VISITS) return `التقرير بياخد ${MAX_VISITS} زيارة كحد أقصى — قسّم الباقي على تقرير تاني.`;
     if (signedName.trim().length < 2) return 'اكتب اسمك في خانة التوقيع.';
@@ -66,7 +66,7 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
     setBusy(true); setError(''); setMessage('');
     const payload: DailyReportInput = {
       version: 1, id: randomUUID(), engineerName: engineerName.trim(), reportDate: normalizeDigits(reportDate),
-      leftAt: normalizeDigits(leftAt), returnedAt: normalizeDigits(returnedAt), circumstances: circumstances.trim(),
+      leftAt: parseClockInput(leftAt, leftPeriod) ?? '', returnedAt: parseClockInput(returnedAt, returnedPeriod) ?? '', circumstances: '',
       visits: visits.filter(v => v.customerName.trim().length >= 2).map(v => ({
         ...v, customerName: v.customerName.trim(), governorate: v.governorate.trim(), district: v.district.trim(),
         village: v.village.trim(), phone: v.phone.trim(), crops: v.crops.trim(),
@@ -78,7 +78,7 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
       await sendDailyReport(payload);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
       setMessage('تم إرسال التقرير اليومي للمدير ✅');
-      setVisits([emptyVisit()]); setCircumstances(''); setLeftAt(''); setReturnedAt(''); setSignedName(''); setConfirmed(false); setFix(null);
+      setVisits([emptyVisit()]); setLeftAt(''); setReturnedAt(''); setLeftPeriod('AM'); setReturnedPeriod('PM'); setSignedName(''); setConfirmed(false); setFix(null);
       onDone?.();
     } catch (e) {
       if (shouldQueue(e)) {
@@ -107,12 +107,17 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
           <Text style={styles.datePreview}>{dateValid ? dayName(normalizeDigits(reportDate), timezone) : 'تاريخ غير صحيح'}</Text>
         </Row>
         <Field label="اسم المهندس" value={engineerName} onChangeText={setEngineerName} />
-        <Row style={{ gap: space.sm }}>
-          <View style={{ flex: 1 }}><Field label="التاريخ (YYYY-MM-DD)" value={reportDate} onChangeText={setReportDate} keyboardType="numbers-and-punctuation" style={styles.ltr} /></View>
-          <View style={{ flex: 1 }}><Field label="الخروج" value={leftAt} onChangeText={setLeftAt} placeholder="08:30" keyboardType="numbers-and-punctuation" style={styles.ltr} /></View>
-          <View style={{ flex: 1 }}><Field label="العودة" value={returnedAt} onChangeText={setReturnedAt} placeholder="17:00" keyboardType="numbers-and-punctuation" style={styles.ltr} /></View>
+        <Field label="التاريخ (YYYY-MM-DD)" value={reportDate} onChangeText={setReportDate} keyboardType="numbers-and-punctuation" style={styles.ltr} />
+        <Row style={{ gap: space.sm, alignItems: 'flex-start' }}>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Field label="الخروج" value={leftAt} onChangeText={text => { setLeftAt(text); if (text.trim()) setLeftPeriod(clockPeriod(text)); }} placeholder="08:30" keyboardType="numbers-and-punctuation" style={styles.ltr} />
+            <PeriodToggle value={leftPeriod} onChange={setLeftPeriod} />
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Field label="العودة" value={returnedAt} onChangeText={text => { setReturnedAt(text); if (text.trim()) setReturnedPeriod(clockPeriod(text)); }} placeholder="05:00" keyboardType="numbers-and-punctuation" style={styles.ltr} />
+            <PeriodToggle value={returnedPeriod} onChange={setReturnedPeriod} />
+          </View>
         </Row>
-        <Field label="ظروف طارئة / إجازات" value={circumstances} onChangeText={setCircumstances} multiline placeholder="لا يوجد" style={{ minHeight: 56 }} />
       </Card>
 
       <SectionTitle title={`الزيارات (${visits.length})`} action={<Pill label="حتى ٣٠ زيارة" />} />
@@ -189,6 +194,24 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
   );
 }
 
+function PeriodToggle({ value, onChange }: { value: DayPeriod; onChange: (period: DayPeriod) => void }) {
+  return (
+    <Row style={{ gap: 6 }}>
+      {([['AM', 'صباحاً'], ['PM', 'مساءً']] as const).map(([period, label]) => (
+        <Pressable
+          key={period}
+          onPress={() => onChange(period)}
+          accessibilityRole="button"
+          accessibilityState={{ selected: value === period }}
+          style={[styles.periodBtn, value === period && styles.periodBtnActive]}
+        >
+          <Text style={[styles.periodText, value === period && styles.periodTextActive]}>{label}</Text>
+        </Pressable>
+      ))}
+    </Row>
+  );
+}
+
 const styles = StyleSheet.create({
   scroll: { padding: space.lg, paddingBottom: 40, gap: space.md },
   title: { fontFamily: fonts.bold, fontSize: 22, color: colors.green900, textAlign: 'right' },
@@ -198,6 +221,10 @@ const styles = StyleSheet.create({
   meta: { fontFamily: fonts.regular, fontSize: 11.5, color: colors.muted, textAlign: 'right' },
   miniBtn: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, paddingHorizontal: 9, paddingVertical: 3, backgroundColor: colors.white },
   miniBtnText: { fontFamily: fonts.medium, fontSize: 11.5, color: colors.green900 },
+  periodBtn: { flex: 1, alignItems: 'center', borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, paddingVertical: 7, backgroundColor: colors.white },
+  periodBtnActive: { backgroundColor: colors.green700, borderColor: colors.green700 },
+  periodText: { fontFamily: fonts.medium, fontSize: 12, color: colors.green900 },
+  periodTextActive: { color: '#fdf8ec' },
   ltr: { textAlign: 'left', writingDirection: 'ltr' },
   toggle: { flexDirection: 'row-reverse', alignItems: 'flex-start', gap: space.sm },
   checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: colors.line, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.white },

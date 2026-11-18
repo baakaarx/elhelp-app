@@ -37,6 +37,46 @@ export const clockText = (now = Date.now(), timeZone = DEFAULT_TIMEZONE) =>
 /** `HH:MM` for one timestamp, on the installation's clock. */
 export const timeText = (at: number, timeZone = DEFAULT_TIMEZONE) =>
   new Intl.DateTimeFormat('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone }).format(at);
+
+export type DayPeriod = 'AM' | 'PM';
+
+/**
+ * Daily-report work times are stored as canonical 24-hour `HH:MM` so the server, the
+ * dashboard and the PDF can compare them safely. The phone UI shows them with صباحاً/مساءً.
+ */
+export function parseClockInput(value: string, period: DayPeriod = 'AM'): string | null {
+  const cleaned = normalizeDigits(value)
+    .replace(/صباحاً|مساءً|صباحا|مساءا|ص|م|AM|PM|am|pm/gi, '')
+    .replace(/[^\d:]/g, '')
+    .trim();
+  if (!cleaned) return '';
+  const match = cleaned.match(/^(\d{1,2})(?::(\d{1,2}))?$/);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? '0');
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute < 0 || minute > 59 || hour < 0 || hour > 23) return null;
+  if (hour <= 12) {
+    if (period === 'AM') hour = hour === 12 ? 0 : hour;
+    else hour = hour === 12 ? 12 : hour + 12;
+  }
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+export function clockPeriod(value: string): DayPeriod {
+  const hour = Number(normalizeDigits(value).split(':')[0]);
+  return Number.isFinite(hour) && hour >= 12 ? 'PM' : 'AM';
+}
+
+/** `08:30` -> `08:30 صباحاً`, `17:00` -> `05:00 مساءً`. Empty/invalid values stay readable. */
+export function formatClockArabic(value: string): string {
+  const canonical = parseClockInput(value, clockPeriod(value));
+  if (!canonical) return value || '—';
+  const [hourText, minuteText] = canonical.split(':');
+  const hour = Number(hourText);
+  const period = hour >= 12 ? 'مساءً' : 'صباحاً';
+  const hour12 = hour % 12 || 12;
+  return `${String(hour12).padStart(2, '0')}:${minuteText} ${period}`;
+}
 /** `D/M` on the installation's clock — a row from another day must not read as today's. */
 export const dayText = (at: number, timeZone = DEFAULT_TIMEZONE) =>
   new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'numeric', timeZone }).format(at);

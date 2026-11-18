@@ -37,7 +37,7 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
   async function loadRecent() {
     try {
       const res = await get<{ reports: Recent[] }>('/api/reports');
-      setRecent(res.reports.slice(0, 6));
+      setRecent(Array.isArray(res.reports) ? res.reports.slice(0, 6) : []);
     } catch { /* the form still works offline */ }
   }
   useEffect(() => { void loadRecent(); }, [refreshKey]);
