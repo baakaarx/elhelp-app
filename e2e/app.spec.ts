@@ -68,7 +68,12 @@ test.describe('المتابعة الحية والفريق', () => {
     expect(listedReps.status).toBe(200);
     expect(listedReps.emails).toContain(email);
 
+    const refreshedOverview = page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/api/overview' && response.request().method() === 'GET');
     await page.reload();
+    const overviewResponse = await refreshedOverview;
+    const overview = await overviewResponse.json() as { reps: { email: string }[] };
+    expect(overview.reps.map(rep => rep.email)).toContain(email);
     await expect(page.getByRole('heading', { level: 1, name: 'مركز العمليات' })).toBeVisible();
     await page.getByRole('button', { name: /فريق الميدان/ }).click();
     await expect(page.locator('.rep-list').filter({ hasText: email })).toBeVisible();
