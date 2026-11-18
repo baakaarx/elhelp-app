@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
+import { cancelWatchdog, scheduleWatchdog } from './watchdogTask';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
@@ -172,6 +173,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (background && !tracking.backgroundRunning) throw new Error(BACKGROUND_START_FAILED);
       setTrackingActive(true);
       setBackgroundNotice('');
+      // The watchdog only exists while background tracking is on — never restart a
+      // background task the engineer deliberately turned off.
+      if (tracking.backgroundRunning) void scheduleWatchdog();
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
@@ -198,6 +202,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         // The shift is already open, so a missing background permission cannot block here —
         // warn persistently instead of going quiet until the screen locks.
         setBackgroundNotice(Platform.OS !== 'web' && !tracking.backgroundRunning ? BACKGROUND_NOTICE : '');
+        if (tracking.backgroundRunning) void scheduleWatchdog();
       }
     })().catch(() => undefined);
     return () => { cancelled = true; };
@@ -224,6 +229,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         if (background && !tracking.backgroundRunning) throw new Error(BACKGROUND_START_FAILED);
         setTrackingActive(true);
         setBackgroundNotice('');
+        if (tracking.backgroundRunning) void scheduleWatchdog();
       } catch (e) {
         await stopTracking().catch(() => undefined);
         setTrackingActive(false);
@@ -257,6 +263,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     try {
       await stopShift();
       await stopTracking();
+      void cancelWatchdog();
       setTrackingActive(false);
       setBackgroundNotice('');
       await flushOutbox(user?.id);

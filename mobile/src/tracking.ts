@@ -74,6 +74,34 @@ export async function isBackgroundTracking(): Promise<boolean> {
   return Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false);
 }
 
+/**
+ * Start only the OS background location task (no foreground watcher). The watchdog uses this
+ * from a headless background task, where a watcher would have nothing to feed.
+ */
+export async function startBackgroundUpdates(): Promise<{ backgroundRunning: boolean }> {
+  if (Platform.OS === 'web') return { backgroundRunning: false };
+  try {
+    if (!(await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false))) {
+      await Location.startLocationUpdatesAsync(BACKGROUND_TASK, {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 5000,
+        distanceInterval: 10,
+        deferredUpdatesInterval: 5000,
+        pausesUpdatesAutomatically: false,
+        showsBackgroundLocationIndicator: true,
+        foregroundService: {
+          notificationTitle: 'الهلب · تسجيل الموقع',
+          notificationBody: 'يتم تسجيل موقعك أثناء الوردية. أوقف التتبع من التطبيق لإيقافه.',
+          notificationColor: '#1f513f',
+        },
+      });
+    }
+    return { backgroundRunning: await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false) };
+  } catch {
+    return { backgroundRunning: false };
+  }
+}
+
 export async function startTracking(id: string, opts: { background: boolean; startedAt?: number } = { background: true }): Promise<{ backgroundRunning: boolean }> {
   shiftId = id;
   lastQueued = null;
@@ -126,29 +154,7 @@ export async function startTracking(id: string, opts: { background: boolean; sta
   // The foreground service is what keeps locations flowing with the screen locked. Starting it
   // can fail (permission revoked, OS refusal) — that used to be swallowed, so the engineer
   // believed tracking was on while it died the moment the phone locked. Report the truth.
-  let backgroundRunning = false;
-  if (opts.background && Platform.OS !== 'web') {
-    try {
-      if (!(await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false))) {
-        await Location.startLocationUpdatesAsync(BACKGROUND_TASK, {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 5000,
-          distanceInterval: 10,
-          deferredUpdatesInterval: 5000,
-          pausesUpdatesAutomatically: false,
-          showsBackgroundLocationIndicator: true,
-          foregroundService: {
-            notificationTitle: 'الهلب · تسجيل الموقع',
-            notificationBody: 'يتم تسجيل موقعك أثناء الوردية. أوقف التتبع من التطبيق لإيقافه.',
-            notificationColor: '#1f513f',
-          },
-        });
-      }
-      backgroundRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_TASK).catch(() => false);
-    } catch {
-      backgroundRunning = false;
-    }
-  }
+  const backgroundRunning = opts.background ? (await startBackgroundUpdates()).backgroundRunning : false;
   return { backgroundRunning };
 }
 export async function stopTracking() {
