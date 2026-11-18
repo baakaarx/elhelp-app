@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, patch } from './api';
 import { ago, downloadDailyReportPdf, formatNumber } from './session';
-import { dateTimeText } from './dates';
+import { dateTimeText, formatClockArabic } from './dates';
 import { reportTypeLabels, type DailyReport, type Rep, type Report } from './types';
 
 type Tab = 'field' | 'daily';
@@ -17,7 +17,6 @@ export default function Reports({ reps, onReviewed, version = 0, timezone }: { r
   const [daily, setDaily] = useState<DailyReport[]>([]);
   const [status, setStatus] = useState<'all' | 'new' | 'reviewed'>('all');
   const [repId, setRepId] = useState('all');
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -100,20 +99,18 @@ export default function Reports({ reps, onReviewed, version = 0, timezone }: { r
         visibleDaily.length === 0 ? <p className="empty">لا توجد تقارير يومية بهذه الفلاتر بعد.</p> : (
           <ul className="stack-list">
             {visibleDaily.map(report => (
-              <li key={report.id} className={expanded === report.id ? 'card report expanded' : 'card report'}>
+              <li key={report.id} className="card report">
                 <div className="report-head">
                   <span className="dot" style={{ background: report.repColor }} aria-hidden="true" />
                   <div className="grow">
                     <h3>{report.engineerName} <span className="muted small">· {report.dayName} {report.reportDate}</span></h3>
                     <p className="muted small">
-                      {report.leftAt ? `خروج ${report.leftAt}` : 'بدون وقت خروج'} · {report.returnedAt ? `عودة ${report.returnedAt}` : 'بدون وقت عودة'} · {formatNumber(report.visits.length)} زيارة · {ago(report.createdAt)}
+                      {report.leftAt ? `خروج ${formatClockArabic(report.leftAt)}` : 'بدون وقت خروج'} · {report.returnedAt ? `عودة ${formatClockArabic(report.returnedAt)}` : 'بدون وقت عودة'} · {formatNumber(report.visits.length)} زيارة · {ago(report.createdAt)}
                     </p>
                   </div>
                   <span className={report.status === 'new' ? 'pill warn' : 'pill ok'}>{report.status === 'new' ? 'جديد' : 'تمت المراجعة'}</span>
                 </div>
-                {report.circumstances && <p className="circumstances">ظروف: {report.circumstances}</p>}
-                {expanded === report.id && (
-                  <div className="visits">
+                <div className="visits">
                     <table>
                       <thead><tr><th>م</th><th>اسم العميل / المزرعة</th><th>المحافظة</th><th>المركز</th><th>القرية</th><th>الهاتف</th><th>الفدان</th><th>المحاصيل</th><th>التوصيات</th><th>النتيجة</th></tr></thead>
                       <tbody>
@@ -127,10 +124,8 @@ export default function Reports({ reps, onReviewed, version = 0, timezone }: { r
                       </tbody>
                     </table>
                     <p className="muted small">توقيع إلكتروني: {report.signedName} · {dateTimeText(report.signedAt, timezone)}</p>
-                  </div>
-                )}
+                </div>
                 <div className="report-actions">
-                  <button className="btn ghost" onClick={() => setExpanded(expanded === report.id ? null : report.id)}>{expanded === report.id ? 'إخفاء التفاصيل' : 'عرض التفاصيل'}</button>
                   <button className="btn ghost" disabled={downloading === report.id} onClick={() => download(report)}>{downloading === report.id ? 'جارٍ التجهيز…' : 'تنزيل PDF'}</button>
                   {report.status === 'new' && <button className="btn primary sm" onClick={() => review('daily', report.id)}>تمت المراجعة</button>}
                 </div>

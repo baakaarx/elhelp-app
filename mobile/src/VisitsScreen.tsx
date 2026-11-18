@@ -27,17 +27,18 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
 
   const timeZone = field.summary?.timezone;
   const shift = field.summary?.shift ?? null;
-  const visits = useMemo(() => (filter === 'all' ? field.visits : field.visits.filter(v => v.status === filter)), [field.visits, filter]);
+  const allVisits = Array.isArray(field.visits) ? field.visits : [];
+  const visits = useMemo(() => (filter === 'all' ? allVisits : allVisits.filter(v => v.status === filter)), [allVisits, filter]);
   const open = field.summary?.openVisit ?? null;
   // The list also carries visits from the last two weeks: those whose result is still missing
   // (the system closed them) and one left open by a shift that ended somewhere else. Every
   // figure in the header is about today, so the average is not a mix of several days.
-  const todayVisits = field.visits.filter(visit => isToday(visit.checkedInAt, timeZone));
+  const todayVisits = allVisits.filter(visit => isToday(visit.checkedInAt, timeZone));
   const measuredClosed = todayVisits.filter(v => v.status === 'closed' && !v.autoClosed && v.durationSeconds !== null);
   const avgMinutes = measuredClosed.length ? Math.round(measuredClosed.reduce((sum, v) => sum + Number(v.durationSeconds), 0) / measuredClosed.length / 60) : 0;
   const todayCount = todayVisits.length;
-  const pendingCount = field.visits.filter(visit => visit.pendingResult).length;
-  const earlierOpen = field.visits.some(visit => visit.status === 'open' && !isToday(visit.checkedInAt, timeZone));
+  const pendingCount = allVisits.filter(visit => visit.pendingResult).length;
+  const earlierOpen = allVisits.some(visit => visit.status === 'open' && !isToday(visit.checkedInAt, timeZone));
   /** A row from an earlier day that is still open: nothing else can close it. */
   const canCloseFromRow = (visit: Visit) => Boolean(visit.pendingResult) || (visit.status === 'open' && !isToday(visit.checkedInAt, timeZone));
 
@@ -66,7 +67,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
             </Row>
             <Heading>{open.customerName}</Heading>
             <Body muted>
-              {visitPurposeLabels[open.purpose]} · دخلت {timeText(open.checkedInAt, timeZone)}
+              {visitPurposeLabels[open.purpose] ?? 'زيارة'} · دخلت {timeText(open.checkedInAt, timeZone)}
               {open.inAccuracy ? ` · دقة ±${Math.round(open.inAccuracy)} م` : ''}
             </Body>
             <Row style={{ gap: space.sm }}>
@@ -99,7 +100,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
                 <View style={{ flex: 1, gap: 2 }}>
                   <Text style={styles.name}>{visit.customerName}</Text>
                   <Text style={styles.meta}>
-                    {visitPurposeLabels[visit.purpose]} · {isToday(visit.checkedInAt, timeZone) ? '' : `${dayText(visit.checkedInAt, timeZone)} · `}{timeText(visit.checkedInAt, timeZone)}
+                    {visitPurposeLabels[visit.purpose] ?? 'زيارة'} · {isToday(visit.checkedInAt, timeZone) ? '' : `${dayText(visit.checkedInAt, timeZone)} · `}{timeText(visit.checkedInAt, timeZone)}
                     {visit.status === 'open' ? ' · جارية'
                       : visit.durationSeconds === null ? (visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية')
                       : ` ← ${timeText(visit.checkedOutAt ?? visit.checkedInAt, timeZone)} · ${Math.max(1, Math.round(visit.durationSeconds / 60))} د`}

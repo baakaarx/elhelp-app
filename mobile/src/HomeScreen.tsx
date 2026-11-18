@@ -2,9 +2,8 @@ import { useEffect, useState } from 'react';
 import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle, Sheet, Stat } from './ui';
-import RouteMap from './RouteMap';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
-import { agoText, clockText, hhmmss, timeText } from './format';
+import { clockText, hhmmss, timeText } from './format';
 import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
 import { captureOnce, locationIssueMessage } from './location';
@@ -97,7 +96,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
             </Row>
             <Heading>{openVisit.customerName}</Heading>
             <Body muted>
-              {visitPurposeLabels[openVisit.purpose]} · بدأت {timeText(openVisit.checkedInAt, timeZone)}
+              {visitPurposeLabels[openVisit.purpose] ?? 'زيارة'} · بدأت {timeText(openVisit.checkedInAt, timeZone)}
               {openVisit.governorate ? ` · ${openVisit.governorate}` : ''}
             </Body>
             <Row style={{ gap: space.sm, marginTop: 4 }}>
@@ -114,18 +113,6 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
         </View>
 
         <Card>
-          <SectionTitle title="خط سير اليوم" action={<Pressable onPress={onOpenVisits}><Text style={styles.link}>الزيارات</Text></Pressable>} />
-          <RouteMap route={field.route} />
-          <Row style={{ justifyContent: 'space-between', marginTop: 6 }}>
-            <Text style={styles.meta}>{(Number(summary?.distanceMeters ?? 0) / 1000).toFixed(1)} كم</Text>
-            <Text style={styles.meta}>{summary?.pointCount ?? 0} نقطة موقع</Text>
-            <Text style={[styles.meta, gpsQuality(summary?.lastFixAt ?? null, summary?.lastFixAccuracy ?? null, now).tone]}>
-              {gpsQuality(summary?.lastFixAt ?? null, summary?.lastFixAccuracy ?? null, now).label}
-            </Text>
-          </Row>
-        </Card>
-
-        <Card>
           <SectionTitle title="آخر الزيارات" action={<Pressable onPress={onOpenVisits}><Text style={styles.link}>الكل</Text></Pressable>} />
           {(field.visits.length === 0) ? (
             <Empty title="لا زيارات اليوم" hint="سجّل زيارتك الأولى من زر «زيارة جديدة»." />
@@ -135,7 +122,7 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
               <View style={{ flex: 1 }}>
                 <Text style={styles.visitName}>{visit.customerName}</Text>
                 <Text style={styles.meta}>
-                  {visitPurposeLabels[visit.purpose]} · {timeText(visit.checkedInAt, timeZone)}
+                  {visitPurposeLabels[visit.purpose] ?? 'زيارة'} · {timeText(visit.checkedInAt, timeZone)}
                   {visit.status === 'open' ? ' · مفتوحة'
                     : visit.durationSeconds !== null ? ` · ${Math.max(1, Math.round(visit.durationSeconds / 60))} دقيقة`
                     : visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية'}
@@ -178,16 +165,6 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
       <CheckOutSheet visit={checkOutVisit} onClose={() => setCheckOutVisit(null)} field={field} />
     </>
   );
-}
-
-/** Honest GPS state: a 12-hour-old fix must not look like live tracking. */
-function gpsQuality(lastFixAt: number | null, accuracy: number | null, now: number): { label: string; tone: object | null } {
-  if (!lastFixAt) return { label: 'لا إشارة GPS', tone: { color: colors.danger } };
-  const age = Math.max(0, now - lastFixAt);
-  if (age > 5 * 60000) return { label: `إشارة قديمة · ${agoText(lastFixAt)}`, tone: { color: colors.amber } };
-  if (accuracy == null) return { label: `إشارة حديثة · ${agoText(lastFixAt)}`, tone: null };
-  if (accuracy > 80) return { label: `دقة ضعيفة ±${Math.round(accuracy)} م`, tone: { color: colors.amber } };
-  return { label: `GPS ±${Math.round(accuracy)} م · ${agoText(lastFixAt)}`, tone: { color: colors.green700 } };
 }
 
 function ActionTile({ icon, label, hint, onPress, tone = 'plain' }: { icon: string; label: string; hint: string; onPress: () => void; tone?: 'plain' | 'done' | 'todo' }) {
