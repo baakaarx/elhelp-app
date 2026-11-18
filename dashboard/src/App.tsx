@@ -269,27 +269,42 @@ export default function App() {
                     </dl>
                     {visits.length > 0 && (
                       <div className="selected-visits">
-                        <h5>زيارات {routeDate || 'اليوم'}</h5>
-                        <ul>
-                          {visits.slice(0, 6).map(visit => (
-                            <li key={visit.id}>
-                              <span className="dot" style={{ background: visit.status === 'open' ? '#b45309' : '#2f7a5f' }} aria-hidden="true" />
-                              <span className="grow">
-                                <strong>{visit.customerName}</strong>
-                                <small>{visitPurposeLabels[visit.purpose]} · {timeText(visit.checkedInAt, overview?.timezone)}{visit.status === 'open' ? ' · مفتوحة' : visit.durationSeconds === null ? (visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية') : ` · ${durationText(visit.durationSeconds)}`}</small>
-                                {/* The two marks a manager has to be able to see without exporting:
-                                    a visit typed with no signal, and one that ended without a result. */}
-                                {(visit.recordedOffline || visit.pendingResult) && (
-                                  <small className="visit-marks">
-                                    {visit.recordedOffline ? 'من غير شبكة' : ''}
-                                    {visit.recordedOffline && visit.pendingResult ? ' · ' : ''}
-                                    {visit.pendingResult ? 'بدون نتيجة' : ''}
-                                  </small>
-                                )}
-                              </span>
-                            </li>
+                        <h5>زيارات {routeDate || 'اليوم'} ({formatNumber(visits.length)})</h5>
+                        <div className="visit-cards">
+                          {visits.map(visit => (
+                            <article key={visit.id} className="card report visit-card">
+                              <div className="report-head">
+                                <span className="dot" style={{ background: visit.status === 'open' ? '#b45309' : '#2f7a5f' }} aria-hidden="true" />
+                                <div className="grow">
+                                  <h3>{visit.customerName}</h3>
+                                  <p className="muted small">
+                                    {visitPurposeLabels[visit.purpose]} · دخول {timeText(visit.checkedInAt, overview?.timezone)}
+                                    {visit.checkedOutAt ? ` · خروج ${timeText(visit.checkedOutAt, overview?.timezone)}` : ''}
+                                    {visit.status === 'open' ? ' · مفتوحة' : visit.durationSeconds === null ? (visit.autoClosed ? ' · أُغلقت تلقائيًا' : ' · منتهية') : ` · ${durationText(visit.durationSeconds)}`}
+                                  </p>
+                                </div>
+                                <span className={visit.status === 'open' ? 'pill warn' : 'pill ok'}>{visit.status === 'open' ? 'مفتوحة' : 'منتهية'}</span>
+                              </div>
+                              {(visit.governorate || visit.district || visit.village || visit.phone) && (
+                                <p className="muted small">
+                                  {[visit.governorate, visit.district, visit.village].filter(Boolean).join(' · ') || '—'}
+                                  {visit.phone ? ` · ${visit.phone}` : ''}
+                                </p>
+                              )}
+                              {visit.outcome && <p className="body-text"><strong>النتيجة:</strong> {visit.outcome}</p>}
+                              {visit.notes && <p className="body-text"><strong>ملاحظات:</strong> {visit.notes}</p>}
+                              {/* The two marks a manager has to be able to see without exporting:
+                                  a visit typed with no signal, and one that ended without a result. */}
+                              {(visit.recordedOffline || visit.pendingResult) && (
+                                <p className="visit-marks">
+                                  {visit.recordedOffline ? 'من غير شبكة' : ''}
+                                  {visit.recordedOffline && visit.pendingResult ? ' · ' : ''}
+                                  {visit.pendingResult ? 'بدون نتيجة' : ''}
+                                </p>
+                              )}
+                            </article>
                           ))}
-                        </ul>
+                        </div>
                       </div>
                     )}
                   </div>
