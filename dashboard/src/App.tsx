@@ -386,7 +386,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
   return <div className="stat"><span className="label">{label}</span><strong>{value}</strong><small>{hint}</small></div>;
 }
 
-function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void; timezone?: string }) {
+function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void | Promise<void>; timezone?: string }) {
   const [error, setError] = useState('');
   const [newRep, setNewRep] = useState({ name: '', email: '', password: '', phone: '', region: '' });
   const [creatingRep, setCreatingRep] = useState(false);
@@ -402,8 +402,8 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void;
         phone: newRep.phone.trim(), region: newRep.region.trim(),
       });
       setNewRep({ name: '', email: '', password: '', phone: '', region: '' });
+      await onChange();
       setCreatedRepMessage(`تم إنشاء حساب ${result.user.name} (${result.user.email}). أرسل له كلمة المرور التي اخترتها بأمان.`);
-      onChange();
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إنشاء حساب المهندس.'); }
     finally { setCreatingRep(false); }
   }
