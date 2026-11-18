@@ -221,9 +221,9 @@ function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, se
       {Platform.OS !== 'web' && (
         <>
           <Body>عشان التتبع ما يقفش والشاشة مقفولة، اسمح للبطارية تشتغل من غير قيود:</Body>
-          <Button label="السماح بتتبع بدون قيود للبطارية" variant="ghost" onPress={() => { void openBatteryExemption().catch(() => undefined); }} />
+          <Button label="السماح بتتبع بدون قيود للبطارية" variant="ghost" onPress={() => { void openBatteryExemption(); }} />
           <Body muted>على سامسونج كمان: الإعدادات ← البطارية ← حدود الخلفية ← تطبيقات لا تنام أبداً ← ضيف التطبيق.</Body>
-          <Button label="فتح إعدادات البطارية" variant="ghost" onPress={() => { void openBatterySettings().catch(() => undefined); }} />
+          <Button label="فتح إعدادات البطارية" variant="ghost" onPress={() => { void openBatterySettings(); }} />
         </>
       )}
       {resume ? null : <Toggle checked={agreed} onChange={() => setAgreed(!agreed)} label="أوافق على تسجيل موقعي طوال الوردية وأقر بأن هذا توقيعي على الموافقة." />}

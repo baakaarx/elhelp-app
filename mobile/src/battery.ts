@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import Constants from 'expo-constants';
 
 /**
@@ -22,18 +22,29 @@ function packageName(): string {
 
 type IntentLauncher = typeof import('expo-intent-launcher');
 
+const MANUAL_STEPS =
+  'افتح الإعدادات ← البطارية ← حدود الخلفية ← تطبيقات لا تنام أبداً ← ضيف التطبيق.';
+
 /** One-tap system dialog exempting the app from battery optimization. */
 export async function openBatteryExemption(): Promise<void> {
   if (Platform.OS === 'web') return;
-  const IntentLauncher: IntentLauncher = await import('expo-intent-launcher');
-  await IntentLauncher.startActivityAsync('android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS', {
-    data: `package:${packageName()}`,
-  });
+  try {
+    const IntentLauncher: IntentLauncher = await import('expo-intent-launcher');
+    await IntentLauncher.startActivityAsync('android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS', {
+      data: `package:${packageName()}`,
+    });
+  } catch {
+    Alert.alert('تعذر فتح الإعدادات', `لم يتمكن التطبيق من فتح شاشة البطارية تلقائياً.\n\n${MANUAL_STEPS}`);
+  }
 }
 
 /** The system list of apps with their battery-optimization status. */
 export async function openBatterySettings(): Promise<void> {
   if (Platform.OS === 'web') return;
-  const IntentLauncher: IntentLauncher = await import('expo-intent-launcher');
-  await IntentLauncher.startActivityAsync('android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS');
+  try {
+    const IntentLauncher: IntentLauncher = await import('expo-intent-launcher');
+    await IntentLauncher.startActivityAsync('android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS');
+  } catch {
+    Alert.alert('تعذر فتح الإعدادات', `لم يتمكن التطبيق من فتح شاشة البطارية تلقائياً.\n\n${MANUAL_STEPS}`);
+  }
 }
