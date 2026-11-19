@@ -2,9 +2,11 @@ import { Component, useCallback, useEffect, useState, type ReactNode } from 'rea
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 // Show JS errors on screen (even in release builds) so crashes are diagnosable.
-const originalHandler = (global as { ErrorUtils?: { setGlobalHandler: (fn: (e: unknown, isFatal?: boolean) => void) => void; getGlobalHandler?: () => (e: unknown, isFatal?: boolean) => void } }).ErrorUtils?.getGlobalHandler?.();
-(global as { ErrorUtils?: { setGlobalHandler: (fn: (e: unknown, isFatal?: boolean) => void) => void } }).ErrorUtils?.setGlobalHandler((error, isFatal) => {
-  const message = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error);
+type ErrorHandler = (error: unknown, isFatal?: boolean) => void;
+const errorUtils = (global as unknown as { ErrorUtils?: { setGlobalHandler: (fn: ErrorHandler) => void; getGlobalHandler?: () => ErrorHandler } }).ErrorUtils;
+const originalHandler = errorUtils?.getGlobalHandler?.();
+errorUtils?.setGlobalHandler((error, isFatal) => {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   console.error('[app] fatal error', message);
   Alert.alert('خطأ في التطبيق', message.slice(0, 500), [{ text: 'حسناً' }]);
   originalHandler?.(error, isFatal);
