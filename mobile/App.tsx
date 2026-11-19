@@ -1,7 +1,18 @@
 import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
-// Error handler placeholder (removed for typecheck debugging)
+// Show JS errors on screen so crashes are diagnosable (works in release builds).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const g = global as any;
+if (g.ErrorUtils?.setGlobalHandler) {
+  const original = g.ErrorUtils.getGlobalHandler?.();
+  g.ErrorUtils.setGlobalHandler((error: unknown, isFatal?: boolean) => {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('[app] error:', msg);
+    Alert.alert('خطأ', msg.slice(0, 300), [{ text: 'حسناً' }]);
+    original?.(error, isFatal);
+  });
+}
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
