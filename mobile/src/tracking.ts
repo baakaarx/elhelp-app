@@ -3,7 +3,7 @@ import * as Battery from 'expo-battery';
 import * as Location from 'expo-location';
 import { enqueueLocation, flushOutbox } from './reports';
 import { setActiveShift } from './storage';
-import { MAX_ACCURACY_M } from './location';
+import { MAX_ACCURACY_M, metersBetween } from './location';
 import { discardCachedFixForMockLocation } from './locationCache';
 import { announceMockLocation, isMockedLocation } from './locationIntegrity';
 import { getDeviceId } from './device';
@@ -15,12 +15,33 @@ export const CONSENT_VERSION = '1.0';
 const CHUNK_MS = 1000;
 // A fix this loose is a cell-tower guess; queueing it teleports the map and inflates distance.
 const MAX_POINT_ACCURACY_M = MAX_ACCURACY_M;
+// While standing still the GPS jitters by a few meters, so we do not queue every fix — but a
+// heartbeat still has to arrive well inside the server's staleness window (`STALE_GPS_MINUTES`,
+// default 10), otherwise a stationary engineer looks like "no signal".
+//
+// That heartbeat only exists if the OS keeps delivering fixes while the phone is still. A
+// large distance filter silences the OS completely when nobody moves, so the location requests
+// below use `distanceInterval: 1` (1 meter — small enough that GPS jitter still triggers
+// updates while stationary) and rely on this filter to drop the jitter.
+const STANDSTILL_MS = 30000;
+const STANDSTILL_METERS = 5;
 
 type Listener = (point: GeoPoint) => void;
 let subscription: Location.LocationSubscription | null = null;
 let shiftId: string | null = null;
+let lastQueued: { lat: number; lng: number; at: number } | null = null;
 let mockReportState: { shiftId: string; lastAttemptAt: number; sent: boolean } | null = null;
 const listeners = new Set<Listener>();
+
+/**
+ * Shared by the foreground watcher and the background task: true when this fix is worth queueing.
+ * Standing still, a fix is dropped unless the last queued one is older than the heartbeat window.
+ */
+export function shouldQueueFix(lat: number, lng: number, now: number = Date.now()): boolean {
+  if (lastQueued && now - lastQueued.at < STANDSTILL_MS && metersBetween(lastQueued, { lat, lng }) < STANDSTILL_METERS) return false;
+  lastQueued = { lat, lng, at: now };
+  return true;
+}
 
 function makeId(): string {
   const cryptoApi = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
@@ -79,7 +100,7 @@ export async function startBackgroundUpdates(): Promise<{ backgroundRunning: boo
       await Location.startLocationUpdatesAsync(BACKGROUND_TASK, {
         accuracy: Location.Accuracy.High,
         timeInterval: 5000,
-        distanceInterval: 5,
+        distanceInterval: 1,
         deferredUpdatesInterval: 5000,
         pausesUpdatesAutomatically: false,
         showsBackgroundLocationIndicator: true,
@@ -98,10 +119,11 @@ export async function startBackgroundUpdates(): Promise<{ backgroundRunning: boo
 
 export async function startTracking(id: string, opts: { background: boolean; startedAt?: number } = { background: true }): Promise<{ backgroundRunning: boolean }> {
   shiftId = id;
+  lastQueued = null;
   await setActiveShift(id);
   if (!subscription) {
     subscription = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.High, timeInterval: CHUNK_MS, distanceInterval: 10 },
+      { accuracy: Location.Accuracy.High, timeInterval: CHUNK_MS, distanceInterval: 1 },
       position => {
         if (isMockedLocation(position)) {
           discardCachedFixForMockLocation();
@@ -124,6 +146,9 @@ export async function startTracking(id: string, opts: { background: boolean; sta
         if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return;
         if (accuracy != null && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > MAX_POINT_ACCURACY_M)) return;
         const now = Date.now();
+        // Standing still: ignore the jitter but keep a heartbeat so the manager still sees a
+        // live signal (otherwise a parked engineer looks like a lost connection).
+        if (!shouldQueueFix(latitude, longitude, now)) return;
         const point: GeoPoint = {
           id: randomUUID(), shiftId,
           lat: latitude, lng: longitude,
@@ -148,6 +173,7 @@ export async function startTracking(id: string, opts: { background: boolean; sta
 }
 export async function stopTracking() {
   shiftId = null;
+  lastQueued = null;
   await setActiveShift(null);
   subscription?.remove();
   subscription = null;
