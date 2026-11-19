@@ -1,6 +1,6 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
-import { BACKGROUND_TASK, randomUUID, shouldQueueFix } from './tracking';
+import { BACKGROUND_TASK, randomUUID } from './tracking';
 import { enqueueLocation, flushOutbox } from './reports';
 import { getActiveShift } from './storage';
 import { MAX_ACCURACY_M } from './location';
@@ -40,10 +40,6 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK)) {
       // The OS also reports network guesses while a real GPS lock is pending; skip those so
       // the route does not jump across the city.
       if (accuracy != null && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > MAX_ACCURACY_M)) continue;
-      // The OS now delivers fixes even when the phone is still (no distance filter), so drop the
-      // jitter here but let a heartbeat through every 30 s — that is what keeps a parked
-      // engineer from looking like "no signal" on the manager's dashboard.
-      if (!shouldQueueFix(latitude, longitude)) continue;
       const point: GeoPoint = {
         id: randomUUID(),
         shiftId,

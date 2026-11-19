@@ -9,11 +9,6 @@ on:
         description: 'API base URL the installed app should talk to (https://… or http://IP:3000)'
         required: true
         default: 'https://tracking.example.com'
-      debug:
-        description: 'Build a debug APK (shows JS errors on screen — for diagnosing crashes)'
-        required: false
-        default: false
-        type: boolean
   push:
     tags: ['v*']
 
@@ -41,18 +36,14 @@ jobs:
         run: npm ci
 
       # Runs the exact script a developer runs locally, so CI proves it still works.
-      - name: Build APK
+      - name: Build release APK
         run: |
           set -euo pipefail
           if [ -z "${API_URL:-}" ]; then
             echo "::error title=API URL missing::Set the api_url input (or a repository variable ELHELP_API_URL) — the APK bakes this address in at build time."
             exit 1
           fi
-          if [ "${{ inputs.debug }}" = "true" ]; then
-            npm run build:apk -- "${API_URL%/}" --debug
-          else
-            npm run build:apk -- "${API_URL%/}"
-          fi
+          npm run build:apk -- "${API_URL%/}"
 
       - name: Collect the APK
         run: |
