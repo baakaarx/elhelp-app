@@ -1,5 +1,14 @@
 import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+
+// Show JS errors on screen (even in release builds) so crashes are diagnosable.
+const originalHandler = (global as { ErrorUtils?: { setGlobalHandler: (fn: (e: unknown, isFatal?: boolean) => void) => void; getGlobalHandler?: () => (e: unknown, isFatal?: boolean) => void } }).ErrorUtils?.getGlobalHandler?.();
+(global as { ErrorUtils?: { setGlobalHandler: (fn: (e: unknown, isFatal?: boolean) => void) => void } }).ErrorUtils?.setGlobalHandler((error, isFatal) => {
+  const message = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error);
+  console.error('[app] fatal error', message);
+  Alert.alert('خطأ في التطبيق', message.slice(0, 500), [{ text: 'حسناً' }]);
+  originalHandler?.(error, isFatal);
+});
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
