@@ -20,8 +20,9 @@ const MAX_POINT_ACCURACY_M = MAX_ACCURACY_M;
 // default 10), otherwise a stationary engineer looks like "no signal".
 //
 // That heartbeat only exists if the OS keeps delivering fixes while the phone is still. A
-// distance filter (`distanceInterval` > 0) silences the OS completely when nobody moves, so the
-// location requests below use `distanceInterval: 0` and rely on this filter to drop the jitter.
+// large distance filter silences the OS completely when nobody moves, so the location requests
+// below use `distanceInterval: 1` (1 meter — small enough that GPS jitter still triggers
+// updates while stationary) and rely on this filter to drop the jitter.
 const STANDSTILL_MS = 30000;
 const STANDSTILL_METERS = 5;
 
@@ -99,10 +100,12 @@ export async function startBackgroundUpdates(): Promise<{ backgroundRunning: boo
       await Location.startLocationUpdatesAsync(BACKGROUND_TASK, {
         accuracy: Location.Accuracy.High,
         timeInterval: 5000,
-        // 0, not 10: with a distance filter a phone lying still gets no fixes at all in the
-        // background, so no heartbeat is ever queued and the manager sees "no signal" after
-        // STALE_GPS_MINUTES. The standstill filter in `shouldQueueFix` drops the jitter instead.
-        distanceInterval: 0,
+        // 1, not 10: with a larger distance filter a phone lying still gets no fixes at all in
+        // the background, so no heartbeat is ever queued and the manager sees "no signal" after
+        // STALE_GPS_MINUTES. 1 meter is small enough that GPS jitter (a few meters) still
+        // triggers updates while stationary, but avoids the crash that `distanceInterval: 0`
+        // caused on some devices. The standstill filter in `shouldQueueFix` drops the jitter.
+        distanceInterval: 1,
         deferredUpdatesInterval: 5000,
         pausesUpdatesAutomatically: false,
         showsBackgroundLocationIndicator: true,
@@ -125,7 +128,7 @@ export async function startTracking(id: string, opts: { background: boolean; sta
   await setActiveShift(id);
   if (!subscription) {
     subscription = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.High, timeInterval: CHUNK_MS, distanceInterval: 0 },
+      { accuracy: Location.Accuracy.High, timeInterval: CHUNK_MS, distanceInterval: 1 },
       position => {
         if (isMockedLocation(position)) {
           discardCachedFixForMockLocation();
