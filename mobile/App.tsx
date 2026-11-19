@@ -4,7 +4,6 @@ import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
 import './src/trackingTask';
-import './src/watchdogTask';
 import LoginScreen from './src/LoginScreen';
 import HomeScreen from './src/HomeScreen';
 import VisitsScreen from './src/VisitsScreen';
