@@ -2,15 +2,17 @@ import { Component, useCallback, useEffect, useState, type ReactNode } from 'rea
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 // Show JS errors on screen (even in release builds) so crashes are diagnosable.
-type ErrorHandler = (error: unknown, isFatal?: boolean) => void;
-const errorUtils = (global as unknown as { ErrorUtils?: { setGlobalHandler: (fn: ErrorHandler) => void; getGlobalHandler?: () => ErrorHandler } }).ErrorUtils;
-const originalHandler = errorUtils?.getGlobalHandler?.();
-errorUtils?.setGlobalHandler((error, isFatal) => {
-  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  console.error('[app] fatal error', message);
-  Alert.alert('خطأ في التطبيق', message.slice(0, 500), [{ text: 'حسناً' }]);
-  originalHandler?.(error, isFatal);
-});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const errorUtils = (global as any).ErrorUtils;
+if (errorUtils?.setGlobalHandler) {
+  const originalHandler = errorUtils.getGlobalHandler?.();
+  errorUtils.setGlobalHandler((error: unknown, isFatal?: boolean) => {
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error('[app] fatal error', message);
+    Alert.alert('خطأ في التطبيق', message.slice(0, 500), [{ text: 'حسناً' }]);
+    originalHandler?.(error, isFatal);
+  });
+}
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts, NotoNaskhArabic_400Regular, NotoNaskhArabic_500Medium, NotoNaskhArabic_700Bold } from '@expo-google-fonts/noto-naskh-arabic';
