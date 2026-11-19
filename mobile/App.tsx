@@ -1,12 +1,12 @@
 import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
-// Show JS errors on screen so crashes are diagnosable (works in release builds).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const g = global as any;
-if (g.ErrorUtils?.setGlobalHandler) {
-  const original = g.ErrorUtils.getGlobalHandler?.();
-  g.ErrorUtils.setGlobalHandler((error: unknown, isFatal?: boolean) => {
+// Show JS errors on screen so crashes are diagnosable.
+// @ts-ignore - ErrorUtils is a React Native global not in TS types
+const errorUtils = global.ErrorUtils;
+if (errorUtils?.setGlobalHandler) {
+  const original = errorUtils.getGlobalHandler?.();
+  errorUtils.setGlobalHandler((error: unknown, isFatal?: boolean) => {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[app] error:', msg);
     Alert.alert('خطأ', msg.slice(0, 300), [{ text: 'حسناً' }]);
