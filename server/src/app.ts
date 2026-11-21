@@ -27,6 +27,14 @@ const CLOCK_SKEW_TOLERANCE_MS = 10 * 60000;
 const MAX_GPS_ACCURACY_M = 120;
 /** Drift below this is normal jitter around "now" and is not treated as a wrong clock. */
 const CLOCK_SKEW_FLOOR_MS = 60000;
+/**
+ * While a visit is open the phone is indoors, where GPS routinely reports 150-400 m accuracy —
+ * readings the app deliberately keeps off the trail. Held to the plain `STALE_GPS_MINUTES` that
+ * looked like a dead phone, so a normal long meeting in a shop produced a false "انقطاع في إرسال
+ * الموقع" for a manager who cannot tell the difference. Inside an open visit the silence is
+ * expected for this many minutes before anyone is told to check on the engineer.
+ */
+const VISIT_STALE_LIMIT_MINUTES = 30;
 const credentials = z.object({ email: z.email().max(254).transform(x => x.toLowerCase().trim()), password: z.string().min(1).max(200) });
 const oauthLogin = z.object({
   provider: z.enum(['google', 'apple']),
@@ -321,6 +329,9 @@ export function createApp(overrides: Partial<Config> = {}) {
       location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, speed: location.speed, heading: location.heading, battery: location.battery, recordedAt: location.recorded_at, receivedAt: location.receivedAt, source: location.source } : null,
       distanceMeters: stats.distanceMeters, pointCount: stats.pointCount,
       visitsToday: Number(visitStats?.total || 0), openVisit: openVisit || null,
+      // The window the map should call "لا إشارة" for this engineer: a visit in progress widens it,
+      // exactly as /api/alerts does. Shipped per rep so the two screens cannot drift apart.
+      staleLimitMinutes: openVisit ? Math.max(config.staleGpsMinutes, VISIT_STALE_LIMIT_MINUTES) : config.staleGpsMinutes,
     };
   }
   function overview() {
@@ -1152,14 +1163,19 @@ export function createApp(overrides: Partial<Config> = {}) {
       const last = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id);
       const lastAt = last?.at ? Number(last.at) : null;
       // One threshold for the whole product (`STALE_GPS_MINUTES`, default 10): the map says
-      // "لا إشارة" at exactly the moment this alert fires.
-      const staleMs = config.staleGpsMinutes * 60000;
+      // "لا إشارة" at exactly the moment this alert fires. `repSnapshot` publishes the same
+      // per-engineer value, so a visit that widens the window here never leaves the map disagreeing.
+      const openVisitRow = store.get("SELECT id FROM visits WHERE user_id=? AND status='open' ORDER BY checked_in_at DESC LIMIT 1", rep.id);
+      const staleLimitMinutes = openVisitRow ? Math.max(config.staleGpsMinutes, VISIT_STALE_LIMIT_MINUTES) : config.staleGpsMinutes;
+      const staleMs = staleLimitMinutes * 60000;
       if (shift && lastAt && now - lastAt > staleMs) {
         const staleMinutes = Math.round((now - lastAt) / 60000);
         alerts.push({
           id: `${rep.id}:stale`, level: 'warn', code: 'stale_gps', repId: rep.id, repName: rep.name,
-          title: 'انقطاع في إرسال الموقع',
-          detail: `آخر إشارة قبل ${staleMinutes} دقيقة (حد التنبيه ${config.staleGpsMinutes} دقيقة) — تأكد من فتح التطبيق والسماح بالموقع.`,
+          title: openVisitRow ? 'انقطاع في إرسال الموقع أثناء زيارة' : 'انقطاع في إرسال الموقع',
+          detail: openVisitRow
+            ? `آخر إشارة قبل ${staleMinutes} دقيقة، وزيارة ما زالت مفتوحة — الحد داخل الزيارة ${staleLimitMinutes} دقيقة لأن الموقع داخل مبنى ضعيف. اتصل بالمهندس أو اطلب إنهاء الزيارة.`
+            : `آخر إشارة قبل ${staleMinutes} دقيقة (حد التنبيه ${staleLimitMinutes} دقيقة) — تأكد من فتح التطبيق والسماح بالموقع.`,
           at: lastAt,
         });
       }

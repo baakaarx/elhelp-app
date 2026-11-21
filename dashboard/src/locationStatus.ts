@@ -13,7 +13,9 @@ export const WEAK_ACCURACY_M = 100;
 
 /**
  * GPS speed is an estimate; an old, weak or missing fix cannot prove motion.
- * `staleMs` mirrors the server's `STALE_GPS_MINUTES`; pass it when the overview is loaded.
+ * `staleMs` mirrors the server's `STALE_GPS_MINUTES`; pass it when the overview is loaded. The
+ * per-engineer `staleLimitMinutes` from the server wins over it, because an engineer standing
+ * inside a visit is allowed a longer silence (the alert list uses the same number).
  */
 export function movementStatus(rep: Rep, now = Date.now(), staleMs = STALE_FIX_MS): string {
   const fix = rep.location;
@@ -22,9 +24,15 @@ export function movementStatus(rep: Rep, now = Date.now(), staleMs = STALE_FIX_M
   const ageSeconds = Math.max(0, Math.round((now - fix.recordedAt) / 1000));
   if (fix.recordedAt > now + 120_000) return 'وقت الجهاز غير مضبوط · الحركة غير معروفة';
   const accuracyText = typeof fix.accuracy === 'number' ? `±${Math.round(fix.accuracy)} م` : '';
-  if (now - fix.recordedAt > staleMs) {
+  const limitMs = rep.staleLimitMinutes ? rep.staleLimitMinutes * 60_000 : staleMs;
+  if (now - fix.recordedAt > limitMs) {
     // Say why: either the phone stopped sending, or the reading never met the accuracy gate.
     return `لا إشارة من ${Math.round(ageSeconds / 60)} دقيقة · آخر موقع معروف${accuracyText ? ` (${accuracyText})` : ''}`;
+  }
+  if (rep.openVisit && limitMs > staleMs && now - fix.recordedAt > staleMs) {
+    // Still inside the widened window: name the reason instead of leaving the manager to imagine
+    // a fault, and keep the customer visible so the visit itself is obvious at a glance.
+    return `داخل زيارة عند ${rep.openVisit.customerName} · آخر موقع من ${Math.round(ageSeconds / 60)} دقيقة (موقع داخل مبنى)`;
   }
   if (fix.accuracy == null || fix.accuracy > WEAK_ACCURACY_M) {
     return `إشارة ضعيفة${accuracyText ? ` ${accuracyText}` : ''} · الحركة غير مؤكدة`;

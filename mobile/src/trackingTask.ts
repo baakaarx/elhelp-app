@@ -1,9 +1,8 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
-import { BACKGROUND_TASK, randomUUID, shouldQueueFix } from './tracking';
+import { BACKGROUND_TASK, queueableFix, randomUUID } from './tracking';
 import { enqueueLocation, flushOutbox } from './reports';
 import { getActiveShift } from './storage';
-import { MAX_ACCURACY_M } from './location';
 import { discardCachedFixForMockLocation } from './locationCache';
 import { announceMockLocation, isMockedLocation } from './locationIntegrity';
 import { getDeviceId } from './device';
@@ -37,18 +36,17 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK)) {
       const accuracy = position.coords.accuracy ?? null;
       const { latitude, longitude } = position.coords;
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) continue;
-      // The OS also reports network guesses while a real GPS lock is pending; skip those so
-      // the route does not jump across the city.
-      if (accuracy != null && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > MAX_ACCURACY_M)) continue;
-      // The OS delivers fixes even when the phone is still (distanceInterval: 1), so drop the
-      // jitter here but let a heartbeat through every 30 s — that is what keeps a parked
-      // engineer from looking like "no signal" on the manager's dashboard.
-      if (!shouldQueueFix(latitude, longitude)) continue;
+      // Same gate as the foreground watcher: network guesses (accuracy above the shared limit) are kept
+      // off the route, the standing-still jitter is dropped, and a stillness heartbeat every 30 s
+      // still goes out — from the last usable position when the only readings are too weak, which
+      // is what happens in a shop during a visit.
+      const fix = queueableFix(latitude, longitude, accuracy);
+      if (!fix) continue;
       const point: GeoPoint = {
         id: randomUUID(),
         shiftId,
-        lat: position.coords.latitude, lng: position.coords.longitude,
-        accuracy: position.coords.accuracy ?? null, speed: position.coords.speed != null && position.coords.speed >= 0 && position.coords.speed <= 150 ? position.coords.speed : null,
+        lat: fix.lat, lng: fix.lng,
+        accuracy: fix.accuracy, speed: position.coords.speed != null && position.coords.speed >= 0 && position.coords.speed <= 150 ? position.coords.speed : null,
         heading: position.coords.heading != null && position.coords.heading >= 0 && position.coords.heading < 360 ? position.coords.heading : null, battery: null,
         recordedAt: position.timestamp || Date.now(),
       };
