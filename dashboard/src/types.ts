@@ -28,8 +28,17 @@ export interface Rep extends User {
   createdAt: number | null;
   tracking: boolean;
   shiftStartedAt: number | null;
+  /**
+   * Whether the engineer is inside a shift right now. `ended` carries the day he just closed, so
+   * a finished shift never prints as a missing value again.
+   */
+  shiftState?: 'open' | 'ended' | 'none';
+  /** When that shift was stopped — only set when `shiftState` is `ended`. */
+  shiftEndedAt?: number | null;
   lastSeen: number | null;
   location: LocationPoint | null;
+  /** Newest battery reading the phone sent with a fix, plus when it was taken. */
+  battery?: { percent: number; recordedAt: number } | null;
   distanceMeters: number;
   pointCount: number;
   visitsToday: number;

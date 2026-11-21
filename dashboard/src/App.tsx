@@ -6,7 +6,7 @@ import { ago, durationText, formatNumber, isManager, logout, me } from './sessio
 import Login from './Login';
 import MapView from './MapView';
 import LocationName from './LocationName';
-import { movementStatus } from './locationStatus';
+import { batteryText, batteryWarning, latestBattery, movementStatus, shiftText } from './locationStatus';
 import Reports from './Reports';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
@@ -250,13 +250,16 @@ export default function App() {
                         <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                         <span className="grow">
                           <strong>{rep.name}</strong>
-                          <small>{movementStatus(rep, clock, staleMs)} · آخر موقع {ago(rep.location?.recordedAt ?? null, clock)} · {formatNumber(rep.visitsToday)} زيارة</small>
+                          <small>{movementStatus(rep, clock, staleMs, overview?.timezone)} · آخر موقع {ago(rep.location?.recordedAt ?? null, clock)} · {formatNumber(rep.visitsToday)} زيارة</small>
                         </span>
                         {/* The warning that matters: every fix carries the phone's battery, so a
-                            device about to go silent is visible before the trail stops. */}
-                        {rep.tracking && rep.location && (rep.gap?.battery ?? 100) <= 10
-                          ? <span className="pill warn">بطارية {formatNumber(rep.gap!.battery!)}٪</span>
-                          : null}
+                            device about to go silent is visible before the trail stops. Both bounds
+                            (which reading counts, how old it may be) live in `batteryWarning`. */}
+                        {(() => {
+                          const percent = batteryWarning(rep, clock);
+                          if (percent === null) return null;
+                          return <span className="pill warn" title={`آخر قراءة من ${ago(latestBattery(rep)?.recordedAt ?? null, clock)}`}>بطارية {formatNumber(percent)}٪</span>;
+                        })()}
                         <span className={rep.online ? 'status ok' : 'status'} title={rep.online ? 'متصل' : 'غير متصل'} />
                         <small className="mono">{formatNumber(rep.distanceMeters / 1000)} كم</small>
                       </button>
@@ -266,17 +269,17 @@ export default function App() {
                 {selected && (
                   <div className="selected-summary">
                     <h4>{selected.name}</h4>
-                    <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock, staleMs)}</p>
+                    <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock, staleMs, overview?.timezone)}</p>
                     <LocationName key={selected.id} location={selected.location} timezone={overview?.timezone} />
                     {selectedIdle && <p className="muted small">آخر تبرير وقوف: {selectedIdle.reason} · {ago(selectedIdle.createdAt, clock)}</p>}
                     <dl>
                       <div><dt>آخر موقع</dt><dd>{ago(selected.location?.recordedAt ?? null, clock)}</dd></div>
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
-                      <div><dt>البطارية</dt><dd>{selected.location?.battery !== null && selected.location?.battery !== undefined ? `${formatNumber(selected.location.battery)}٪` : '—'}</dd></div>
+                      <div><dt>البطارية</dt><dd>{batteryText(selected, clock)}</dd></div>
                       {/* Measured from the trail, not from the phone's speed sensor: this is what
                           "كان واقف من الصبح" means when someone has to answer for it. */}
                       <div><dt>وقوف متواصل</dt><dd>{(selected.stationaryMinutes ?? 0) >= 5 ? `${formatNumber(selected.stationaryMinutes!)} دقيقة في نفس المنطقة` : '—'}</dd></div>
-                      <div><dt>بداية الوردية</dt><dd>{selected.shiftStartedAt ? timeText(selected.shiftStartedAt, overview?.timezone) : '—'}</dd></div>
+                      <div><dt>بداية الوردية</dt><dd>{shiftText(selected, overview?.timezone, clock)}</dd></div>
                       <div><dt>زيارات اليوم</dt><dd>{formatNumber(selected.visitsToday)}</dd></div>
                       <div><dt>زيارة مفتوحة</dt><dd>{selected.openVisit ? selected.openVisit.customerName : 'لا'}</dd></div>
                     </dl>

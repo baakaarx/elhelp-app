@@ -256,3 +256,75 @@ test('the configuration rejects a nonsense staleness window', () => {
     else process.env.STALE_GPS_MINUTES = previous;
   }
 });
+
+/**
+ * The manager's card had one word for two opposite facts: a shift stopped at ٢:١٠ and a phone that
+ * never reported anything both printed «—». The snapshot now carries the state, so the screen can
+ * say which of the two it is looking at.
+ */
+const overviewFor = async (repId: string) => {
+  const res = await client.get('/api/overview').set('Authorization', `Bearer ${token}`);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  return res.body.reps.find((row: any) => row.id === repId) as Record<string, any>;
+};
+
+test('a shift that was stopped reports when it ended, not a blank', async () => {
+  const repId = addRep('مصطفى كامل', `mostafa.${Date.now()}@mandoub.test`);
+  const startedAt = Date.now() - 3 * 60 * MINUTE;
+  const endedAt = Date.now() - 2 * MINUTE;
+  store.run('INSERT INTO shifts(id,user_id,started_at,ended_at,consent_version,consent_at) VALUES (?,?,?,?,?,?)',
+    randomUUID(), repId, startedAt, endedAt, '1.0', startedAt);
+
+  const rep = await overviewFor(repId);
+  assert.equal(rep.shiftState, 'ended');
+  assert.equal(Number(rep.shiftStartedAt), startedAt, 'the day he worked stays on the card');
+  assert.equal(Number(rep.shiftEndedAt), endedAt);
+  assert.equal(rep.tracking, false, 'and it is still not counted as a running shift');
+});
+
+test('an open shift stays marked open', async () => {
+  const repId = addRep('ياسر منير', `yasser.${Date.now()}@mandoub.test`);
+  const startedAt = Date.now() - 40 * MINUTE;
+  addShift(repId, startedAt);
+  const rep = await overviewFor(repId);
+  assert.equal(rep.shiftState, 'open');
+  assert.equal(Number(rep.shiftStartedAt), startedAt);
+  assert.equal(rep.shiftEndedAt, null);
+  assert.equal(rep.tracking, true);
+});
+
+test('a day with no shift at all is stated in words', async () => {
+  const repId = addRep('أحمد شوقي', `shoki.${Date.now()}@mandoub.test`);
+  const rep = await overviewFor(repId);
+  assert.equal(rep.shiftState, 'none');
+  assert.equal(rep.shiftStartedAt, null);
+  assert.equal(rep.shiftEndedAt, null);
+});
+
+test('a shift closed before yesterday is not presented as no shift', async () => {
+  // The 24-hour lookup must not turn an old day into silence: the card shows the start either way.
+  const repId = addRep('عمرو سيد', `amr.${Date.now()}@mandoub.test`);
+  const startedAt = Date.now() - 4 * 24 * 60 * MINUTE;
+  store.run('INSERT INTO shifts(id,user_id,started_at,ended_at,consent_version,consent_at) VALUES (?,?,?,?,?,?)',
+    randomUUID(), repId, startedAt, startedAt + 5 * MINUTE, '1.0', startedAt);
+  const rep = await overviewFor(repId);
+  assert.equal(rep.shiftState, 'none', 'he is not in a shift now');
+  assert.equal(rep.shiftStartedAt, null, 'and the four-day-old shift is not shown as today\'s');
+});
+
+test('the battery reading survives the fixes that carry none', async () => {
+  // Background fixes arrive with `battery: null`; the newest row is therefore not the newest
+  // reading. The card and the low-battery warning follow the number the phone actually reported.
+  const repId = addRep('هاني صبري', `hany.${Date.now()}@mandoub.test`);
+  const shiftId = addShift(repId, Date.now() - 60 * MINUTE);
+  const point = (recordedAt: number, battery: number | null) => store.run(
+    `INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,'gps')`,
+    randomUUID(), repId, shiftId, 31.2, 29.9, 8, 0, null, battery, recordedAt, recordedAt);
+  point(Date.now() - 10 * MINUTE, 9);
+  point(Date.now() - MINUTE, null); // the background task's version of the same minute
+
+  const rep = await overviewFor(repId);
+  assert.equal(Number(rep.battery?.percent), 9, 'the card has to find the last reported level');
+  assert.equal(Number(rep.gap?.battery), 9, 'and so does the low-battery warning');
+});

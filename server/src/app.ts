@@ -307,7 +307,16 @@ export function createApp(overrides: Partial<Config> = {}) {
   }
   function repSnapshot(user: Record<string, any>) {
     const location = store.get('SELECT *, received_at AS receivedAt FROM locations WHERE user_id=? ORDER BY recorded_at DESC, received_at DESC LIMIT 1', user.id);
-    const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
+    const openShift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
+    /*
+     * A finished shift used to make the card print «—» where the manager needs a time. The bare
+     * dash reads as «مفيش بيانات وصلت», which is the opposite of what happened: the engineer
+     * closed his day (or forgot to). The newest shift of the last day is reported with its state,
+     * so «انتهت الوردية ٢:١٠ م» and «مفيش وردية النهارده» stay two different sentences.
+     */
+    const shift = openShift || store.get(
+      'SELECT * FROM shifts WHERE user_id=? AND ended_at IS NOT NULL AND ended_at>=? ORDER BY ended_at DESC LIMIT 1',
+      user.id, Date.now() - 24 * 3600000);
     const bounds = dayBounds(localDate(config.timezone), config.timezone);
     const day = localDate(config.timezone);
     let stats = dayStatsCache.get(user.id);
@@ -328,12 +337,27 @@ export function createApp(overrides: Partial<Config> = {}) {
     const online = io.sockets.adapter.rooms.get(`user:${user.id}`)?.size ? true : !!user.last_seen && Date.now() - user.last_seen < 75000;
     const visitStats = store.get(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?`, user.id, bounds.start, bounds.end);
     const openVisit = store.get("SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status='open' ORDER BY checked_in_at DESC LIMIT 1", user.id);
+    /*
+     * Every fix is supposed to carry the phone's battery, but two paths send none: the headless
+     * background task (`trackingTask.ts` has no battery reading) and the shift-start point. Without
+     * a fallback the card printed «—» and the low-battery warning went quiet for an engineer whose
+     * phone was at ٦٪ ten minutes ago — so the newest *reading* is what gets reported, with its age.
+     */
+    const batteryRow = store.get('SELECT battery, recorded_at AS recordedAt FROM locations WHERE user_id=? AND battery IS NOT NULL AND recorded_at>=? ORDER BY recorded_at DESC, received_at DESC LIMIT 1',
+      user.id, Date.now() - 24 * 3600000);
+    const battery = batteryRow ? { percent: Number(batteryRow.battery), recordedAt: Number(batteryRow.recordedAt) } : null;
     return {
-      ...publicUser(user), lastSeen: user.last_seen || null, online, tracking: !!shift,
+      ...publicUser(user), lastSeen: user.last_seen || null, online, tracking: !!openShift,
       // The team page shows when the engineer joined; without it the page printed "today".
       createdAt: user.created_at || null,
       shiftStartedAt: shift?.started_at || null,
+      // `open` = the stopwatch is running; `ended` = the day was closed (recently), and the two
+      // timestamps below are the proof; `none` = no shift at all in the last day.
+      shiftState: openShift ? 'open' as const : shift ? 'ended' as const : 'none' as const,
+      shiftEndedAt: !openShift && shift?.ended_at != null ? Number(shift.ended_at) : null,
       location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, speed: location.speed, heading: location.heading, battery: location.battery, recordedAt: location.recorded_at, receivedAt: location.receivedAt, source: location.source } : null,
+      // The newest battery reading, whatever fix it rode in on — see the note above.
+      battery,
       distanceMeters: stats.distanceMeters, pointCount: stats.pointCount,
       visitsToday: Number(visitStats?.total || 0), openVisit: openVisit || null,
       stationaryMinutes: stats.stationaryMinutes,
@@ -349,7 +373,7 @@ export function createApp(overrides: Partial<Config> = {}) {
           presenceMs: user.last_seen ? Date.now() - Number(user.last_seen) : Number.POSITIVE_INFINITY,
         }),
         silenceMinutes: location ? Math.max(0, Math.round((Date.now() - Number(location.recorded_at)) / 60000)) : null,
-        battery: location?.battery == null ? null : Number(location.battery),
+        battery: battery?.percent ?? null,
       },
     };
   }
