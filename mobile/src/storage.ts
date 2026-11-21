@@ -6,6 +6,7 @@ const CONSENT_KEY = 'mandoub_consent_at';
 const SHIFT_KEY = 'mandoub_active_shift';
 const OUTBOX_OWNER_KEY = 'mandoub_outbox_owner';
 const ACTIVE_USER_KEY = 'mandoub_active_user';
+const SERVER_OVERRIDE_KEY = 'mandoub_server_url';
 
 // SecureStore has no web implementation; the packaged web build uses localStorage.
 const web = Platform.OS === 'web' && typeof localStorage !== 'undefined';
@@ -52,6 +53,12 @@ async function setPrivateString(key: string, value: string | null): Promise<void
 /** Account whose unsent work is currently stored in the shared on-device outbox. */
 export const getOutboxOwner = () => getPrivateString(OUTBOX_OWNER_KEY);
 export const setOutboxOwner = (userId: string | null) => setPrivateString(OUTBOX_OWNER_KEY, userId);
+/**
+ * The API address typed on the phone, when it differs from the one baked into the build. Kept
+ * outside `clearDeviceData` on purpose: a logout must not send the engineer back to a dead address.
+ */
+export const getServerOverride = () => getPrivateString(SERVER_OVERRIDE_KEY);
+export const setServerOverride = (url: string | null) => setPrivateString(SERVER_OVERRIDE_KEY, url);
 /** Current authenticated account, also read by a headless background location task. */
 export const getActiveUserId = () => getPrivateString(ACTIVE_USER_KEY);
 export const setActiveUserId = (userId: string | null) => setPrivateString(ACTIVE_USER_KEY, userId);
