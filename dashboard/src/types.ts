@@ -228,3 +228,21 @@ export interface RepSummary {
 export const visitPurposeLabels: Record<VisitPurpose, string> = {
   visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
+
+/**
+ * What removing an engineer account would erase, counted by the server (`GET /api/reps/:id/impact`).
+ * The dashboard shows these numbers inside the confirm step, so the decision is made on facts.
+ */
+export interface RepImpact {
+  name: string;
+  email: string;
+  shifts: number;
+  locations: number;
+  visits: number;
+  openVisits: number;
+  reports: number;
+  dailyReports: number;
+  idleReports: number;
+  /** True while he has an open shift on a phone — deleting closes it. */
+  trackingNow: boolean;
+}
