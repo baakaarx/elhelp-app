@@ -1,7 +1,8 @@
 import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Location from 'expo-location';
 import { useEffect, useState } from 'react';
-import { API_BASE, changeMyPassword, deleteMyAccount, pushStatus } from './api';
+import { apiBase, changeMyPassword, deleteMyAccount, pushStatus } from './api';
+import ServerAddressCard from './ServerAddressCard';
 import { disablePushNotifications, enablePushNotifications, notificationPermission } from './push';
 import { flushOutbox } from './reports';
 import { colors, fonts, space } from './theme';
@@ -187,13 +188,19 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         {permission ? <Text style={styles.mono}>{permission}</Text> : null}
       </Card>
 
+      <Card>
+        <SectionTitle title="الاتصال بالسيرفر" />
+        <Body muted>لو اتغيّر عنوان الجهاز اللي شغال عليه السيرفر (راوتر جديد أو شبكة تانية)، عدّله من هنا — مش محتاج تنصّب نسخة جديدة.</Body>
+        <ServerAddressCard />
+      </Card>
+
       <Card tone="mint">
         <SectionTitle title="الخصوصية" />
         <Body>
           موقعك يُسجَّل أثناء الوردية فقط وبعد موافقتك الصريحة، ويُستخدم لمتابعة خط السير وإعداد التقارير.
           البيانات تُحذف تلقائيًا بعد {field.summary?.retentionDays ?? 365} يومًا، وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
         </Body>
-        <Pressable onPress={() => void Linking.openURL(`${API_BASE}/privacy`)} accessibilityRole="link">
+        <Pressable onPress={() => void Linking.openURL(`${apiBase()}/privacy`)} accessibilityRole="link">
           <Text style={styles.link}>سياسة الخصوصية الكاملة ←</Text>
         </Pressable>
       </Card>

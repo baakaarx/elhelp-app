@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path } from 'react-native-svg';
 import { authProviders, login, oauthLogin } from './api';
 import { appleAvailable, googleConfigured, signInWithApple, signInWithGoogle } from './oauth';
+import ServerAddressCard from './ServerAddressCard';
 import { colors, fonts, radius, shadow, space } from './theme';
 import { Button, Field } from './ui';
 import type { User } from './types';
@@ -25,7 +26,6 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
   // complete the flow — a button that fails on tap is a store rejection, not a placeholder.
   const [providers, setProviders] = useState({ google: false, apple: false });
   const [appleReady, setAppleReady] = useState(false);
-
   useEffect(() => {
     let alive = true;
     authProviders().then(async value => {
@@ -91,6 +91,9 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
             {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
             <Button label={busy ? 'جارٍ الدخول…' : 'دخول'} onPress={submit} loading={busy} />
             <Text style={styles.loginHint}>الحساب بيتعمل من مدير المتابعة، ولو نسيت كلمة المرور كلّم المدير يعملها لك من جديد.</Text>
+
+            <ServerAddressCard />
+
             {showGoogle || showApple ? (
               <View style={{ gap: 10 }}>
                 <View style={styles.divider}>
