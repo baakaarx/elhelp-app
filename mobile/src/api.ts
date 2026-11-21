@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import { getServerOverride, getToken, setServerOverride, setToken } from './storage';
+import { getToken, setToken } from './storage';
 import type { DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
@@ -14,8 +14,7 @@ export class ApiError extends Error {
   code?: string;
   constructor(message: string, status: number, code?: string) { super(message); this.status = status; if (code) this.code = code; }
 }
-/** The address baked into the APK at build time (`EXPO_PUBLIC_API_URL`). */
-function resolveBuildBase(): string {
+function resolveBase(): string {
   const configured = (Constants.expoConfig?.extra as { apiUrl?: string } | undefined)?.apiUrl || process.env.EXPO_PUBLIC_API_URL || '';
   if (configured) return configured.replace(/\/$/, '');
   if (Platform.OS === 'web') return '';
@@ -23,91 +22,13 @@ function resolveBuildBase(): string {
   const host = Constants.expoConfig?.hostUri?.split(':')[0];
   return host ? `http://${host}:3000` : '';
 }
-
-/**
- * A phone left on a dead LAN address is the single most common reason a released build "shows the
- * wrong password": the request never reaches the company server, it reaches whatever else answers
- * on that address. Rebuilding the APK every time a router hands out a new IP was not workable, so
- * the address can now be retyped on the phone and is kept next to the session token.
- *
- * `null` means "no override" — the baked-in address stays in force, so a normal engineer who never
- * opens this field behaves exactly like every previous build.
- */
-const BUILD_API_BASE = resolveBuildBase();
-let serverOverride: string | null = null;
-let overrideLoaded: Promise<void> | null = null;
-
-/**
- * Accepts `192.168.1.5:3000`, `localhost:3000` or a full `http(s)://…` URL and returns a base with
- * no trailing slash. Deliberately regex-only: `new URL()` is not dependable under Hermes, and a
- * typo here would look like a server outage.
- */
-export function normalizeServerUrl(raw: string): string | null {
-  let value = (raw || '').trim().replace(/\s+/g, '');
-  if (!value) return null;
-  if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
-  if (!/^https?:\/\/[^/\s]+(\/[^\s]*)?$/i.test(value)) return null;
-  const host = value.slice(value.indexOf('://') + 3).split('/')[0];
-  // IPv4 or a hostname (dots/hyphens/underscore), optional port. No scheme, no spaces, no path.
-  if (!/^[a-z0-9._-]+(?::\d{2,5})?$/i.test(host)) return null;
-  return value.replace(/\/+$/, '');
-}
-
-/** The address every request goes to right now: the phone's override, else the build's. */
-export function apiBase(): string {
-  return (serverOverride ?? BUILD_API_BASE).replace(/\/+$/, '');
-}
-/** True on a native build whose baked-in address was replaced on the phone. */
-export const usingCustomServer = () => serverOverride !== null;
-/** Hidden on the web: the browser already talks to whatever origin served the page. */
-export const SERVER_EDITABLE = Platform.OS !== 'web';
+export const API_BASE = resolveBase();
 /**
  * A build with no server address is a packaging mistake, not a dropped connection. It used to
  * fall back to `http://127.0.0.1:3000`, so a released app silently reported "لا يوجد اتصال"
- * forever; the login screen now says the build is unconfigured and offers the address field.
+ * forever; the app now refuses to pretend and says the build is not configured.
  */
-export function unconfigured(): boolean { return apiBase() === '' && Platform.OS !== 'web'; }
-
-async function readServerOverride(): Promise<void> {
-  const stored = await getServerOverride().catch(() => null);
-  const valid = stored ? normalizeServerUrl(stored) : null;
-  if (valid) serverOverride = valid;
-  else if (stored) await setServerOverride(null).catch(() => undefined);
-}
-/** Reads the stored address once per process — background tasks share this module too. */
-export function ensureApiBase(): Promise<void> {
-  if (!overrideLoaded) overrideLoaded = readServerOverride();
-  return overrideLoaded;
-}
-/** Saves a typed address after validating it, and switches every later request to it. */
-export async function saveServerAddress(raw: string): Promise<string> {
-  const value = normalizeServerUrl(raw);
-  if (!value) throw new ApiError('العنوان مش صحيح. اكتبه هكذا: 192.168.1.5:3000 أو https://server.com', 0);
-  await setServerOverride(value);
-  serverOverride = value;
-  return value;
-}
-/** Puts the build back on the address it shipped with. */
-export async function resetServerAddress(): Promise<void> {
-  await setServerOverride(null);
-  serverOverride = null;
-}
-/**
- * `/api/health` needs no token, so it answers "is this the right machine?" before the engineer
- * wastes tries on a password. Resolves with the server's own payload, never throws.
- */
-export async function pingServer(address: string): Promise<{ ok: boolean; error?: string }> {
-  const base = normalizeServerUrl(address);
-  if (!base) return { ok: false, error: 'العنوان مكتوب غلط.' };
-  try {
-    const res = await fetch(`${base}/api/health`, { headers: { Accept: 'application/json' } });
-    const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
-    if (res.ok && body?.ok === true) return { ok: true };
-    return { ok: false, error: `السيرفر ردّ بكود ${res.status} — ده مش سيرفر الشركة.` };
-  } catch {
-    return { ok: false, error: 'مفيش رد من العنوان ده. اتأكد إن السيرفر شغال والتليفون على نفس الشبكة.' };
-  }
-}
+export const UNCONFIGURED = API_BASE === '' && Platform.OS !== 'web';
 
 /**
  * `queued` marks the endpoints whose caller stores the payload on the phone and retries it: only
@@ -116,14 +37,13 @@ export async function pingServer(address: string): Promise<{ ok: boolean; error?
  * worst message this app can print.
  */
 async function request<T>(path: string, init: RequestInit = {}, options: { queued?: boolean } = {}): Promise<T> {
-  await ensureApiBase();
   const token = await getToken();
   const headers: Record<string, string> = { Accept: 'application/json', 'X-Mandoub-Client': 'rep', ...(init.headers as Record<string, string> | undefined) };
   if (token) headers['X-Mandoub-Token'] = token;
   if (init.body) headers['Content-Type'] = 'application/json';
   let res: Response;
   try {
-    res = await fetch(`${apiBase()}${path}`, { ...init, headers });
+    res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   } catch {
     throw new ApiError(options.queued
       ? 'لا يوجد اتصال بالإنترنت. سيتم حفظ البيانات وإرسالها تلقائيًا.'
