@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { movementStatus, STALE_FIX_MS, WEAK_ACCURACY_M } from '../../dashboard/src/locationStatus.js';
+import { batteryText, batteryWarning, movementStatus, shiftText, STALE_FIX_MS, WEAK_ACCURACY_M } from '../../dashboard/src/locationStatus.js';
 import type { Rep } from '../../dashboard/src/types.js';
 
 const NOW = Date.UTC(2026, 10, 4, 12, 0, 0);
@@ -60,4 +60,58 @@ test('a weak fix is described as weak instead of a confident position', () => {
 test('being outside a shift wins over any location data', () => {
   assert.equal(movementStatus(rep({ tracking: false }), NOW), 'خارج الوردية');
   assert.equal(movementStatus(rep({ location: null }), NOW), 'بانتظار أول موقع');
+});
+
+/**
+ * The engineer card had one rendering for «the day is finished» and «nothing arrived»: a dash. The
+ * two sentences are different work for the manager, so they are now different strings.
+ */
+const HOUR = 3600000;
+
+test('a shift that ended says when it ended instead of a dash', () => {
+  const text = shiftText(rep({ tracking: false, shiftState: 'ended', shiftStartedAt: NOW - 3 * HOUR, shiftEndedAt: NOW - 15 * 60000 }), 'Africa/Cairo', NOW);
+  assert.match(text, /انتهت/);
+  assert.match(text, /٣ ساعة/);
+  assert.ok(!text.includes('—'), `a dash is the ambiguity this removes: ${text}`);
+});
+
+test('a shift that is running counts up from its start', () => {
+  const text = shiftText(rep({ tracking: true, shiftState: 'open', shiftStartedAt: NOW - 40 * 60000 }), 'Africa/Cairo', NOW);
+  assert.match(text, /جارية/);
+  assert.match(text, /٤٠ دقيقة/);
+});
+
+test('no shift at all is said in words, not drawn as an em dash', () => {
+  assert.equal(shiftText(rep({ tracking: false, shiftState: 'none', shiftStartedAt: null }), 'Africa/Cairo', NOW), 'مفيش وردية في آخر ٢٤ ساعة');
+});
+
+test('an old shift is never described as no shift', () => {
+  // The card must not invent «مفيش وردية» when the day simply fell outside the 24-hour window.
+  const text = shiftText(rep({ tracking: false, shiftState: 'ended', shiftStartedAt: null }), 'Africa/Cairo', NOW);
+  assert.match(text, /انتهت/);
+  assert.ok(!text.includes('مفيش وردية'), text);
+});
+
+test('the status line names the minute the shift was stopped', () => {
+  const status = movementStatus(rep({ tracking: false, shiftState: 'ended', shiftStartedAt: NOW - 3 * HOUR, shiftEndedAt: NOW - 60000 }), NOW, STALE_FIX_MS, 'Africa/Cairo');
+  assert.match(status, /انتهت ورديته/);
+});
+
+test('the battery line uses the newest reading and admits its age', () => {
+  assert.equal(batteryText(rep({ battery: { percent: 62, recordedAt: NOW - 60000 } }), NOW), '٦٢٪');
+  assert.match(batteryText(rep({ battery: { percent: 62, recordedAt: NOW - 30 * 60000 } }), NOW), /من ٣٠ دقيقة/);
+});
+
+test('a battery read comes from the fix when the snapshot has no separate reading', () => {
+  // Fixes from the background task carry `battery: null`, so the fallback is what keeps the row alive.
+  assert.equal(batteryText(rep({}, { battery: 5 }), NOW), '٥٪');
+  assert.equal(batteryText(rep({ battery: null }, { battery: null }), NOW), 'مفيش قراءة بطارية من التليفون');
+});
+
+test('the battery warning needs a recent number, not only a low one', () => {
+  assert.equal(batteryWarning(rep({ battery: { percent: 8, recordedAt: NOW - 60000 } }), NOW), 8);
+  // A reading three hours old is not "about to die now"; the warning used to sit on the card forever.
+  assert.equal(batteryWarning(rep({ battery: { percent: 8, recordedAt: NOW - 3 * HOUR } }), NOW), null);
+  // Background fixes carry no battery at all, so the last reading that did is what still warns.
+  assert.equal(batteryWarning(rep({ battery: null }, { battery: 7, recordedAt: NOW - 120000 }), NOW), 7);
 });

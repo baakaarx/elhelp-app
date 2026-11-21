@@ -307,7 +307,16 @@ export function createApp(overrides: Partial<Config> = {}) {
   }
   function repSnapshot(user: Record<string, any>) {
     const location = store.get('SELECT *, received_at AS receivedAt FROM locations WHERE user_id=? ORDER BY recorded_at DESC, received_at DESC LIMIT 1', user.id);
-    const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
+    const openShift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
+    /*
+     * A finished shift used to make the card print «—» where the manager needs a time. The bare
+     * dash reads as «مفيش بيانات وصلت», which is the opposite of what happened: the engineer
+     * closed his day (or forgot to). The newest shift of the last day is reported with its state,
+     * so «انتهت الوردية ٢:١٠ م» and «مفيش وردية النهارده» stay two different sentences.
+     */
+    const shift = openShift || store.get(
+      'SELECT * FROM shifts WHERE user_id=? AND ended_at IS NOT NULL AND ended_at>=? ORDER BY ended_at DESC LIMIT 1',
+      user.id, Date.now() - 24 * 3600000);
     const bounds = dayBounds(localDate(config.timezone), config.timezone);
     const day = localDate(config.timezone);
     let stats = dayStatsCache.get(user.id);
@@ -328,12 +337,27 @@ export function createApp(overrides: Partial<Config> = {}) {
     const online = io.sockets.adapter.rooms.get(`user:${user.id}`)?.size ? true : !!user.last_seen && Date.now() - user.last_seen < 75000;
     const visitStats = store.get(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?`, user.id, bounds.start, bounds.end);
     const openVisit = store.get("SELECT id, customer_name AS customerName, checked_in_at AS checkedInAt FROM visits WHERE user_id=? AND status='open' ORDER BY checked_in_at DESC LIMIT 1", user.id);
+    /*
+     * Every fix is supposed to carry the phone's battery, but two paths send none: the headless
+     * background task (`trackingTask.ts` has no battery reading) and the shift-start point. Without
+     * a fallback the card printed «—» and the low-battery warning went quiet for an engineer whose
+     * phone was at ٦٪ ten minutes ago — so the newest *reading* is what gets reported, with its age.
+     */
+    const batteryRow = store.get('SELECT battery, recorded_at AS recordedAt FROM locations WHERE user_id=? AND battery IS NOT NULL AND recorded_at>=? ORDER BY recorded_at DESC, received_at DESC LIMIT 1',
+      user.id, Date.now() - 24 * 3600000);
+    const battery = batteryRow ? { percent: Number(batteryRow.battery), recordedAt: Number(batteryRow.recordedAt) } : null;
     return {
-      ...publicUser(user), lastSeen: user.last_seen || null, online, tracking: !!shift,
+      ...publicUser(user), lastSeen: user.last_seen || null, online, tracking: !!openShift,
       // The team page shows when the engineer joined; without it the page printed "today".
       createdAt: user.created_at || null,
       shiftStartedAt: shift?.started_at || null,
+      // `open` = the stopwatch is running; `ended` = the day was closed (recently), and the two
+      // timestamps below are the proof; `none` = no shift at all in the last day.
+      shiftState: openShift ? 'open' as const : shift ? 'ended' as const : 'none' as const,
+      shiftEndedAt: !openShift && shift?.ended_at != null ? Number(shift.ended_at) : null,
       location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, speed: location.speed, heading: location.heading, battery: location.battery, recordedAt: location.recorded_at, receivedAt: location.receivedAt, source: location.source } : null,
+      // The newest battery reading, whatever fix it rode in on — see the note above.
+      battery,
       distanceMeters: stats.distanceMeters, pointCount: stats.pointCount,
       visitsToday: Number(visitStats?.total || 0), openVisit: openVisit || null,
       stationaryMinutes: stats.stationaryMinutes,
@@ -349,7 +373,7 @@ export function createApp(overrides: Partial<Config> = {}) {
           presenceMs: user.last_seen ? Date.now() - Number(user.last_seen) : Number.POSITIVE_INFINITY,
         }),
         silenceMinutes: location ? Math.max(0, Math.round((Date.now() - Number(location.recorded_at)) / 60000)) : null,
-        battery: location?.battery == null ? null : Number(location.battery),
+        battery: battery?.percent ?? null,
       },
     };
   }
@@ -760,6 +784,79 @@ export function createApp(overrides: Partial<Config> = {}) {
     invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
+  /**
+   * What removing an engineer would erase, counted before anyone clicks.
+   *
+   * A delete button that says «متأكد؟» without saying how much it takes is a button that gets
+   * clicked by accident. The register is the company's record of the field, so the manager is
+   * shown the shifts, fixes, visits and reports that live under this account first.
+   */
+  app.get('/api/reps/:id/impact', adminOnly, (req, res) => {
+    const user = store.get("SELECT id, name, email, active FROM users WHERE id=? AND role='rep'", String(req.params.id));
+    if (!user) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
+    const count = (sql: string, ...params: any[]) => Number(store.get(sql, ...params)?.c || 0);
+    const openShift = store.get('SELECT started_at FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      name: user.name, email: user.email,
+      shifts: count('SELECT COUNT(*) AS c FROM shifts WHERE user_id=?', user.id),
+      locations: count('SELECT COUNT(*) AS c FROM locations WHERE user_id=?', user.id),
+      visits: count('SELECT COUNT(*) AS c FROM visits WHERE user_id=?', user.id),
+      openVisits: count("SELECT COUNT(*) AS c FROM visits WHERE user_id=? AND status='open'", user.id),
+      reports: count('SELECT COUNT(*) AS c FROM reports WHERE user_id=?', user.id),
+      dailyReports: count('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=?', user.id),
+      idleReports: count('SELECT COUNT(*) AS c FROM idle_reports WHERE user_id=?', user.id),
+      trackingNow: !!openShift,
+    });
+  });
+  /**
+   * The manager's erasure button: a test account left over from setup, or an engineer whose data
+   * has to leave with the phone he no longer holds.
+   *
+   * `confirm` is required so a stale page or a replayed request cannot do this on its own. Every
+   * table holding his field data references `users(id) ON DELETE CASCADE` (`server/src/db.ts`),
+   * so the one row takes shifts, fixes, visits, reports and justifications with it — the same set
+   * the phone's own right-to-erasure path removes, which is why there is no half-deleting variant
+   * here: «أوقف الحساب» (`active=0`) stays the option that keeps the register.
+   *
+   * The audit row survives on purpose, and holds the account id and the counts, not his name or
+   * address: that a deletion happened is a fact about the installation, not personal data.
+   */
+  const deleteRepSchema = z.object({ confirm: z.literal(true) }).strict();
+  app.delete('/api/reps/:id', adminOnly, (req, res) => {
+    const parsed = deleteRepSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'أكّد الحذف قبل تنفيذها.', code: 'CONFIRM_REQUIRED' }); return; }
+    const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
+    if (!user) {
+      // An address that exists but is not an engineer is a wrong click, not a missing account.
+      const other = store.get('SELECT role FROM users WHERE id=?', String(req.params.id));
+      res.status(other ? 409 : 404).json({
+        error: other ? 'حسابات المديرين لا تُحذف من لوحة الفريق — احذفها من إعداد السيرفر.' : 'المهندس غير موجود.',
+        code: other ? 'NOT_A_REP' : 'REP_NOT_FOUND',
+      });
+      return;
+    }
+    const removed = {
+      shifts: Number(store.get('SELECT COUNT(*) AS c FROM shifts WHERE user_id=?', user.id)?.c || 0),
+      visits: Number(store.get('SELECT COUNT(*) AS c FROM visits WHERE user_id=?', user.id)?.c || 0),
+      reports: Number(store.get('SELECT COUNT(*) AS c FROM reports WHERE user_id=?', user.id)?.c || 0),
+      dailyReports: Number(store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=?', user.id)?.c || 0),
+    };
+    store.transaction(() => {
+      // Stop the stopwatch before the row goes: a shift left open for a deleted account would keep
+      // the cleanup sweeping an id nobody can sign in with any more.
+      endShift(user.id);
+      store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+      store.run('DELETE FROM users WHERE id=?', user.id);
+      store.run('INSERT INTO audit_log(user_id,action,created_at,metadata) VALUES (?,?,?,?)',
+        String(res.locals.user.id), 'rep.delete', Date.now(), JSON.stringify({ repId: user.id, ...removed }));
+    });
+    io.in(`user:${user.id}`).disconnectSockets(true);
+    invalidateDistanceForUser(String(user.id));
+    invalidateKpis(); broadcast();
+    res.json({ ok: true, removed });
+  });
+
   app.get('/api/reps/:id/route', auth, (req, res) => {
     const id = String(req.params.id);
     if (res.locals.user.role !== 'admin' && res.locals.user.id !== id) { res.status(403).json({ error: 'يمكنك عرض مسارك فقط.' }); return; }
@@ -1098,6 +1195,23 @@ export function createApp(overrides: Partial<Config> = {}) {
     invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
   });
+  /**
+   * Remove one visit row.
+   *
+   * The reasons are mundane and real: a check-in typed for the wrong customer, and a visit left
+   * open by a phone that died, which blocks the next check-in with «لديك زيارة مفتوحة» while the
+   * engineer is standing at the next door. Managers only: an engineer deleting his own field
+   * record would be deleting the evidence, not fixing the mistake.
+   */
+  app.delete('/api/visits/:id', adminOnly, (req, res) => {
+    const visit = visitRow(String(req.params.id));
+    if (!visit) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
+    store.run('DELETE FROM visits WHERE id=?', visit.id);
+    store.audit(res.locals.user.id, 'visit.delete', { visitId: visit.id, repId: visit.userId, status: visit.status });
+    invalidateKpis(); broadcast();
+    res.json({ ok: true, visit: { id: visit.id, userId: visit.userId, customerName: visit.customerName } });
+  });
+
   app.get('/api/visits', auth, (req, res) => {
     const isAdmin = res.locals.user.role === 'admin';
     const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
@@ -1717,6 +1831,16 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     res.json({ report: reportRow(String(req.params.id)) });
   });
+  /** The same rule as a visit: the author never removes his own submitted report. */
+  app.delete('/api/reports/:id', adminOnly, (req, res) => {
+    const report = reportRow(String(req.params.id));
+    if (!report) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
+    store.run('DELETE FROM reports WHERE id=?', report.id);
+    store.audit(res.locals.user.id, 'report.delete', { reportId: report.id, repId: report.userId, type: report.type });
+    invalidateKpis(); broadcast();
+    res.json({ ok: true, report: { id: report.id, userId: report.userId } });
+  });
+
   // ---- Daily engineer reports: one report per day with multiple visit rows ----
   app.post('/api/daily-reports', repOnly, (req, res) => {
     const parsed = newDailyReportSchema.safeParse(req.body);
@@ -1789,6 +1913,20 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.send(pdf);
     } catch (e) { console.error(e); res.status(500).json({ error: 'تعذر إنشاء ملف PDF.' }); return; }
   });
+  /**
+   * Deleting a signed daily report also drops its visit rows (`daily_report_visits` cascades from
+   * the report). This is the paper register, so the button exists for a duplicate day — a report
+   * sent twice, or sent with yesterday's date — and nothing else.
+   */
+  app.delete('/api/daily-reports/:id', adminOnly, (req, res) => {
+    const report = dailyReportRow(store, String(req.params.id));
+    if (!report) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
+    store.run('DELETE FROM daily_reports WHERE id=?', report.id);
+    store.audit(res.locals.user.id, 'daily_report.delete', { reportId: report.id, repId: report.userId, reportDate: report.reportDate });
+    invalidateKpis(); broadcast();
+    res.json({ ok: true, report: { id: report.id, userId: report.userId, reportDate: report.reportDate } });
+  });
+
   // ---- Local Agent (بدون API خارجي) ----
   const { router: agentRouter } = createAgentRouter(store, config);
   app.use('/api/agent', auth, agentRouter);

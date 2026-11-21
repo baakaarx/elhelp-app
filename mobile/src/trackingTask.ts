@@ -1,6 +1,6 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
-import { BACKGROUND_TASK, queueableFix, randomUUID } from './tracking';
+import { BACKGROUND_TASK, currentBattery, queueableFix, randomUUID } from './tracking';
 import { enqueueLocation, flushOutbox } from './reports';
 import { getActiveShift } from './storage';
 import { discardCachedFixForMockLocation } from './locationCache';
@@ -17,6 +17,11 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK)) {
     if (error || !data?.locations?.length) return;
     const shiftId = await getActiveShift();
     if (!shiftId) return;
+    // The foreground watcher reads the battery every few seconds; the headless task used to send
+    // `null` with every fix, so a phone tracking all afternoon through this path reached the
+    // manager as «البطارية —» and the low-battery warning never fired. One read per batch: the
+    // OS gives a background run only seconds, and expo-battery is already a dependency.
+    const batteryLevel = await currentBattery();
     for (const position of data.locations) {
       if (isMockedLocation(position)) {
         discardCachedFixForMockLocation();
@@ -47,7 +52,7 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK)) {
         shiftId,
         lat: fix.lat, lng: fix.lng,
         accuracy: fix.accuracy, speed: position.coords.speed != null && position.coords.speed >= 0 && position.coords.speed <= 150 ? position.coords.speed : null,
-        heading: position.coords.heading != null && position.coords.heading >= 0 && position.coords.heading < 360 ? position.coords.heading : null, battery: null,
+        heading: position.coords.heading != null && position.coords.heading >= 0 && position.coords.heading < 360 ? position.coords.heading : null, battery: batteryLevel,
         recordedAt: position.timestamp || Date.now(),
       };
       await enqueueLocation(point);

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, patch } from './api';
+import { api, del, patch } from './api';
 import { ago, downloadDailyReportPdf, durationText, formatNumber } from './session';
 import { dateTimeText, formatClockArabic } from './dates';
 import { reportTypeLabels, visitPurposeLabels, type DailyReport, type Rep, type Report, type Visit } from './types';
+import ConfirmAction from './ConfirmAction';
 
 type Tab = 'field' | 'daily' | 'visits';
 
@@ -60,6 +61,29 @@ export default function Reports({ reps, onReviewed, version = 0, timezone }: { r
       }
       onReviewed();
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحديث التقرير.'); }
+  }
+  /**
+   * Remove a row from the register.
+   *
+   * Only the manager: a field record an engineer can delete himself is a field record he can
+   * delete when it stops matching the story. The button therefore says what disappears (a signed
+   * day, a visit with its GPS proof) instead of asking a generic «متأكد؟».
+   */
+  async function remove(kind: 'field' | 'daily' | 'visit', id: string) {
+    try {
+      if (kind === 'field') {
+        await del(`/api/reports/${id}`);
+        setReports(list => list.filter(row => row.id !== id));
+      } else if (kind === 'daily') {
+        await del(`/api/daily-reports/${id}`);
+        setDaily(list => list.filter(row => row.id !== id));
+      } else {
+        await del(`/api/visits/${id}`);
+        setVisits(list => list.filter(row => row.id !== id));
+      }
+      setError('');
+      onReviewed();
+    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر الحذف.'); }
   }
   async function download(report: DailyReport) {
     setDownloading(report.id);
@@ -142,6 +166,9 @@ export default function Reports({ reps, onReviewed, version = 0, timezone }: { r
                 <div className="report-actions">
                   <button className="btn ghost" disabled={downloading === report.id} onClick={() => download(report)}>{downloading === report.id ? 'جارٍ التجهيز…' : 'تنزيل PDF'}</button>
                   {report.status === 'new' && <button className="btn primary sm" onClick={() => review('daily', report.id)}>تمت المراجعة</button>}
+                  <ConfirmAction label="حذف اليوم" confirmLabel="تأكيد حذف التقرير"
+                    detail={`هيُحذف تقرير ${report.dayName} ${report.reportDate} بكل زياراته (${formatNumber(report.visits.length)}) وتوقيعه — السجل الشهري هيتراجع.`}
+                    onConfirm={() => remove('daily', report.id)} />
                 </div>
               </li>
             ))}
@@ -166,6 +193,9 @@ export default function Reports({ reps, onReviewed, version = 0, timezone }: { r
                     <a className="btn ghost sm" href={`https://www.openstreetmap.org/?mlat=${report.lat}&mlon=${report.lng}#map=18/${report.lat}/${report.lng}`} target="_blank" rel="noreferrer">الموقع على الخريطة</a>
                   )}
                   {report.status === 'new' && <button className="btn primary sm" onClick={() => review('field', report.id)}>تمت المراجعة</button>}
+                  <ConfirmAction label="حذف التقرير" confirmLabel="تأكيد حذف التقرير"
+                    detail={`هيُحذف «${report.title}» لـ${report.repName} — بدون مراجعة لاحقة.`}
+                    onConfirm={() => remove('field', report.id)} />
                 </div>
               </li>
             ))}
@@ -207,6 +237,13 @@ export default function Reports({ reps, onReviewed, version = 0, timezone }: { r
                     {visit.pendingResult ? 'بدون نتيجة' : ''}
                   </p>
                 )}
+                <div className="report-actions">
+                  <ConfirmAction label="حذف الزيارة" confirmLabel="تأكيد حذف الزيارة"
+                    detail={visit.status === 'open'
+                      ? `زيارة ${visit.customerName} لسه مفتوحة — حذفها يحرّر ${visit.repName} يسجّل الزيارة الجاية.`
+                      : `هيُحذف تسجيل «${visit.customerName}» بدليل موقعه من السجل، مش هيتقفل بس.`}
+                    onConfirm={() => remove('visit', visit.id)} />
+                </div>
               </li>
             ))}
           </ul>

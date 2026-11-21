@@ -50,3 +50,10 @@ export async function apiBlob(path: string, init: RequestInit = {}, fallbackMess
 
 export const post = <T>(path: string, body: unknown) => api<T>(path, { method: 'POST', body: JSON.stringify(body) });
 export const patch = <T>(path: string, body: unknown) => api<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
+/**
+ * A destructive call. `body` is sent when the endpoint requires an explicit confirmation — the
+ * server refuses a delete that arrives without one, so a stale page cannot erase a record.
+ */
+export const del = <T>(path: string, body?: unknown) => api<T>(path, {
+  method: 'DELETE', ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+});
