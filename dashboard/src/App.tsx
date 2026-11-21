@@ -139,12 +139,17 @@ export default function App() {
   const serverNow = overview?.serverTime !== undefined && syncedAt !== null
     ? overview.serverTime + Math.max(0, clock - syncedAt)
     : clock;
+  // A visit in progress widens the window for that engineer only (the server ships
+  // `staleLimitMinutes`), so a manager counting "fresh signal" is counting the same people the
+  // alert list leaves alone.
   const freshSignalCount = reps.filter(rep => {
     const recordedAt = rep.location?.recordedAt;
+    const limitMs = rep.staleLimitMinutes ? rep.staleLimitMinutes * 60_000 : staleMs;
     return rep.tracking && typeof recordedAt === 'number'
       && recordedAt <= serverNow + 120_000
-      && serverNow - recordedAt <= staleMs;
+      && serverNow - recordedAt <= limitMs;
   }).length;
+  const visitStaleMinutes = reps.reduce((max, rep) => Math.max(max, rep.staleLimitMinutes ?? 0), 0);
   const selectedIdle = useMemo(() => idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId]);
 
   // The trail is refreshed on its own slow clock. Tying it to `overview.serverTime` meant every
@@ -215,7 +220,7 @@ export default function App() {
         {error && <p className="error banner" role="alert">{error}</p>}
         {tab === 'live' && (
           <section className="page">
-            {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
+            {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} visitStaleMinutes={visitStaleMinutes} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
             {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={repId => setSelectedId(repId)} />}
             <div className="stats">
               <Stat label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
@@ -341,14 +346,14 @@ function EngineerOnlyNotice() {
   );
 }
 
-function AlertsPanel({ alerts, staleMinutes, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; onPick: (repId?: string) => void }) {
+function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; visitStaleMinutes?: number; onPick: (repId?: string) => void }) {
   const [open, setOpen] = useState(true);
   const warn = alerts.filter(a => a.level === 'warn');
   const shown = open ? alerts : alerts.slice(0, 2);
   return (
     <div className="alerts-panel" role="region" aria-label="تنبيهات الميدان">
       <div className="alerts-head">
-        <strong>تنبيهات الميدان <span className="pill warn">{formatNumber(warn.length)} مهم</span> <span className="pill">{formatNumber(alerts.length)} إجمالًا</span> <small className="muted">حد انقطاع الإشارة {formatNumber(staleMinutes)} دقيقة</small></strong>
+        <strong>تنبيهات الميدان <span className="pill warn">{formatNumber(warn.length)} مهم</span> <span className="pill">{formatNumber(alerts.length)} إجمالًا</span> <small className="muted">حد انقطاع الإشارة {formatNumber(staleMinutes)} دقيقة{visitStaleMinutes > staleMinutes ? ` · ${formatNumber(visitStaleMinutes)} دقيقة داخل زيارة مفتوحة` : ''}</small></strong>
         <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>
       </div>
       <ul>

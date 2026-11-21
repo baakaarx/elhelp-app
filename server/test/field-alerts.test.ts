@@ -101,6 +101,33 @@ test('the stale-signal threshold is the configured one, not a magic number', asy
   assert.match(stale!.detail, /حد التنبيه 10 دقيقة/);
 });
 
+test('a visit in progress widens the silence that is treated as an outage', async () => {
+  // The whole point of this rule: an engineer sitting inside a shop has a phone that cannot produce
+  // a usable fix, and the manager must not be told his signal died during a normal meeting.
+  const repId = addRep('منى عبد الله', `mona.${Date.now()}@mandoub.test`);
+  const shiftId = addShift(repId, Date.now() - 60 * MINUTE);
+  addPoint(repId, shiftId, Date.now() - 18 * MINUTE);
+  addOpenVisit(repId, Date.now() - 20 * MINUTE, 'معرض الوادي');
+
+  const during = (await alertsFor(token)).filter(a => a.repId === repId);
+  assert.ok(!during.some(a => a.code === 'stale_gps'), '18 minutes inside an open visit is a meeting, not an outage');
+
+  // Past the widened window the manager still hears about it — with the reason in the sentence.
+  const silentSince = Date.now() - 35 * MINUTE;
+  store.run('UPDATE locations SET recorded_at=?, received_at=? WHERE user_id=?', silentSince, silentSince, repId);
+  const after = (await alertsFor(token)).filter(a => a.repId === repId);
+  const stale = after.find(a => a.code === 'stale_gps');
+  assert.ok(stale, `35 minutes of silence must alert even during a visit, got ${after.map(a => a.code).join(',')}`);
+  assert.match(stale!.title, /أثناء زيارة/);
+  assert.match(stale!.detail, /زيارة ما زالت مفتوحة/);
+
+  // The map has to widen with the alert, or the same engineer is "لا إشارة" on one screen and
+  // unalerted on the other.
+  const overview = await client.get('/api/overview').set('Authorization', `Bearer ${token}`);
+  const rep = (overview.body.reps as Array<{ id: string; staleLimitMinutes?: number }>).find(r => r.id === repId);
+  assert.equal(rep!.staleLimitMinutes, 30, 'the dashboard must receive the widened per-rep window');
+});
+
 test('a lower configured threshold flags the same engineer earlier', async () => {
   const strict = createApp({ ...config, dbPath: ':memory:', staleGpsMinutes: 5 });
   const strictClient = request(strict.app);

@@ -14,6 +14,8 @@ export const BACKGROUND_TASK = 'mandoub-background-location';
 export const CONSENT_VERSION = '1.0';
 const CHUNK_MS = 1000;
 // A fix this loose is a cell-tower guess; queueing it teleports the map and inflates distance.
+// It is still reported as a stillness heartbeat, so the phone never looks switched off — see
+// `queueableFix` for the exact rule.
 const MAX_POINT_ACCURACY_M = MAX_ACCURACY_M;
 // While standing still the GPS jitters by a few meters, so we do not queue every fix — but a
 // heartbeat still has to arrive well inside the server's staleness window (`STALE_GPS_MINUTES`,
@@ -34,13 +36,37 @@ let mockReportState: { shiftId: string; lastAttemptAt: number; sent: boolean } |
 const listeners = new Set<Listener>();
 
 /**
- * Shared by the foreground watcher and the background task: true when this fix is worth queueing.
- * Standing still, a fix is dropped unless the last queued one is older than the heartbeat window.
+ * True when a fix at this position is worth queueing: standing still, the jitter is dropped unless
+ * the last queued point is older than the heartbeat window. Callers use `queueableFix`, which adds
+ * the accuracy gate on top of this.
  */
 export function shouldQueueFix(lat: number, lng: number, now: number = Date.now()): boolean {
   if (lastQueued && now - lastQueued.at < STANDSTILL_MS && metersBetween(lastQueued, { lat, lng }) < STANDSTILL_METERS) return false;
   lastQueued = { lat, lng, at: now };
   return true;
+}
+
+/**
+ * The one gate both location paths pass through — the foreground watcher and the background task —
+ * so the two can never disagree about what is worth uploading. Returns the point to queue, or
+ * `null` to drop the fix.
+ *
+ * Dropping a weak reading used to be unconditional, and that is what made a normal visit look like
+ * an outage: inside a shop or a first floor the GPS stays looser than the gate for tens of minutes,
+ * so the phone went silent while running perfectly. A heartbeat is therefore kept alive by
+ * repeating the last usable position, stamped with the real (poor) accuracy — it proves the phone
+ * is alive, the accuracy circle tells the truth about where, and the server's distance math already
+ * ignores points this loose (`MAX_USABLE_ACCURACY_M` in server/src/geo.ts).
+ */
+export function queueableFix(lat: number, lng: number, accuracy: number | null | undefined, now: number = Date.now()): { lat: number; lng: number; accuracy: number | null } | null {
+  if (accuracy == null) return shouldQueueFix(lat, lng, now) ? { lat, lng, accuracy: null } : null;
+  if (!Number.isFinite(accuracy) || accuracy <= 0) return null;
+  if (accuracy <= MAX_POINT_ACCURACY_M) return shouldQueueFix(lat, lng, now) ? { lat, lng, accuracy } : null;
+  if (!lastQueued || now - lastQueued.at < STANDSTILL_MS) return null;
+  const held = { lat: lastQueued.lat, lng: lastQueued.lng, accuracy: Math.round(accuracy) };
+  // Advance the heartbeat clock, or every later weak fix would also look "overdue" and be queued.
+  lastQueued = { lat: held.lat, lng: held.lng, at: now };
+  return held;
 }
 
 function makeId(): string {
@@ -144,15 +170,15 @@ export async function startTracking(id: string, opts: { background: boolean; sta
         const { latitude, longitude, accuracy } = position.coords;
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
         if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return;
-        if (accuracy != null && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > MAX_POINT_ACCURACY_M)) return;
         const now = Date.now();
-        // Standing still: ignore the jitter but keep a heartbeat so the manager still sees a
-        // live signal (otherwise a parked engineer looks like a lost connection).
-        if (!shouldQueueFix(latitude, longitude, now)) return;
+        // Jitter filter + accuracy gate + stillness heartbeat, in one place shared with the
+        // background task: a parked engineer must keep a live signal either way.
+        const fix = queueableFix(latitude, longitude, accuracy, now);
+        if (!fix) return;
         const point: GeoPoint = {
           id: randomUUID(), shiftId,
-          lat: latitude, lng: longitude,
-          accuracy: accuracy ?? null,
+          lat: fix.lat, lng: fix.lng,
+          accuracy: fix.accuracy,
           speed: position.coords.speed != null && position.coords.speed >= 0 && position.coords.speed <= 150 ? position.coords.speed : null,
           heading: position.coords.heading != null && position.coords.heading >= 0 && position.coords.heading < 360 ? position.coords.heading : null,
           battery,

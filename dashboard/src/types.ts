@@ -34,6 +34,12 @@ export interface Rep extends User {
   pointCount: number;
   visitsToday: number;
   openVisit: { id: string; customerName: string; checkedInAt: number } | null;
+  /**
+   * The minutes of silence after which THIS engineer counts as "لا إشارة". Wider than
+   * `staleGpsMinutes` while a visit is open, because a phone inside a building cannot deliver a
+   * usable fix — the server ships it so the map and the alert list agree.
+   */
+  staleLimitMinutes?: number;
 }
 export interface Overview {
   reps: Rep[];

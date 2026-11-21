@@ -10,7 +10,7 @@ import VisitsScreen from './src/VisitsScreen';
 import ReportScreen from './src/ReportScreen';
 import DailyReports from './src/DailyReports';
 import SettingsScreen from './src/SettingsScreen';
-import { ensureApiBase, me, logout } from './src/api';
+import { UNCONFIGURED, me, logout } from './src/api';
 import { clearDeviceData, getToken } from './src/storage';
 import { activateOutboxUser, clearOutbox, deactivateOutboxUser, flushOutbox } from './src/reports';
 import { hhmmss } from './src/format';
@@ -152,9 +152,6 @@ function Root() {
   useEffect(() => {
     (async () => {
       try {
-        // The typed server address wins over the baked-in one, and it lives in SecureStore: read it
-        // before the first request, or a session would be validated against the wrong machine.
-        await ensureApiBase();
         const token = await getToken();
         if (!token) { await deactivateOutboxUser(); setUser(null); return; }
         const signedIn = await me();
@@ -165,8 +162,16 @@ function Root() {
     })();
   }, []);
 
-  // A build with no server address is not a dead end any more: the login screen shows the address
-  // field with its own explanation, so a changed router IP no longer needs a new APK.
+  if (UNCONFIGURED) {
+    return (
+      <View style={styles.loading}>
+        <Text style={[styles.loadingText, { maxWidth: 320, textAlign: 'center', fontSize: 14, lineHeight: 24 }]}>
+          النسخة المثبَّتة دي مش مربوطة بسيرفر الشركة، فمش هينفع تسجّل الدخول.
+          كلّم المسؤول عن نشر التطبيق يعيد بناءها بعنوان السيرفر.
+        </Text>
+      </View>
+    );
+  }
 
   if (checking || user === undefined) {
     return <View style={styles.loading}><ActivityIndicator color={colors.green700} /><Text style={styles.loadingText}>جارٍ التحقق من الجلسة…</Text></View>;
