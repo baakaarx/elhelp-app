@@ -10,6 +10,7 @@ import { AUTO_CLOSED_OUTCOME, runCleanup, Store } from './db.js';
 import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js';
 import { clientHint, clientRoleMismatch, createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, haversine, localDate, type GeoPoint } from './geo.js';
+import { classifySilence, LOW_BATTERY_PERCENT, PRESENT_FRESH_MS, stationaryMinutes } from './fieldStatus.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { deleteAccountPage, privacyPage } from './privacy.js';
@@ -254,7 +255,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     res.status(result.changes ? 201 : 200).json({ ok: true, duplicate: !result.changes });
   });
-  const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number }>();
+  const dayStatsCache = new Map<string, { day: string; computedAt: number; distanceMeters: number; pointCount: number; stationaryMinutes: number }>();
   // A month for the whole team is hundreds of thousands of fixes. The page, the CSV and the
   // workbook ask for the same rows seconds apart, so the result is reused — and any change the
   // manager could be looking for (a visit, a report, an account) clears it immediately.
@@ -312,7 +313,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     let stats = dayStatsCache.get(user.id);
     if (!stats || stats.day !== day || Date.now() - stats.computedAt > 15000) {
       const points = store.all('SELECT lat,lng,accuracy,speed,recorded_at AS recordedAt FROM locations WHERE user_id=? AND recorded_at>=? AND recorded_at<? ORDER BY recorded_at, received_at', user.id, bounds.start, bounds.end) as unknown as GeoPoint[];
-      stats = { day, computedAt: Date.now(), distanceMeters: Math.round(distanceMeters(points)), pointCount: points.length };
+      stats = {
+        day, computedAt: Date.now(), pointCount: points.length,
+        distanceMeters: Math.round(distanceMeters(points)),
+        // Same array, same walk: how long he has been sitting inside one spot. Cheap to add, and
+        // it is the positive half of the story the outage alert only told backwards.
+        stationaryMinutes: stationaryMinutes(points),
+      };
       // One entry per engineer; the map is cleared hourly, and a hard cap keeps a long-lived
       // process from growing it without bound if accounts are created and removed often.
       if (dayStatsCache.size > 500) dayStatsCache.clear();
@@ -329,9 +336,21 @@ export function createApp(overrides: Partial<Config> = {}) {
       location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy, speed: location.speed, heading: location.heading, battery: location.battery, recordedAt: location.recorded_at, receivedAt: location.receivedAt, source: location.source } : null,
       distanceMeters: stats.distanceMeters, pointCount: stats.pointCount,
       visitsToday: Number(visitStats?.total || 0), openVisit: openVisit || null,
+      stationaryMinutes: stats.stationaryMinutes,
       // The window the map should call "لا إشارة" for this engineer: a visit in progress widens it,
       // exactly as /api/alerts does. Shipped per rep so the two screens cannot drift apart.
       staleLimitMinutes: openVisit ? Math.max(config.staleGpsMinutes, VISIT_STALE_LIMIT_MINUTES) : config.staleGpsMinutes,
+      // Classified here, not in the browser: only the server has both the silence length and the
+      // last time this phone reached the API, and the map must not invent its own verdict.
+      gap: {
+        kind: classifySilence({
+          silenceMs: location ? Date.now() - Number(location.recorded_at) : Number.POSITIVE_INFINITY,
+          limitMs: (openVisit ? Math.max(config.staleGpsMinutes, VISIT_STALE_LIMIT_MINUTES) : config.staleGpsMinutes) * 60000,
+          presenceMs: user.last_seen ? Date.now() - Number(user.last_seen) : Number.POSITIVE_INFINITY,
+        }),
+        silenceMinutes: location ? Math.max(0, Math.round((Date.now() - Number(location.recorded_at)) / 60000)) : null,
+        battery: location?.battery == null ? null : Number(location.battery),
+      },
     };
   }
   function overview() {
@@ -764,6 +783,12 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
   });
   app.get('/api/me/shift', repOnly, (req, res) => {
+    // The phone polls this every fifteen seconds while the app is open, so the poll is already a
+    // liveness ping: it proves the device reached the server even when it could not produce a fix.
+    // Read it as presence rather than adding a new endpoint (and a new timer to the app), and stamp
+    // at most once per 20 s so a chatty client cannot turn every poll into a write.
+    const seenAt = Date.now();
+    if (seenAt - Number(res.locals.user.last_seen || 0) > 20000) store.run('UPDATE users SET last_seen=? WHERE id=?', seenAt, res.locals.user.id);
     const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
     // The engineer app polls this every fifteen seconds and only reads `shift`, so it asks for
     // `?snapshot=0`; the snapshot walks the whole day's fixes and is kept for API consumers.
@@ -1160,22 +1185,43 @@ export function createApp(overrides: Partial<Config> = {}) {
     const reps = store.all("SELECT * FROM users WHERE role='rep' AND active=1 ORDER BY name");
     for (const rep of reps) {
       const shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', rep.id);
-      const last = store.get('SELECT MAX(recorded_at) AS at FROM locations WHERE user_id=?', rep.id);
-      const lastAt = last?.at ? Number(last.at) : null;
+      const lastFix = store.get('SELECT recorded_at AS at, received_at AS receivedAt, battery FROM locations WHERE user_id=? ORDER BY recorded_at DESC, received_at DESC LIMIT 1', rep.id);
+      const lastAt = lastFix?.at ? Number(lastFix.at) : null;
       // One threshold for the whole product (`STALE_GPS_MINUTES`, default 10): the map says
       // "لا إشارة" at exactly the moment this alert fires. `repSnapshot` publishes the same
       // per-engineer value, so a visit that widens the window here never leaves the map disagreeing.
       const openVisitRow = store.get("SELECT id FROM visits WHERE user_id=? AND status='open' ORDER BY checked_in_at DESC LIMIT 1", rep.id);
       const staleLimitMinutes = openVisitRow ? Math.max(config.staleGpsMinutes, VISIT_STALE_LIMIT_MINUTES) : config.staleGpsMinutes;
       const staleMs = staleLimitMinutes * 60000;
-      if (shift && lastAt && now - lastAt > staleMs) {
-        const staleMinutes = Math.round((now - lastAt) / 60000);
+      // The excuse check. `last_seen` moves on any request from the phone, so a phone that reached
+      // the API while its fixes stopped has a working network — the position is what broke. Without
+      // this the manager had one word for a dead phone, a frozen app and a coverage hole, and every
+      // one of them could be argued about after the fact.
+      const silenceMs = lastAt ? now - lastAt : Number.POSITIVE_INFINITY;
+      const presenceMs = rep.last_seen ? now - Number(rep.last_seen) : Number.POSITIVE_INFINITY;
+      const gapKind = classifySilence({ silenceMs, limitMs: staleMs, presenceMs });
+      if (shift && lastAt && gapKind !== 'ok') {
+        const staleMinutes = Math.round(silenceMs / 60000);
+        const seenMinutes = Number.isFinite(presenceMs) ? Math.max(1, Math.round(presenceMs / 60000)) : null;
+        const battery = lastFix?.battery == null ? null : Number(lastFix.battery);
+        const dying = battery !== null && battery <= LOW_BATTERY_PERCENT;
         alerts.push({
           id: `${rep.id}:stale`, level: 'warn', code: 'stale_gps', repId: rep.id, repName: rep.name,
-          title: openVisitRow ? 'انقطاع في إرسال الموقع أثناء زيارة' : 'انقطاع في إرسال الموقع',
-          detail: openVisitRow
-            ? `آخر إشارة قبل ${staleMinutes} دقيقة، وزيارة ما زالت مفتوحة — الحد داخل الزيارة ${staleLimitMinutes} دقيقة لأن الموقع داخل مبنى ضعيف. اتصل بالمهندس أو اطلب إنهاء الزيارة.`
-            : `آخر إشارة قبل ${staleMinutes} دقيقة (حد التنبيه ${staleLimitMinutes} دقيقة) — تأكد من فتح التطبيق والسماح بالموقع.`,
+          title: gapKind === 'gps_blocked' ? 'التطبيق بعت بس من غير نقاط موقع'
+            : openVisitRow ? 'انقطاع في إرسال الموقع أثناء زيارة' : 'انقطاع في إرسال الموقع',
+          detail: gapKind === 'gps_blocked'
+            ? `التليفون واصِل للسيرفر${seenMinutes !== null ? ` (آخر طلب منه من ${seenMinutes} دقيقة)` : ''} بس آخر نقطة موقع قبل ${staleMinutes} دقيقة — الشبكة شغالة والموقع هو المقطوع: اطلب من المهندس يفتح التطبيق ويسمح بالموقع.`
+            : `آخر إشارة قبل ${staleMinutes} دقيقة${dying ? ` والبطارية وقتها ${battery}٪` : ''}${openVisitRow ? ` (زيارة مفتوحة، الحد ${staleLimitMinutes} دقيقة)` : ` (حد التنبيه ${staleLimitMinutes} دقيقة)`} — مفيش أي طلب من التليفون في الفترة دي، فمقفول أو مكان بلا شبكة.${dying ? ' الأرجح إنه فصل.' : ''}`,
+          at: lastAt,
+        });
+      }
+      // A phone that dies mid-shift loses the trail with it, and it announces that in advance:
+      // every fix carries its battery level. Warn while there is still time to charge or close up.
+      if (shift && lastAt && gapKind === 'ok' && lastFix?.battery != null && Number(lastFix.battery) <= LOW_BATTERY_PERCENT) {
+        alerts.push({
+          id: `${rep.id}:battery`, level: 'warn', code: 'low_battery', repId: rep.id, repName: rep.name,
+          title: `بطارية الموبايل ${Math.round(Number(lastFix.battery))}٪`,
+          detail: 'التليفون هيفصل والوردية لسه مفتوحة — اطلب الشحن أو ختم الوردية دلوقتي.',
           at: lastAt,
         });
       }
@@ -1189,7 +1235,17 @@ export function createApp(overrides: Partial<Config> = {}) {
         }
       }
       if (shift && !lastAt && now - Number(shift.started_at) > 20 * 60000) {
-        alerts.push({ id: `${rep.id}:nosignal`, level: 'warn', code: 'no_signal', repId: rep.id, repName: rep.name, title: 'وردية بدون أي إشارة', detail: 'بدأ الوردية ولم تُسجل أي نقطة موقع بعد.', at: Number(shift.started_at) });
+        // Same distinction as above: an app that reached the API but produced no fix never had a
+        // position to send, which is a permissions/GPS problem, not a coverage complaint.
+        const talking = rep.last_seen && now - Number(rep.last_seen) <= PRESENT_FRESH_MS;
+        alerts.push({
+          id: `${rep.id}:nosignal`, level: 'warn', code: 'no_signal', repId: rep.id, repName: rep.name,
+          title: talking ? 'وردية بدون أي إشارة رغم اتصال التطبيق' : 'وردية بدون أي إشارة',
+          detail: talking
+            ? 'بدأ الوردية ولم تُسجل أي نقطة موقع بعد، مع إن التليفون واصِل للسيرفر — صلاحية الموقع أو الـGPS هو المقطوع.'
+            : 'بدأ الوردية ولم تُسجل أي نقطة موقع بعد.',
+          at: Number(shift.started_at),
+        });
       }
       const visitsToday = store.get('SELECT COUNT(*) AS c FROM visits WHERE user_id=? AND checked_in_at>=? AND checked_in_at<?', rep.id, bounds.start, bounds.end)!;
       const hasActivity = !!lastAt && lastAt >= bounds.start;

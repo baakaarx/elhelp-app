@@ -252,6 +252,11 @@ export default function App() {
                           <strong>{rep.name}</strong>
                           <small>{movementStatus(rep, clock, staleMs)} · آخر موقع {ago(rep.location?.recordedAt ?? null, clock)} · {formatNumber(rep.visitsToday)} زيارة</small>
                         </span>
+                        {/* The warning that matters: every fix carries the phone's battery, so a
+                            device about to go silent is visible before the trail stops. */}
+                        {rep.tracking && rep.location && (rep.gap?.battery ?? 100) <= 10
+                          ? <span className="pill warn">بطارية {formatNumber(rep.gap!.battery!)}٪</span>
+                          : null}
                         <span className={rep.online ? 'status ok' : 'status'} title={rep.online ? 'متصل' : 'غير متصل'} />
                         <small className="mono">{formatNumber(rep.distanceMeters / 1000)} كم</small>
                       </button>
@@ -268,6 +273,9 @@ export default function App() {
                       <div><dt>آخر موقع</dt><dd>{ago(selected.location?.recordedAt ?? null, clock)}</dd></div>
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
                       <div><dt>البطارية</dt><dd>{selected.location?.battery !== null && selected.location?.battery !== undefined ? `${formatNumber(selected.location.battery)}٪` : '—'}</dd></div>
+                      {/* Measured from the trail, not from the phone's speed sensor: this is what
+                          "كان واقف من الصبح" means when someone has to answer for it. */}
+                      <div><dt>وقوف متواصل</dt><dd>{(selected.stationaryMinutes ?? 0) >= 5 ? `${formatNumber(selected.stationaryMinutes!)} دقيقة في نفس المنطقة` : '—'}</dd></div>
                       <div><dt>بداية الوردية</dt><dd>{selected.shiftStartedAt ? timeText(selected.shiftStartedAt, overview?.timezone) : '—'}</dd></div>
                       <div><dt>زيارات اليوم</dt><dd>{formatNumber(selected.visitsToday)}</dd></div>
                       <div><dt>زيارة مفتوحة</dt><dd>{selected.openVisit ? selected.openVisit.customerName : 'لا'}</dd></div>

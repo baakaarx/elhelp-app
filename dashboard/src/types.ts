@@ -40,6 +40,13 @@ export interface Rep extends User {
    * usable fix — the server ships it so the map and the alert list agree.
    */
   staleLimitMinutes?: number;
+  /** Minutes the newest fixes have all sat inside one 60 m spot — standing still, not lost. */
+  stationaryMinutes?: number;
+  /**
+   * The server's verdict on a silent phone: `gps_blocked` means the app kept reaching the API (so
+   * the network is not the story), `gone` means nothing arrived at all, `ok` means he is reporting.
+   */
+  gap?: { kind: 'ok' | 'gps_blocked' | 'gone'; silenceMinutes: number | null; battery: number | null };
 }
 export interface Overview {
   reps: Rep[];

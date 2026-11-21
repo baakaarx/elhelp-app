@@ -119,7 +119,7 @@ test('a visit in progress widens the silence that is treated as an outage', asyn
   const stale = after.find(a => a.code === 'stale_gps');
   assert.ok(stale, `35 minutes of silence must alert even during a visit, got ${after.map(a => a.code).join(',')}`);
   assert.match(stale!.title, /أثناء زيارة/);
-  assert.match(stale!.detail, /زيارة ما زالت مفتوحة/);
+  assert.match(stale!.detail, /زيارة مفتوحة، الحد 30 دقيقة/);
 
   // The map has to widen with the alert, or the same engineer is "لا إشارة" on one screen and
   // unalerted on the other.
@@ -185,6 +185,65 @@ test('a representative only sees his own justifications', async () => {
   const res = await client.get('/api/idle-reports').set('Authorization', `Bearer ${login.body.token}`);
   assert.equal(res.status, 200);
   assert.deepEqual((res.body.reports as Array<{ userId: string }>).map(r => r.userId), [repId]);
+});
+
+test('a phone that still reaches the API is reported as a missing position, not a missing network', async () => {
+  // The whole point of the split: while the app can talk, "النت واقع" is not available as an excuse.
+  const repId = addRep('رضا شعبان', `radwa.${Date.now()}@mandoub.test`);
+  const shiftId = addShift(repId, Date.now() - 60 * MINUTE);
+  addPoint(repId, shiftId, Date.now() - 40 * MINUTE);
+  store.run('UPDATE users SET last_seen=? WHERE id=?', Date.now() - 20_000, repId);
+
+  const alerts = (await alertsFor(token)).filter(a => a.repId === repId);
+  const stale = alerts.find(a => a.code === 'stale_gps');
+  assert.ok(stale, `40 minutes of silence must still be reported, got ${alerts.map(a => a.code).join(',')}`);
+  assert.match(stale!.title, /التطبيق بعت بس من غير نقاط موقع/);
+  assert.match(stale!.detail, /الشبكة شغالة/);
+});
+
+test('a silence with no requests at all names both possibilities, and the battery if it explains it', async () => {
+  const repId = addRep('أحمد فتحي', `ahmed.${Date.now()}@mandoub.test`);
+  const shiftId = addShift(repId, Date.now() - 90 * MINUTE);
+  store.run(`INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,'gps')`, randomUUID(), repId, shiftId, 31.24, 29.96, 9, 0, null, 6,
+    Date.now() - 90 * MINUTE, Date.now() - 90 * MINUTE);
+  store.run('UPDATE users SET last_seen=? WHERE id=?', Date.now() - 80 * MINUTE, repId);
+
+  const alerts = (await alertsFor(token)).filter(a => a.repId === repId);
+  const stale = alerts.find(a => a.code === 'stale_gps');
+  assert.ok(stale, 'a phone that stopped talking entirely is still an outage');
+  assert.match(stale!.detail, /البطارية وقتها 6٪/);
+  assert.match(stale!.detail, /مفيش أي طلب من التليفون/);
+});
+
+test('a phone about to die is warned about while it is still reporting', async () => {
+  const repId = addRep('هدى محمود', `hoda.${Date.now()}@mandoub.test`);
+  const shiftId = addShift(repId, Date.now() - 30 * MINUTE);
+  store.run(`INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,'gps')`, randomUUID(), repId, shiftId, 31.2, 29.9, 8, 4, null, 8,
+    Date.now() - MINUTE, Date.now() - MINUTE);
+
+  const alerts = (await alertsFor(token)).filter(a => a.repId === repId);
+  const battery = alerts.find(a => a.code === 'low_battery');
+  assert.ok(battery, `expected low_battery, got ${alerts.map(a => a.code).join(',')}`);
+  assert.match(battery!.title, /8٪/);
+  assert.ok(!alerts.some(a => a.code === 'stale_gps'), 'a fresh trail is not an outage; the battery is the useful half');
+});
+
+test('the shift poll leaves a liveness stamp the alert can trust', async () => {
+  // No new endpoint, no new timer in the app: the fifteen-second poll the installed APKs already
+  // make is what proves the phone is alive. Old builds get the distinction without an update.
+  const repId = addRep('سمر علي', `samar.${Date.now()}@mandoub.test`);
+  const email = `samar.login.${Date.now()}@mandoub.test`;
+  store.run('UPDATE users SET email=? WHERE id=?', email, repId);
+  const login = await client.post('/api/auth/login').send({ email, password: 'Rep1234!' });
+  assert.equal(login.status, 200, JSON.stringify(login.body));
+  assert.ok(!store.get('SELECT last_seen FROM users WHERE id=?', repId)?.last_seen, 'a fresh account has never been seen');
+
+  const res = await client.get('/api/me/shift').set('Authorization', `Bearer ${login.body.token}`);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const seen = Number(store.get('SELECT last_seen FROM users WHERE id=?', repId)?.last_seen);
+  assert.ok(seen && Date.now() - seen < 60_000, 'the poll has to leave a liveness stamp');
 });
 
 test('the configuration rejects a nonsense staleness window', () => {
