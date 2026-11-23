@@ -4,6 +4,8 @@ export interface User {
   name: string;
   email: string;
   role: Role;
+  /** '' (manager) | 'sales' | 'stock' — which tabs this account may open. The server enforces it. */
+  scope?: string;
   phone: string;
   region: string;
   color: string;
@@ -273,4 +275,123 @@ export interface Customer {
   visitCount: number;
   lastVisitAt: number | null;
   openVisits: number;
+}
+
+/* ---- Sales: catalogue, warehouses, stock, invoices ---- */
+
+export interface Warehouse {
+  id: string;
+  name: string;
+  governorate: string;
+  district: string;
+  notes: string;
+  active: boolean;
+  productCount: number;
+  invoiceCount: number;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  unit: string;
+  defaultPrice: number;
+  notes: string;
+  active: boolean;
+  /** Across every warehouse unless the screen asked for one. */
+  onHand: number;
+  lastMovementAt: number | null;
+  soldLines: number;
+}
+
+export interface StockRow {
+  productId: string;
+  productName: string;
+  unit: string;
+  price: number;
+  warehouseId: string;
+  warehouseName: string;
+  onHand: number;
+  lastMovementAt: number | null;
+  low: boolean;
+}
+
+export interface StockMovement {
+  id: string;
+  productId: string;
+  productName: string;
+  unit: string;
+  warehouseId: string;
+  warehouseName: string;
+  qty: number;
+  kind: 'opening' | 'receipt' | 'sale' | 'return' | 'count' | 'writeoff';
+  note: string;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  by: string;
+  createdAt: number;
+}
+
+export interface InvoiceLine {
+  id: string;
+  productId: string | null;
+  productName: string;
+  unit: string;
+  qty: number;
+  unitPrice: number;
+  lineTotal: number;
+}
+
+export interface Invoice {
+  id: string;
+  number: string | null;
+  customerId: string | null;
+  customerName: string;
+  repId: string | null;
+  repName: string;
+  repColor: string;
+  warehouseId: string;
+  warehouseName: string;
+  invoiceDate: number;
+  date: string;
+  subtotal: number;
+  discount: number;
+  total: number;
+  paidAmount: number;
+  status: 'unpaid' | 'partial' | 'paid';
+  stockShort: boolean;
+  note: string;
+  voided: boolean;
+  voidReason: string;
+  voidedAt: number | null;
+  createdAt: number;
+  lineCount?: number;
+  lines?: InvoiceLine[];
+}
+
+export interface SalesSummary {
+  from: number;
+  to: number;
+  totals: {
+    count: number;
+    subtotal: number;
+    discount: number;
+    total: number;
+    paid: number;
+    outstanding: number;
+    averageInvoice: number;
+    stockShort: number;
+  };
+  byRep: { repId: string | null; repName: string; repColor: string; invoices: number; total: number; paid: number; outstanding: number; openInvoices: number }[];
+  topProducts: { productId: string | null; productName: string; unit: string; qty: number; revenue: number }[];
+  balances: { customerId: string | null; customerName: string; outstanding: number; lastInvoiceAt: number | null; invoices: number }[];
+}
+
+export interface StaffAccount {
+  id: string;
+  name: string;
+  email: string;
+  scope: 'manager' | 'sales' | 'stock';
+  active: boolean;
+  createdAt: number;
+  lastSeen: number | null;
 }

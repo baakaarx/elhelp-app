@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { Customer, CustomerInput, DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { CatalogueProduct, Customer, CustomerInput, DailyReportInput, GeoPoint, MyInvoice, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -130,6 +130,16 @@ export const myCustomers = (q?: string) =>
 export const createCustomer = (data: CustomerInput) => post<{ customer: Customer }>('/api/customers', data);
 export const updateCustomer = (id: string, data: Partial<CustomerInput> & { stage?: Customer['stage'] }) =>
   request<{ customer: Customer }>(`/api/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+
+/**
+ * What the office billed in this engineer's name. Read-only by design: the numbers are typed at the
+ * office desk, and the phone exists so a man in the field can say «your invoice is X, of which you
+ * paid Y» without phoning the office. Nothing on this screen can change a sale.
+ */
+export const myInvoices = (customerId?: string) =>
+  get<{ invoices: MyInvoice[]; outstanding: number }>(`/api/my/invoices${customerId ? `?customerId=${encodeURIComponent(customerId)}` : ''}`);
+/** Prices and what is on the shelf — so a promise made in a farm matches what the truck can carry. */
+export const myCatalogue = () => get<{ products: CatalogueProduct[] }>('/api/my/catalogue');
 
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);

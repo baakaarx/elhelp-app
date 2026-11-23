@@ -165,3 +165,44 @@ export interface OutboxItem {
   /** A permanent server rejection is retained but paused until the engineer manually retries. */
   rejected?: boolean;
 }
+
+/* ---- The engineer's own sales: what the office billed in his name, and what the shelf holds ---- */
+export interface MyInvoiceLine {
+  productName: string;
+  unit: string;
+  qty: number;
+  unitPrice: number;
+  lineTotal: number;
+}
+export interface MyInvoice {
+  id: string;
+  number: string | null;
+  customerId: string | null;
+  customerName: string;
+  warehouseName: string;
+  date: string;
+  invoiceDate: number;
+  total: number;
+  paidAmount: number;
+  status: 'unpaid' | 'partial' | 'paid';
+  stockShort: boolean;
+  note: string;
+  lines: MyInvoiceLine[];
+}
+export interface CatalogueProduct {
+  id: string;
+  name: string;
+  unit: string;
+  price: number;
+  onHand: number;
+  warehouses: { name: string; onHand: number }[];
+}
+export interface SalesTotals {
+  total: number;
+  paid: number;
+  outstanding: number;
+  count: number;
+}
+export const invoiceStatusLabels: Record<MyInvoice['status'], string> = {
+  unpaid: 'غير محصّل', partial: 'نص تحصيل', paid: 'محصّل',
+};

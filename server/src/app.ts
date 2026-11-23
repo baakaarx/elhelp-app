@@ -43,6 +43,26 @@ const oauthLogin = z.object({
   /** Apple sends the person's name only on the first authorization, so the app forwards it. */
   name: z.string().trim().max(120).optional(),
 });
+/**
+ * What a dashboard account may see: '' (manager, everything), 'sales' (the sales office) or
+ * 'stock' (the warehouses only).
+ *
+ * This is deliberately a second axis next to users.role rather than two more values inside it.
+ * role answers «which client signs in» — 'rep' for the phone, 'admin' for this dashboard — and it is
+ * what the session cookie is named after and what X-Mandoub-Client is compared against; widening it
+ * would mean rebuilding the users table for one CHECK clause and touching the login path. What a
+ * person is allowed to read inside the dashboard is a different question, so it is a different column.
+ *
+ * Anything that is not one of the three known strings is treated as the manager. A half-applied
+ * migration or a hand-edited row must never produce a dashboard that shows nothing.
+ */
+function dashScope(user: { role?: unknown; scope?: unknown } | undefined): 'manager' | 'sales' | 'stock' {
+  const scope = String(user?.scope ?? '');
+  if (scope === 'stock') return 'stock';
+  if (scope === 'sales') return 'sales';
+  return 'manager';
+}
+
 const newRep = z.object({
   name: z.string().trim().min(2).max(80), email: z.email().max(254).transform(x => x.toLowerCase().trim()),
   password: z.string().min(10).max(200), phone: z.string().trim().max(30).default(''), region: z.string().trim().max(80).default(''),
@@ -194,9 +214,50 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!config.adminPassword) throw new Error('ADMIN_PASSWORD is required to initialize the first administrator.');
     store.run('INSERT INTO users(id,name,email,password_hash,role,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), 'متابعة الهلب', config.adminEmail, hashPassword(config.adminPassword), 'admin', Date.now());
   }
-  const auth = requireAuth(store);
-  const adminOnly = requireAuth(store, 'admin');
+  const authBase = requireAuth(store);
+  const adminOnlyBase = requireAuth(store, 'admin');
   const repOnly = requireAuth(store, 'rep');
+  /*
+   * The warehouse account sees the warehouses and nothing else — and the guarantee lives here, in one
+   * gate, not in an `if (isStock) return` added to each route a dashboard calls. Hiding tabs in the
+   * interface would be decoration: the same session, from the browser console, could read
+   * /api/overview and get every engineer's name, position and visits. With this shape, a route added
+   * next month is closed to the warehouse account by default, and opening it has to be a decision
+   * somebody writes down here.
+   *
+   * The gate wraps `auth` as well as `adminOnly`, and that is the part that matters. The customer
+   * list is readable by engineers, so it is mounted on `auth` — and a warehouse account is an
+   * administrator for sign-in purposes, so a gate that only wrapped the admin routes would have left
+   * every customer name and phone number one fetch away. Test: «the warehouse account sees the
+   * warehouses and nothing else».
+   */
+  const STOCK_ROUTES = ['/api/products', '/api/warehouses', '/api/stock', '/api/auth/me', '/api/auth/logout'];
+  const stockAllowed = (path: string) => STOCK_ROUTES.some(route => path === route || path.startsWith(`${route}/`));
+  function scopeGate(req: express.Request, res: express.Response, next: express.NextFunction) {
+    const user = res.locals.user as { role?: string; scope?: string } | undefined;
+    if (user?.role === 'admin' && dashScope(user) === 'stock' && !stockAllowed(req.path)) {
+      res.status(403).json({ error: 'حساب المخازن بيشوف الأصناف والمخازن بس.', code: 'SCOPE_DENIED' });
+      return;
+    }
+    next();
+  }
+  const auth = (req: express.Request, res: express.Response, next: express.NextFunction) => authBase(req, res, () => scopeGate(req, res, next));
+  /*
+   * The other half of the division the manager asked for: the sales office reads the shelves and
+   * writes invoices, but the catalogue — what a product is called and what it costs — and the stock
+   * movements are the warehouse's to write. It is enforced here and not by hiding buttons, because a
+   * price typed from the wrong desk is the kind of disagreement that only surfaces at the end of the
+   * month. The manager account keeps the override: somebody has to be able to fix a typo after the
+   * warehouse clerk has gone home.
+   */
+  const catalogueOwnerOnly = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (dashScope(res.locals.user) === 'sales') {
+      res.status(403).json({ error: 'الأسعار والحركات يسجّلها حساب المخازن — الحساب ده بيشوف بس.', code: 'STOCK_WRITE_ONLY' });
+      return;
+    }
+    next();
+  };
+  const adminOnly = (req: express.Request, res: express.Response, next: express.NextFunction) => adminOnlyBase(req, res, () => scopeGate(req, res, next));
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
   const mockLocationLimiter = rateLimit({ windowMs: 60 * 60000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تم تسجيل بلاغات كثيرة عن الموقع الوهمي. حاول بعد ساعة.' } });
   const pushRegistrationLimiter = rateLimit({ windowMs: 60 * 60000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'طلبات تسجيل الإشعارات كثيرة. حاول بعد ساعة.' } });
@@ -541,7 +602,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     scheduleExpiry();
     socket.once('disconnect', () => clearTimeout(expiryTimer));
     socket.join(`user:${user.id}`);
-    if (user.role === 'admin') { socket.join('admins'); socket.emit('overview', overview()); }
+    /*
+     * The live feed is the whole field — names, positions, visits — so joining it cannot be decided
+     * by role alone: the warehouse account is an 'admin' for sign-in purposes and must not receive
+     * it. Left as it was, the scope gate on /api would be decoration, because the socket would push
+     * the data without ever being asked.
+     */
+    if (dashScope(user) === 'stock') socket.join('stock');
+    else if (user.role === 'admin') { socket.join('admins'); socket.emit('overview', overview()); }
     else socket.emit('shift', store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', user.id) || null);
     invalidateKpis(); broadcast();
     socket.on('disconnect', broadcast);
@@ -1216,6 +1284,637 @@ export function createApp(overrides: Partial<Config> = {}) {
     store.run('DELETE FROM customers WHERE id=?', customer.id);
     store.audit(res.locals.user.id, 'customer.delete', { customerId: customer.id, repId: customer.repId });
     invalidateKpis(); broadcast();
+    res.json({ ok: true });
+  });
+
+  // ---- Sales: the catalogue, the warehouses, the stock ledger, the invoices ----
+  /*
+   * The sales office writes invoices from this dashboard; the engineer in the field reads them.
+   * Four rules hold the whole thing together, and all four are enforced here rather than in the
+   * interface, because the interface is the part a determined or buggy client can edit:
+   *
+   *   1. Money is never trusted from a client. Line totals, the subtotal and the invoice total are
+   *      recomputed from qty × unit_price on the server, so a browser that posts a friendly total
+   *      gets the arithmetic, not the message.
+   *   2. Stock is the sum of the ledger. Recording an invoice writes the outgoing movements in the
+   *      same transaction, so there is no moment where a sale exists and the warehouse never heard
+   *      about it — and no half-written invoice if the second statement fails.
+   *   3. Selling more than the shelf holds is allowed and flagged (stock_short), because the goods
+   *      really left. Refusing the invoice would only make the register disagree with the trucks.
+   *   4. An invoice is voided with a reason, never deleted, and the void is itself a ledger row.
+   *      A hole in the number series is what makes somebody ask questions five years from now.
+   */
+  const money = (value: number) => Math.round(Number(value) * 100) / 100;
+  const notifyStock = () => io.to('stock').emit('stock:changed', { at: Date.now() });
+
+  const warehouseFields = z.object({
+    name: z.string().trim().min(2, 'اسم المخزن مطلوب.').max(80),
+    governorate: z.string().trim().max(80).default(''),
+    district: z.string().trim().max(80).default(''),
+    notes: z.string().trim().max(300).default(''),
+  });
+  const newWarehouse = warehouseFields;
+  const patchWarehouse = warehouseFields.partial().extend({ active: z.boolean().optional() });
+
+  const productFields = z.object({
+    name: z.string().trim().min(2, 'اسم المنتج مطلوب.').max(120),
+    unit: z.string().trim().min(1).max(20).default('كرتونة'),
+    // The price lives on the catalogue, written by the warehouse account. A phone never carries a
+    // price list, so there is exactly one number to argue about.
+    defaultPrice: z.number().finite().min(0).max(1e9).default(0),
+    notes: z.string().trim().max(300).default(''),
+  });
+  const newProduct = productFields;
+  const patchProduct = productFields.partial().extend({ active: z.boolean().optional() });
+
+  const newMovement = z.object({
+    productId: z.uuid(), warehouseId: z.uuid(),
+    // 'sale' is missing on purpose: a sale is written by an invoice, and a warehouse account that
+    // could post one by hand could invent revenue. 'opening' is a receipt with a note.
+    kind: z.enum(['receipt', 'return', 'count', 'writeoff']),
+    qty: z.number().finite().positive().max(1e6),
+    note: z.string().trim().max(300).default(''),
+  }).strict();
+
+  const newInvoice = z.object({
+    customerId: z.uuid(),
+    warehouseId: z.uuid(),
+    /** The engineer the sale belongs to. Defaults to whoever owns the customer. */
+    repId: z.uuid().optional(),
+    invoiceDate: z.number().int().positive().optional(),
+    discount: z.number().finite().min(0).max(1e9).default(0),
+    paidAmount: z.number().finite().min(0).max(1e12).default(0),
+    note: z.string().trim().max(500).default(''),
+    lines: z.array(z.object({
+      productId: z.uuid(),
+      qty: z.number().finite().positive().max(1e6),
+      /** Blank means «whatever the catalogue says today»; the number is then copied into the line. */
+      unitPrice: z.number().finite().min(0).max(1e9).optional(),
+    }).strict()).min(1, 'الفاتورة محتاجة سطر واحد على الأقل.').max(200),
+  }).strict();
+  const patchInvoice = z.object({
+    paidAmount: z.number().finite().min(0).max(1e12).optional(),
+    note: z.string().trim().max(500).optional(),
+  }).strict();
+
+  /** A customer's balance is what feeds the collection visit, so the three words come from the numbers. */
+  function paymentStatus(total: number, paid: number): 'unpaid' | 'partial' | 'paid' {
+    if (paid >= money(total) - 0.005) return 'paid';
+    return paid > 0 ? 'partial' : 'unpaid';
+  }
+
+  function onHand(warehouseId: string, productId: string): number {
+    return money(Number(store.get('SELECT COALESCE(SUM(qty),0) AS q FROM stock_movements WHERE warehouse_id=? AND product_id=?', warehouseId, productId)?.q || 0));
+  }
+
+  const INVOICE_SELECT = `SELECT i.*, u.name AS repName, u.color AS repColor, c.name AS customerNameFromList, w.name AS warehouseName
+    FROM invoices i
+    LEFT JOIN users u ON u.id=i.rep_id
+    LEFT JOIN customers c ON c.id=i.customer_id
+    LEFT JOIN warehouses w ON w.id=i.warehouse_id`;
+  const asInvoice = (row: Record<string, any> | undefined) => row ? ({
+    id: row.id, number: row.number, customerId: row.customer_id, customerName: row.customer_name,
+    repId: row.rep_id, repName: row.repName ?? 'بدون مهندس', repColor: row.repColor ?? '#94a3b8',
+    warehouseId: row.warehouse_id, warehouseName: row.warehouseName ?? '',
+    invoiceDate: row.invoice_date, date: localDate(config.timezone, Number(row.invoice_date)),
+    subtotal: money(row.subtotal), discount: money(row.discount), total: money(row.total),
+    paidAmount: money(row.paid_amount), status: row.status, stockShort: !!row.stock_short,
+    note: row.note, voided: !!row.voided, voidReason: row.void_reason, voidedAt: row.voided_at ?? null,
+    createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at,
+  }) : undefined;
+
+  function invoiceLines(invoiceId: string) {
+    return store.all(`SELECT l.*, (SELECT COALESCE(SUM(m.qty),0) FROM stock_movements m WHERE m.product_id=l.product_id) AS stockAll
+      FROM invoice_lines l WHERE l.invoice_id=? ORDER BY l.position, l.rowid`, invoiceId).map((row: Record<string, any>) => ({
+      id: row.id, productId: row.product_id, productName: row.product_name, unit: row.unit,
+      qty: Number(row.qty), unitPrice: money(row.unit_price), lineTotal: money(row.line_total),
+    }));
+  }
+
+  // ---- Warehouses ----
+  app.get('/api/warehouses', adminOnly, (req, res) => {
+    const includeInactive = req.query.includeInactive === '1';
+    const rows = store.all(`SELECT w.*,
+        (SELECT COUNT(DISTINCT m.product_id) FROM stock_movements m WHERE m.warehouse_id=w.id) AS productCount,
+        (SELECT COUNT(*) FROM invoices i WHERE i.warehouse_id=w.id AND i.voided=0) AS invoiceCount
+      FROM warehouses w ${includeInactive ? '' : 'WHERE w.active=1'} ORDER BY w.name COLLATE NOCASE`) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ warehouses: rows.map((row: Record<string, any>) => ({
+      id: row.id, name: row.name, governorate: row.governorate, district: row.district, notes: row.notes,
+      active: !!row.active, productCount: Number(row.productCount || 0), invoiceCount: Number(row.invoiceCount || 0),
+    })) });
+  });
+
+  app.post('/api/warehouses', adminOnly, catalogueOwnerOnly, (req, res) => {
+    const parsed = newWarehouse.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات المخزن غير صحيحة.' }); return; }
+    const id = randomUUID();
+    const now = Date.now();
+    try {
+      store.run('INSERT INTO warehouses(id,name,governorate,district,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+        id, parsed.data.name, parsed.data.governorate, parsed.data.district, parsed.data.notes, now, now);
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: `مخزن «${parsed.data.name}» موجود بالفعل.`, code: 'WAREHOUSE_EXISTS' }); return; }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'warehouse.create', { warehouseId: id, name: parsed.data.name });
+    broadcast(); notifyStock();
+    res.status(201).json({ warehouse: { id, ...parsed.data, active: true } });
+  });
+
+  /**
+   * A warehouse is renamed, not removed, once it has been used: it is referenced by the ledger and
+   * by invoices, and an invoice whose warehouse vanished is an invoice nobody can trace.
+   */
+  app.patch('/api/warehouses/:id', adminOnly, catalogueOwnerOnly, (req, res) => {
+    const warehouse = store.get('SELECT id, name FROM warehouses WHERE id=?', String(req.params.id));
+    if (!warehouse) { res.status(404).json({ error: 'المخزن غير موجود.' }); return; }
+    const parsed = patchWarehouse.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'بيانات المخزن غير صحيحة.' }); return; }
+    const merged = { ...warehouse, ...parsed.data };
+    try {
+      store.run('UPDATE warehouses SET name=?, governorate=?, district=?, notes=?, active=?, updated_at=? WHERE id=?',
+        String(merged.name).trim(), merged.governorate ?? '', merged.district ?? '', merged.notes ?? '',
+        parsed.data.active === undefined ? 1 : (parsed.data.active ? 1 : 0), Date.now(), warehouse.id);
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: 'في مخزن تاني بنفس الاسم.', code: 'WAREHOUSE_EXISTS' }); return; }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'warehouse.update', { warehouseId: warehouse.id, fields: Object.keys(parsed.data) });
+    broadcast(); notifyStock();
+    res.json({ ok: true });
+  });
+
+  // ---- Products ----
+  app.get('/api/products', adminOnly, (req, res) => {
+    const warehouseId = typeof req.query.warehouseId === 'string' && req.query.warehouseId ? req.query.warehouseId : '';
+    const includeInactive = req.query.includeInactive === '1';
+    const rows = store.all(`SELECT p.*,
+        COALESCE((SELECT SUM(m.qty) FROM stock_movements m WHERE m.product_id=p.id ${warehouseId ? 'AND m.warehouse_id=?' : ''}), 0) AS onHand,
+        (SELECT MAX(m.created_at) FROM stock_movements m WHERE m.product_id=p.id ${warehouseId ? 'AND m.warehouse_id=?' : ''}) AS lastMovementAt,
+        (SELECT COUNT(*) FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE l.product_id=p.id AND i.voided=0) AS soldLines
+      FROM products p ${includeInactive ? '' : 'WHERE p.active=1'} ORDER BY p.name COLLATE NOCASE`,
+    ...(warehouseId ? [warehouseId, warehouseId] : [])) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      products: rows.map((row: Record<string, any>) => ({
+        id: row.id, name: row.name, unit: row.unit, defaultPrice: money(row.default_price), notes: row.notes,
+        active: !!row.active, onHand: money(row.onHand || 0), lastMovementAt: row.lastMovementAt ?? null,
+        soldLines: Number(row.soldLines || 0),
+      })),
+    });
+  });
+
+  app.post('/api/products', adminOnly, catalogueOwnerOnly, (req, res) => {
+    const parsed = newProduct.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات المنتج غير صحيحة.' }); return; }
+    const id = randomUUID();
+    const now = Date.now();
+    try {
+      store.run('INSERT INTO products(id,name,unit,default_price,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',
+        id, parsed.data.name, parsed.data.unit, parsed.data.defaultPrice, parsed.data.notes, now, now);
+    } catch (error) {
+      // Two products with one name is two stock numbers for one physical thing.
+      if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: `«${parsed.data.name}» مسجّل بالفعل في الأصناف.`, code: 'PRODUCT_EXISTS' }); return; }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'product.create', { productId: id, name: parsed.data.name, price: parsed.data.defaultPrice });
+    broadcast(); notifyStock();
+    res.status(201).json({ product: { id, ...parsed.data, active: true, onHand: 0 } });
+  });
+
+  /**
+   * Repricing a product changes tomorrow's invoices only. The lines already written keep their
+   * unit_price, which is the whole reason the column is a copy and not a join.
+   */
+  app.patch('/api/products/:id', adminOnly, catalogueOwnerOnly, (req, res) => {
+    const product = store.get('SELECT id, name FROM products WHERE id=?', String(req.params.id));
+    if (!product) { res.status(404).json({ error: 'المنتج غير موجود.' }); return; }
+    const parsed = patchProduct.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'بيانات المنتج غير صحيحة.' }); return; }
+    const merged = { ...product, ...parsed.data };
+    try {
+      store.run('UPDATE products SET name=?, unit=?, default_price=?, notes=?, active=?, updated_at=? WHERE id=?',
+        String(merged.name).trim(), merged.unit ?? 'كرتونة', Number(merged.defaultPrice ?? 0), merged.notes ?? '',
+        parsed.data.active === undefined ? 1 : (parsed.data.active ? 1 : 0), Date.now(), product.id);
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: 'اسم المنتج ده موجود في صنف تاني.', code: 'PRODUCT_EXISTS' }); return; }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'product.update', { productId: product.id, fields: Object.keys(parsed.data) });
+    broadcast(); notifyStock();
+    res.json({ ok: true });
+  });
+
+  // ---- Stock: the ledger, and what is left on the shelf ----
+  /**
+   * The one query the warehouse account lives on. onHand is the sum of the movements, so a count
+   * that disagrees with the invoices shows up as a movement row rather than as a mystery number.
+   */
+  app.get('/api/stock', adminOnly, (req, res) => {
+    const warehouseId = typeof req.query.warehouseId === 'string' && req.query.warehouseId ? req.query.warehouseId : '';
+    const rows = store.all(`SELECT p.id AS productId, p.name AS productName, p.unit AS unit, p.default_price AS price,
+        w.id AS warehouseId, w.name AS warehouseName,
+        COALESCE(SUM(m.qty), 0) AS onHand, MAX(m.created_at) AS lastMovementAt
+      FROM products p
+      CROSS JOIN warehouses w
+      LEFT JOIN stock_movements m ON m.product_id=p.id AND m.warehouse_id=w.id
+      WHERE p.active=1 AND w.active=1 ${warehouseId ? 'AND w.id=?' : ''}
+      GROUP BY p.id, w.id
+      HAVING onHand <> 0 OR lastMovementAt IS NOT NULL
+      ORDER BY w.name COLLATE NOCASE, p.name COLLATE NOCASE`,
+    ...(warehouseId ? [warehouseId] : [])) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      generatedAt: Date.now(),
+      rows: rows.map(row => ({
+        productId: row.productId, productName: row.productName, unit: row.unit, price: money(row.price),
+        warehouseId: row.warehouseId, warehouseName: row.warehouseName,
+        onHand: money(row.onHand || 0), lastMovementAt: row.lastMovementAt ?? null,
+        low: Number(row.onHand || 0) <= 0,
+      })),
+    });
+  });
+
+  app.get('/api/stock/movements', adminOnly, (req, res) => {
+    const where: string[] = []; const params: any[] = [];
+    if (typeof req.query.warehouseId === 'string' && req.query.warehouseId) { where.push('m.warehouse_id=?'); params.push(req.query.warehouseId); }
+    if (typeof req.query.productId === 'string' && req.query.productId) { where.push('m.product_id=?'); params.push(req.query.productId); }
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 150));
+    const rows = store.all(`SELECT m.*, p.name AS productName, p.unit AS unit, w.name AS warehouseName, u.name AS userName, i.number AS invoiceNumber
+      FROM stock_movements m JOIN products p ON p.id=m.product_id JOIN warehouses w ON w.id=m.warehouse_id
+      LEFT JOIN users u ON u.id=m.created_by LEFT JOIN invoices i ON i.id=m.invoice_id
+      WHERE ${where.length ? where.join(' AND ') : '1=1'} ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+    res.json({
+      movements: rows.map(row => ({
+        id: row.id, productId: row.product_id, productName: row.productName, unit: row.unit,
+        warehouseId: row.warehouse_id, warehouseName: row.warehouseName,
+        qty: money(row.qty), kind: row.kind, note: row.note, invoiceId: row.invoice_id,
+        invoiceNumber: row.invoiceNumber ?? null, by: row.userName ?? '—', createdAt: row.created_at,
+      })),
+    });
+  });
+
+  /**
+   * The warehouse account's only write. A count is not an edit of the number: it is a movement that
+   * says «the difference between what the ledger claims and what is on the shelf is real», which is
+   * what makes a stock correction auditable instead of invisible.
+   */
+  app.post('/api/stock/movements', adminOnly, catalogueOwnerOnly, (req, res) => {
+    const parsed = newMovement.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الحركة غير صحيحة.' }); return; }
+    const { productId, warehouseId, kind, note } = parsed.data;
+    if (!store.get('SELECT id FROM products WHERE id=?', productId)) { res.status(404).json({ error: 'المنتج غير موجود.' }); return; }
+    if (!store.get('SELECT id FROM warehouses WHERE id=?', warehouseId)) { res.status(404).json({ error: 'المخزن غير موجود.' }); return; }
+    const before = onHand(warehouseId, productId);
+    const signed = kind === 'count' ? money(parsed.data.qty - before)
+      : kind === 'writeoff' ? -money(parsed.data.qty) : money(parsed.data.qty);
+    if (signed === 0) { res.status(400).json({ error: 'الجرد طابق اللي في الدفتر — مفيش حاجة تتسجل.', code: 'NO_CHANGE' }); return; }
+    // No «not enough stock» refusal here, and that is deliberate. A count is bounded by what the
+    // shelves hold, and a writeoff exists precisely to say «there is less than the ledger claims» —
+    // refusing it would keep the books pretty and the warehouse wrong. A negative number is allowed
+    // to exist and is shown in red (`low` on /api/stock) until the next count fixes it.
+    const id = randomUUID();
+    const now = Date.now();
+    store.run('INSERT INTO stock_movements(id,product_id,warehouse_id,qty,kind,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)',
+      id, productId, warehouseId, signed, kind, note, res.locals.user.id, now);
+    store.audit(res.locals.user.id, 'stock.movement', { movementId: id, productId, warehouseId, kind, qty: signed });
+    broadcast(); notifyStock();
+    res.status(201).json({ movement: { id, qty: signed, kind, onHand: money(before + signed) } });
+  });
+
+  // ---- Invoices ----
+  app.get('/api/invoices', adminOnly, (req, res) => {
+    const where: string[] = []; const params: any[] = [];
+    if (req.query.includeVoided !== '1') where.push('i.voided=0');
+    const isAdmin = res.locals.user.role === 'admin';
+    if (!isAdmin) { where.push('i.rep_id=?'); params.push(res.locals.user.id); }
+    else if (typeof req.query.repId === 'string' && req.query.repId) { where.push('i.rep_id=?'); params.push(req.query.repId); }
+    if (typeof req.query.customerId === 'string' && req.query.customerId) { where.push('i.customer_id=?'); params.push(req.query.customerId); }
+    if (typeof req.query.warehouseId === 'string' && req.query.warehouseId) { where.push('i.warehouse_id=?'); params.push(req.query.warehouseId); }
+    if (['unpaid', 'partial', 'paid'].includes(String(req.query.status))) { where.push('i.status=?'); params.push(String(req.query.status)); }
+    if (req.query.stockShort === '1') where.push('i.stock_short=1');
+    const from = Number(req.query.from); if (Number.isFinite(from) && from > 0) { where.push('i.invoice_date>=?'); params.push(from); }
+    const to = Number(req.query.to); if (Number.isFinite(to) && to > 0) { where.push('i.invoice_date<=?'); params.push(to); }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
+    if (q) { where.push('(i.customer_name LIKE ? OR i.number LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+    const rows = store.all(`${INVOICE_SELECT}
+      WHERE ${where.length ? where.join(' AND ') : '1=1'}
+      ORDER BY i.invoice_date DESC, i.created_at DESC LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      invoices: rows.map(row => ({ ...asInvoice(row)!, lineCount: Number(store.get('SELECT COUNT(*) AS c FROM invoice_lines WHERE invoice_id=?', row.id)?.c || 0) })),
+    });
+  });
+
+  app.get('/api/invoices/:id', adminOnly, (req, res) => {
+    const row = store.get(`${INVOICE_SELECT} WHERE i.id=?`, String(req.params.id)) as Record<string, any> | undefined;
+    if (!row) { res.status(404).json({ error: 'الفاتورة غير موجودة.' }); return; }
+    if (res.locals.user.role !== 'admin' && String(row.rep_id) !== String(res.locals.user.id)) { res.status(403).json({ error: 'الفاتورة دي مش ليك.' }); return; }
+    res.json({ invoice: asInvoice(row), lines: invoiceLines(row.id) });
+  });
+
+  /**
+   * Write an invoice. Everything about the money is recomputed here, and the warehouse movements go
+   * in the same transaction, so the two can never be seen apart.
+   */
+  app.post('/api/invoices', adminOnly, (req, res) => {
+    const parsed = newInvoice.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الفاتورة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    const data = parsed.data;
+    const isAdmin = res.locals.user.role === 'admin';
+    const customer = store.get('SELECT id, name, rep_id AS repId FROM customers WHERE id=?', data.customerId) as { id: string; name: string; repId: string } | undefined;
+    if (!customer) { res.status(404).json({ error: 'اختار العميل من قائمة المهندس الأول.' }); return; }
+    if (!isAdmin && String(customer.repId) !== String(res.locals.user.id)) { res.status(403).json({ error: 'تقدر تسجّل فواتير عملاءك إنت بس.' }); return; }
+    const warehouse = store.get('SELECT id, name FROM warehouses WHERE id=? AND active=1', data.warehouseId) as { id: string; name: string } | undefined;
+    if (!warehouse) { res.status(404).json({ error: 'المخزن غير موجود أو متوقف.' }); return; }
+    /*
+     * The sale belongs to the engineer who owns the customer, and only the manager account can say
+     * otherwise. Note `dashScope(...) === 'manager'` rather than the role check the rest of the file
+     * uses: the sales office writes invoices all day, and an office account that could re-point a
+     * sale at another engineer is a way to move revenue between people without the manager noticing.
+     */
+    const canChooseRep = dashScope(res.locals.user) === 'manager';
+    const repId = canChooseRep && data.repId ? String(data.repId) : String(customer.repId);
+    if (!store.get("SELECT id FROM users WHERE id=? AND role='rep'", repId)) { res.status(409).json({ error: 'المهندس المرتبط بالفاتورة غير موجود.' }); return; }
+
+    // Resolve the lines against the catalogue before anything is written, so a bad product id cannot
+    // leave a half invoice behind.
+    const lines: Array<{ productId: string; productName: string; unit: string; qty: number; unitPrice: number; lineTotal: number }> = [];
+    for (const line of data.lines) {
+      const product = store.get('SELECT id, name, unit, default_price AS defaultPrice, active FROM products WHERE id=?', line.productId) as Record<string, any> | undefined;
+      if (!product) { res.status(409).json({ error: 'في منتج في الفاتورة مش موجود في الأصناف.', code: 'PRODUCT_NOT_FOUND' }); return; }
+      if (!Number(product.active) && line.qty > 0) { res.status(409).json({ error: `«${product.name}» متوقف — نشّطه لو لسه بيتباع.`, code: 'PRODUCT_INACTIVE' }); return; }
+      const unitPrice = money(line.unitPrice ?? Number(product.defaultPrice || 0));
+      const qty = Number(line.qty);
+      lines.push({ productId: String(product.id), productName: String(product.name), unit: String(product.unit), qty, unitPrice, lineTotal: money(qty * unitPrice) });
+    }
+    const subtotal = money(lines.reduce((sum, line) => sum + line.lineTotal, 0));
+    const discount = money(Math.min(data.discount, subtotal));
+    const total = money(Math.max(0, subtotal - discount));
+    const paidAmount = money(Math.min(data.paidAmount, total));
+    // A zero-total invoice is always a mistake — a product left at price 0 in the catalogue, or a
+    // discount typed as the whole amount — and letting it in would pull down the average invoice
+    // value that the sales office is judged on.
+    if (total <= 0) { res.status(400).json({ error: 'إجمالي الفاتورة صفر — سجّل سعر المنتج الأول أو راجع الخصم.', code: 'EMPTY_INVOICE' }); return; }
+    const invoiceDate = data.invoiceDate ?? Date.now();
+
+    const id = randomUUID();
+    const now = Date.now();
+    let number = '';
+    let stockShort = 0;
+    store.transaction(() => {
+      const year = Number(localDate(config.timezone, invoiceDate).slice(0, 4));
+      const series = store.get(`INSERT INTO invoice_series(year,last_number) VALUES(?,1)
+        ON CONFLICT(year) DO UPDATE SET last_number=last_number+1 RETURNING last_number AS n`, year) as { n: number } | undefined;
+      number = `INV-${year}-${String(Number(series?.n || 1)).padStart(4, '0')}`;
+      store.run(`INSERT INTO invoices(id,number,customer_id,customer_name,rep_id,warehouse_id,invoice_date,subtotal,discount,total,paid_amount,status,stock_short,note,created_by,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      id, number, customer.id, customer.name, repId, warehouse.id, invoiceDate, subtotal, discount, total, paidAmount,
+      paymentStatus(total, paidAmount), 0, data.note, res.locals.user.id, now, now);
+      lines.forEach((line, index) => {
+        store.run('INSERT INTO invoice_lines(id,invoice_id,product_id,product_name,unit,qty,unit_price,line_total,position) VALUES (?,?,?,?,?,?,?,?,?)',
+          randomUUID(), id, line.productId, line.productName, line.unit, line.qty, line.unitPrice, line.lineTotal, index);
+        const before = onHand(warehouse.id, line.productId);
+        if (before - line.qty < -0.001) stockShort = 1;
+        store.run('INSERT INTO stock_movements(id,product_id,warehouse_id,qty,kind,invoice_id,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+          randomUUID(), line.productId, warehouse.id, -line.qty, 'sale', id, `فاتورة ${number}`, res.locals.user.id, now);
+      });
+      if (stockShort) store.run('UPDATE invoices SET stock_short=1 WHERE id=?', id);
+    });
+    store.audit(res.locals.user.id, 'invoice.create', { invoiceId: id, number, repId, warehouseId: warehouse.id, total, lines: lines.length, stockShort });
+    invalidateKpis(); broadcast(); notifyStock();
+    res.status(201).json({ invoice: asInvoice(store.get(`${INVOICE_SELECT} WHERE i.id=?`, id)), lines: invoiceLines(id), stockShort: !!stockShort });
+  });
+
+  /**
+   * Only the money and the note can be edited afterwards. Lines are immutable: changing what was
+   * handed to a customer is what the void-and-rewrite path is for, because it leaves both numbers.
+   */
+  app.patch('/api/invoices/:id', adminOnly, (req, res) => {
+    const invoice = store.get('SELECT id, number, total, paid_amount AS paidAmount, voided FROM invoices WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
+    if (!invoice) { res.status(404).json({ error: 'الفاتورة غير موجودة.' }); return; }
+    if (Number(invoice.voided)) { res.status(409).json({ error: 'الفاتورة ملغاة — سجلها من جديد.', code: 'INVOICE_VOIDED' }); return; }
+    const parsed = patchInvoice.safeParse(req.body ?? {});
+    if (!parsed.success || (parsed.data.paidAmount === undefined && parsed.data.note === undefined)) {
+      res.status(400).json({ error: 'محتاج amount مسدد أو ملاحظة.' }); return;
+    }
+    const paidAmount = parsed.data.paidAmount === undefined ? money(invoice.paidAmount) : money(parsed.data.paidAmount);
+    // Clamping a number that is too big would hide a typing mistake — and in this field a payment of
+    // 5000 on an invoice of 3800 usually means a second invoice was meant to be written.
+    if (paidAmount > money(invoice.total) + 0.005) {
+      res.status(400).json({ error: `المسدد أكبر من إجمالي الفاتورة (${money(invoice.total)} ج.م) — سجّل الفاتورة التانية لوحدها.`, code: 'OVERPAYMENT' });
+      return;
+    }
+    if (paidAmount < money(invoice.paidAmount) - 0.005) {
+      res.status(409).json({ error: 'المسدد ما بيرجعش لورا — لو فيه خطأ في التحصيل، الغي الفاتورة وسجّلها صح.', code: 'PAYMENT_ROLLBACK' });
+      return;
+    }
+    store.run('UPDATE invoices SET paid_amount=?, status=?, note=COALESCE(?, note), updated_at=? WHERE id=?',
+      paidAmount, paymentStatus(Number(invoice.total), paidAmount), parsed.data.note ?? null, Date.now(), invoice.id);
+    store.audit(res.locals.user.id, 'invoice.update', { invoiceId: invoice.id, number: invoice.number, paidAmount });
+    invalidateKpis(); broadcast(); notifyStock();
+    res.json({ invoice: asInvoice(store.get(`${INVOICE_SELECT} WHERE i.id=?`, invoice.id)) });
+  });
+
+  /** Cancel an invoice: the number stays, the rows stay, and the warehouse is given the goods back. */
+  app.post('/api/invoices/:id/void', adminOnly, (req, res) => {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+    if (reason.length < 2) { res.status(400).json({ error: 'اكتب سبب إلغاء الفاتورة.', code: 'REASON_REQUIRED' }); return; }
+    const invoice = store.get('SELECT id, number, voided FROM invoices WHERE id=?', String(req.params.id)) as { id: string; number: string; voided: number } | undefined;
+    if (!invoice) { res.status(404).json({ error: 'الفاتورة غير موجودة.' }); return; }
+    if (Number(invoice.voided)) { res.status(409).json({ error: 'الفاتورة ملغاة بالفعل.' }); return; }
+    const lines = store.all('SELECT product_id AS productId, qty FROM invoice_lines WHERE invoice_id=?', invoice.id) as Array<{ productId: string; qty: number }>;
+    const now = Date.now();
+    store.transaction(() => {
+      store.run('UPDATE invoices SET voided=1, void_reason=?, voided_at=?, updated_at=? WHERE id=?', reason, now, now, invoice.id);
+      const warehouseId = String(store.get('SELECT warehouse_id AS w FROM invoices WHERE id=?', invoice.id)!.w);
+      for (const line of lines) {
+        store.run('INSERT INTO stock_movements(id,product_id,warehouse_id,qty,kind,invoice_id,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+          randomUUID(), line.productId, warehouseId, Number(line.qty), 'return', invoice.id, `إلغاء الفاتورة ${invoice.number}`, res.locals.user.id, now);
+      }
+    });
+    store.audit(res.locals.user.id, 'invoice.void', { invoiceId: invoice.id, number: invoice.number, reason, lines: lines.length });
+    invalidateKpis(); broadcast(); notifyStock();
+    res.json({ ok: true, restored: lines.length });
+  });
+
+  /*
+   * The engineer's read-only view. The sales office writes invoices, and the man in the field sees
+   * the ones that are his and the prices and stock he is quoting from — nothing else. These routes
+   * exist because /api/invoices and /api/sales/summary are dashboard routes: a rep calling them would
+   * be reading the whole company's numbers, and the phone must not be able to do that even by accident.
+   */
+  app.get('/api/my/invoices', repOnly, (req, res) => {
+    const day = 86400000;
+    const to = Number.isFinite(Number(req.query.to)) && Number(req.query.to) > 0 ? Number(req.query.to) : Date.now();
+    const from = Number.isFinite(Number(req.query.from)) && Number(req.query.from) > 0 ? Number(req.query.from) : to - 60 * day;
+    // One customer is the question this screen gets asked most — «what does he owe me?» — asked from
+    // the customer sheet. It narrows the same read; the engineer's own rows are the only ones in
+    // scope either way, so `customerId` cannot widen what he sees, only shrink it.
+    const customerId = typeof req.query.customerId === 'string' && req.query.customerId ? req.query.customerId : '';
+    const clause = customerId ? ' AND i.customer_id=?' : '';
+    const params = customerId ? [res.locals.user.id, from, to, customerId] : [res.locals.user.id, from, to];
+    const rows = store.all(`${INVOICE_SELECT}
+      WHERE i.rep_id=? AND i.voided=0 AND i.invoice_date>=? AND i.invoice_date<=?${clause}
+      ORDER BY i.invoice_date DESC LIMIT 100`, ...params) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      invoices: rows.map(row => ({ ...asInvoice(row)!, lines: invoiceLines(row.id) })),
+      outstanding: money(rows.reduce((sum, row) => sum + Math.max(0, Number(row.total) - Number(row.paid_amount)), 0)),
+    });
+  });
+
+  /** Prices and what is on the shelf, so a promise made in a farm matches what the truck can carry. */
+  app.get('/api/my/catalogue', repOnly, (_req, res) => {
+    const products = store.all(`SELECT p.id, p.name, p.unit, p.default_price AS price,
+        COALESCE((SELECT SUM(m.qty) FROM stock_movements m WHERE m.product_id=p.id), 0) AS onHand
+      FROM products p WHERE p.active=1 ORDER BY p.name COLLATE NOCASE`) as Array<Record<string, any>>;
+    const perWarehouse = store.all(`SELECT m.product_id AS productId, w.name AS warehouseName, SUM(m.qty) AS qty
+      FROM stock_movements m JOIN warehouses w ON w.id=m.warehouse_id WHERE w.active=1
+      GROUP BY m.product_id, m.warehouse_id`) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      products: products.map(row => ({
+        id: row.id, name: row.name, unit: row.unit, price: money(row.price), onHand: money(row.onHand || 0),
+        warehouses: perWarehouse.filter(line => String(line.productId) === String(row.id))
+          .map(line => ({ name: line.warehouseName, onHand: money(line.qty) })),
+      })),
+    });
+  });
+
+  /**
+   * What each engineer sold, what sold best, and what is still owed — for a period, optionally for
+   * one engineer or one warehouse. Read-only aggregates; nothing here can change a record.
+   */
+  app.get('/api/sales/summary', adminOnly, (req, res) => {
+    const day = 86400000;
+    const to = Number.isFinite(Number(req.query.to)) && Number(req.query.to) > 0 ? Number(req.query.to) : Date.now();
+    const from = Number.isFinite(Number(req.query.from)) && Number(req.query.from) > 0 ? Number(req.query.from) : to - 30 * day;
+    const where: string[] = ['i.voided=0', 'i.invoice_date>=?', 'i.invoice_date<=?'];
+    const params: any[] = [from, to];
+    if (typeof req.query.repId === 'string' && req.query.repId) { where.push('i.rep_id=?'); params.push(req.query.repId); }
+    if (typeof req.query.warehouseId === 'string' && req.query.warehouseId) { where.push('i.warehouse_id=?'); params.push(req.query.warehouseId); }
+    const clause = where.join(' AND ');
+    const totalsRow = store.get(`SELECT COUNT(*) AS count, COALESCE(SUM(i.subtotal),0) AS subtotal, COALESCE(SUM(i.discount),0) AS discount,
+        COALESCE(SUM(i.total),0) AS total, COALESCE(SUM(i.paid_amount),0) AS paid, SUM(CASE WHEN i.stock_short=1 THEN 1 ELSE 0 END) AS short
+      FROM invoices i WHERE ${clause}`, ...params) as Record<string, any>;
+    // No correlated subquery here, and that is a correctness choice rather than taste: a `?` inside
+    // the SELECT list is bound BEFORE the ones in WHERE, so mixing the two silently fed the warehouse
+    // id into the date comparison and the answer was an empty list that looked like a quiet month.
+    const byRep = store.all(`SELECT i.rep_id AS repId, u.name AS repName, u.color AS repColor, COUNT(*) AS invoices,
+        COALESCE(SUM(i.total),0) AS total, COALESCE(SUM(i.paid_amount),0) AS paid,
+        SUM(CASE WHEN i.status<>'paid' THEN 1 ELSE 0 END) AS openInvoices
+      FROM invoices i LEFT JOIN users u ON u.id=i.rep_id WHERE ${clause}
+      GROUP BY i.rep_id, u.name, u.color ORDER BY total DESC`, ...params) as Array<Record<string, any>>;
+    const topProducts = store.all(`SELECT l.product_id AS productId, l.product_name AS productName, l.unit AS unit,
+        COALESCE(SUM(l.qty),0) AS qty, COALESCE(SUM(l.line_total),0) AS revenue
+      FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id WHERE ${clause}
+      GROUP BY l.product_id, l.product_name ORDER BY revenue DESC LIMIT 15`, ...params) as Array<Record<string, any>>;
+    const balances = store.all(`SELECT i.customer_id AS customerId, i.customer_name AS customerName,
+        COALESCE(SUM(i.total - i.paid_amount),0) AS outstanding, MAX(i.invoice_date) AS lastInvoiceAt, COUNT(*) AS invoices
+      FROM invoices i WHERE ${clause} AND i.status<>'paid'
+      GROUP BY i.customer_id, i.customer_name ORDER BY outstanding DESC LIMIT 25`, ...params) as Array<Record<string, any>>;
+    const count = Number(totalsRow.count || 0);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      from, to,
+      totals: {
+        count, subtotal: money(totalsRow.subtotal), discount: money(totalsRow.discount), total: money(totalsRow.total),
+        paid: money(totalsRow.paid), outstanding: money(Number(totalsRow.total) - Number(totalsRow.paid)),
+        averageInvoice: count ? money(Number(totalsRow.total) / count) : 0, stockShort: Number(totalsRow.short || 0),
+      },
+      byRep: byRep.map(row => ({
+        repId: row.repId, repName: row.repName ?? 'بدون مهندس', repColor: row.repColor ?? '#94a3b8',
+        invoices: Number(row.invoices), total: money(row.total), paid: money(row.paid),
+        outstanding: money(Number(row.total) - Number(row.paid)), openInvoices: Number(row.openInvoices || 0),
+      })),
+      topProducts: topProducts.map(row => ({ productId: row.productId, productName: row.productName, unit: row.unit, qty: money(row.qty), revenue: money(row.revenue) })),
+      balances: balances.map(row => ({ customerId: row.customerId, customerName: row.customerName, outstanding: money(row.outstanding), lastInvoiceAt: row.lastInvoiceAt ?? null, invoices: Number(row.invoices) })),
+    });
+  });
+
+  // ---- Dashboard accounts: the sales office and the warehouse ----
+  /*
+   * These are created here and nowhere else, and only by the manager account (scope ''). The reason
+   * is blunt: an account that can mint dashboard accounts can mint a manager, so the ability to set
+   * a scope has to sit with the one account that already sees everything — not with the sales office,
+   * however senior it is. There is no self-signup for this product, so this is the only door.
+   */
+  const staffInput = z.object({
+    name: z.string().trim().min(2).max(80),
+    email: z.email().max(254).transform(x => x.toLowerCase().trim()),
+    password: z.string().min(10).max(200),
+    scope: z.enum(['sales', 'stock']),
+  }).strict();
+  const managerOnly = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (dashScope(res.locals.user) !== 'manager') {
+      res.status(403).json({ error: 'إنشاء حسابات اللوحة وتغيير الصلاحيات للمدير وحده.', code: 'MANAGER_ONLY' });
+      return;
+    }
+    next();
+  };
+
+  app.get('/api/staff', adminOnly, managerOnly, (_req, res) => {
+    const rows = store.all("SELECT id, name, email, scope, active, created_at AS createdAt, last_seen AS lastSeen FROM users WHERE role='admin' ORDER BY scope, name COLLATE NOCASE") as Array<Record<string, any>>;
+    res.json({
+      staff: rows.map(row => ({
+        id: row.id, name: row.name, email: row.email, scope: String(row.scope || '') === '' ? 'manager' : String(row.scope),
+        active: !!row.active, createdAt: row.createdAt, lastSeen: row.lastSeen ?? null,
+      })),
+    });
+  });
+
+  app.post('/api/staff', adminOnly, managerOnly, (req, res) => {
+    const parsed = staffInput.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'راجع الاسم والبريد وكلمة المرور (١٠ أحرف على الأقل).' }); return; }
+    if (parsed.data.password.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      res.status(400).json({ error: `كلمة مرور حسابات اللوحة ${MIN_ADMIN_PASSWORD_LENGTH} حرفًا على الأقل.`, code: 'PASSWORD_TOO_SHORT' }); return;
+    }
+    if (store.get('SELECT id FROM users WHERE email=?', parsed.data.email)) { res.status(409).json({ error: 'البريد الإلكتروني مستخدم بالفعل.' }); return; }
+    const id = randomUUID();
+    store.run("INSERT INTO users(id,name,email,password_hash,role,scope,created_at) VALUES (?,?,?,?,?,?,?)",
+      id, parsed.data.name, parsed.data.email, hashPassword(parsed.data.password), 'admin', parsed.data.scope, Date.now());
+    store.audit(res.locals.user.id, 'staff.create', { staffId: id, scope: parsed.data.scope });
+    res.status(201).json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', id)!) });
+  });
+
+  /** Stop an account, or move it between the sales office and the warehouses. */
+  app.patch('/api/staff/:id', adminOnly, managerOnly, (req, res) => {
+    const parsed = z.object({ scope: z.enum(['sales', 'stock', '']).optional(), active: z.boolean().optional(), name: z.string().trim().min(2).max(80).optional() }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'بيانات الحساب غير صحيحة.' }); return; }
+    const staff = store.get("SELECT id, name, role, scope, active FROM users WHERE id=? AND role='admin'", String(req.params.id)) as Record<string, any> | undefined;
+    if (!staff) { res.status(404).json({ error: 'حساب اللوحة غير موجود.' }); return; }
+    if (String(staff.scope || '') === '' && parsed.data.scope !== undefined && parsed.data.scope !== '') {
+      const managers = Number(store.get("SELECT COUNT(*) AS c FROM users WHERE role='admin' AND scope='' AND active=1")?.c || 0);
+      if (managers <= 1) { res.status(409).json({ error: 'ده حساب المدير الوحيد — اللوحة هتفضل مقفولة من غير حساب صلاحية كاملة.', code: 'LAST_MANAGER' }); return; }
+    }
+    if (parsed.data.active === false && String(staff.id) === String(res.locals.user.id)) { res.status(409).json({ error: 'ما ينفعش توقف حسابك إنت من اللوحة.' }); return; }
+    store.run('UPDATE users SET name=COALESCE(?, name), scope=COALESCE(?, scope), active=? WHERE id=?',
+      parsed.data.name ?? null, parsed.data.scope ?? null, parsed.data.active === undefined ? Number(staff.active) : (parsed.data.active ? 1 : 0), staff.id);
+    if (parsed.data.active === false) {
+      store.run('DELETE FROM sessions WHERE user_id=?', staff.id);
+      io.in(`user:${staff.id}`).disconnectSockets(true);
+    }
+    store.audit(res.locals.user.id, 'staff.update', { staffId: staff.id, fields: Object.keys(parsed.data) });
+    res.json({ ok: true });
+  });
+
+  const staffPasswordSchema = z.object({ password: z.string().min(10).max(200) }).strict();
+  app.post('/api/staff/:id/password', adminOnly, managerOnly, (req, res) => {
+    const parsed = staffPasswordSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.', code: 'PASSWORD_TOO_SHORT' }); return; }
+    const staff = store.get("SELECT id FROM users WHERE id=? AND role='admin'", String(req.params.id));
+    if (!staff) { res.status(404).json({ error: 'حساب اللوحة غير موجود.' }); return; }
+    if (parsed.data.password.length < MIN_ADMIN_PASSWORD_LENGTH) { res.status(400).json({ error: `كلمة مرور حسابات اللوحة ${MIN_ADMIN_PASSWORD_LENGTH} حرفًا على الأقل.`, code: 'PASSWORD_TOO_SHORT' }); return; }
+    store.run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(parsed.data.password), staff.id);
+    store.run('DELETE FROM sessions WHERE user_id=?', staff.id);
+    io.in(`user:${staff.id}`).disconnectSockets(true);
+    store.audit(res.locals.user.id, 'staff.password_reset', { staffId: staff.id });
     res.json({ ok: true });
   });
 

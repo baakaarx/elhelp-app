@@ -3,6 +3,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'r
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Field, Heading, Pill, Row, SectionTitle, Sheet } from './ui';
 import { CheckInSheet } from './VisitSheets';
+import { CustomerBalance } from './SalesScreen';
 import { agoText, dayText } from './format';
 import { useCustomers } from './useCustomers';
 import { customerStageLabels, type Customer, type User } from './types';
@@ -61,7 +62,7 @@ export default function CustomersScreen({ user, field }: { user: User; field: Fi
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>عملائي</Text>
             <Text style={styles.sub}>
-              {unsupported ? 'السيرفر ده لسه ما فيهوش قايمعة عملاء.'
+              {unsupported ? 'السيرفر ده لسه ما فيهوش قائمة عملاء.'
                 : `${customers.length} عميل${cooling ? ` · ${cooling} محتاج متابعة` : ''}`}
             </Text>
           </View>
@@ -122,7 +123,7 @@ export default function CustomersScreen({ user, field }: { user: User; field: Fi
             ))}
           </Card>
         )}
-        <Text style={styles.footnote}>القايمعة دي بتاعتك إنت: مهندس تاني ما بيشوفهاش، والمدير براجعها من اللوحة.</Text>
+        <Text style={styles.footnote}>القايمة دي بتاعتك إنت: مهندس تاني ما بيشوفهاش، والمدير براجعها من اللوحة.</Text>
       </ScrollView>
 
       <Sheet visible={adding} onClose={closeForm} title="عميل جديد">
@@ -167,6 +168,7 @@ export default function CustomersScreen({ user, field }: { user: User; field: Fi
             {open.notes ? <Body>{open.notes}</Body> : null}
             <Body muted>{open.lastVisitAt ? `آخر زيارة ${dayText(open.lastVisitAt, field.summary?.timezone)} (${agoText(open.lastVisitAt)})` : 'لسه ما اتزارتش'}</Body>
             {open.stage === 'lost' && open.lostReason ? <Body muted>سبب الرفض: {open.lostReason}</Body> : null}
+            <CustomerBalance customerId={open.id} />
             <Button
               label="تسجيل زيارة دلوقتي" icon="◎"
               onPress={() => { setCheckingIn(open); setOpen(null); }}

@@ -37,7 +37,10 @@ export class Store {
         password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','rep')),
         phone TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '',
         color TEXT NOT NULL DEFAULT '#28745b',
-        active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, last_seen INTEGER
+        active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, last_seen INTEGER,
+        -- '' = manager, 'sales' = sales office, 'stock' = warehouses only. See the migration list
+        -- below for why this is not part of role.
+        scope TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS sessions (
         token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -130,6 +133,117 @@ export class Store {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS customers_rep_name ON customers(rep_id, name COLLATE NOCASE);
       CREATE INDEX IF NOT EXISTS customers_rep_active ON customers(rep_id, active);
+      -- ---- Sales: the catalogue, the warehouses, the stock ledger, the invoices ----
+      --
+      -- These tables are the money record of the company, which changes what the schema has to
+      -- promise. The activity tables (locations, visits, reports) answer «what happened today»; an
+      -- invoice answers «what was sold, at what price, to whom» and has to still say the same thing
+      -- in five years. Three consequences are written into the definitions below:
+      --
+      --   1. Nothing here is swept by RETENTION_DAYS. The cleanup() method lists the tables it
+      --      clears, and these are deliberately not among them.
+      --   2. Deleting a person never deletes a sale: rep_id and created_by are ON DELETE SET NULL,
+      --      unlike every other table in this schema. An invoice is a fact about the company, not
+      --      about the man who left it.
+      --   3. Names and prices are copied into the line at the moment of the sale. A product renamed
+      --      or re-priced tomorrow must not rewrite an invoice already handed to a customer.
+      --
+      -- Stock is a ledger, not a number. There is deliberately no products.stock_qty column:
+      -- «what is left» is always the SUM of the movements, so a manual correction and a sale cannot
+      -- disagree, and every figure on the warehouse screen has a row behind it.
+      CREATE TABLE IF NOT EXISTS warehouses (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        governorate TEXT NOT NULL DEFAULT '',
+        district TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      -- Two warehouses both called «الإسكندرية» would split one pile of cartons into two wrong numbers.
+      CREATE UNIQUE INDEX IF NOT EXISTS warehouses_name ON warehouses(name COLLATE NOCASE);
+
+      CREATE TABLE IF NOT EXISTS products (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        unit TEXT NOT NULL DEFAULT 'كرتونة',
+        -- The catalogue price is the warehouse's answer, not the engineer's: it is set here so one
+        -- price is used everywhere and a phone cannot invent one.
+        default_price REAL NOT NULL DEFAULT 0 CHECK(default_price >= 0),
+        notes TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS products_name ON products(name COLLATE NOCASE);
+
+      CREATE TABLE IF NOT EXISTS invoices (
+        id TEXT PRIMARY KEY,
+        -- Assigned by the server when the invoice lands (INV-YYYY-NNNN from invoice_series). A number
+        -- typed by a client is a number that can be typed twice.
+        number TEXT UNIQUE,
+        customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
+        customer_name TEXT NOT NULL,
+        rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+        invoice_date INTEGER NOT NULL,
+        subtotal REAL NOT NULL DEFAULT 0,
+        discount REAL NOT NULL DEFAULT 0 CHECK(discount >= 0),
+        total REAL NOT NULL DEFAULT 0,
+        paid_amount REAL NOT NULL DEFAULT 0 CHECK(paid_amount >= 0),
+        status TEXT NOT NULL DEFAULT 'unpaid' CHECK(status IN ('unpaid','partial','paid')),
+        -- 1 when a line drove the warehouse below zero: the goods really left, so the sale stands and
+        -- the shortage is said out loud instead of being refused or hidden.
+        stock_short INTEGER NOT NULL DEFAULT 0,
+        note TEXT NOT NULL DEFAULT '',
+        -- An invoice is never deleted, only voided with a reason: invoice numbers are a series, and a
+        -- hole in the series is what makes an auditor ask questions.
+        voided INTEGER NOT NULL DEFAULT 0,
+        void_reason TEXT NOT NULL DEFAULT '',
+        voided_at INTEGER,
+        created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS invoices_rep_date ON invoices(rep_id, invoice_date);
+      CREATE INDEX IF NOT EXISTS invoices_customer ON invoices(customer_id);
+      CREATE INDEX IF NOT EXISTS invoices_date ON invoices(invoice_date);
+
+      CREATE TABLE IF NOT EXISTS invoice_lines (
+        id TEXT PRIMARY KEY,
+        invoice_id TEXT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+        product_id TEXT REFERENCES products(id) ON DELETE SET NULL,
+        product_name TEXT NOT NULL,
+        unit TEXT NOT NULL DEFAULT '',
+        qty REAL NOT NULL CHECK(qty > 0),
+        unit_price REAL NOT NULL CHECK(unit_price >= 0),
+        line_total REAL NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS invoice_lines_invoice ON invoice_lines(invoice_id, position);
+      -- The top-seller question is «group by product over all lines»; without this it walks every
+      -- invoice in the file.
+      CREATE INDEX IF NOT EXISTS invoice_lines_product ON invoice_lines(product_id);
+
+      CREATE TABLE IF NOT EXISTS stock_movements (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE CASCADE,
+        -- Signed: incoming positive, outgoing negative. One column, one rule, and no direction field
+        -- that can disagree with the sign.
+        qty REAL NOT NULL CHECK(qty <> 0),
+        kind TEXT NOT NULL CHECK(kind IN ('opening','receipt','sale','return','count','writeoff')),
+        invoice_id TEXT REFERENCES invoices(id) ON DELETE SET NULL,
+        note TEXT NOT NULL DEFAULT '',
+        created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS stock_movements_lookup ON stock_movements(warehouse_id, product_id, created_at);
+      CREATE INDEX IF NOT EXISTS stock_movements_invoice ON stock_movements(invoice_id);
+
+      -- Per-year counter for invoice numbers, so INV-2026-0007 cannot be issued twice even if two
+      -- managers save in the same second. The row is claimed in the transaction that writes the invoice.
+      CREATE TABLE IF NOT EXISTS invoice_series (
+        year INTEGER PRIMARY KEY, last_number INTEGER NOT NULL DEFAULT 0
+      );
       -- Field visits: a rep checks in at a customer, then checks out. The pair is the
       -- auditable record used by the manager timeline and the daily KPIs.
       CREATE TABLE IF NOT EXISTS visits (
@@ -252,6 +366,17 @@ export class Store {
       "ALTER TABLE visits ADD COLUMN customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL",
       "ALTER TABLE visits ADD COLUMN customer_linked_at INTEGER",
       "CREATE INDEX IF NOT EXISTS visits_customer ON visits(customer_id)",
+      // What a dashboard account is allowed to see: '' = manager (everything), 'sales' = the sales
+      // office, 'stock' = the warehouses only.
+      //
+      // This is a column and not a new value of users.role, and that is the whole point. role answers
+      // «which client may sign in» — 'admin' for the website, 'rep' for the phone — and it is
+      // compared against the X-Mandoub-Client hint, used to name the session cookie, and checked on
+      // every route. Adding values to it means rebuilding the table eleven others point at with
+      // ON DELETE CASCADE, just to change one CHECK clause, on a live production file, in order to
+      // express a permission that has nothing to do with which client you are. Scope is a separate
+      // question, so it is a separate column, and adding it is one safe ALTER.
+      "ALTER TABLE users ADD COLUMN scope TEXT NOT NULL DEFAULT ''",
     ]) { try { this.db.exec(sql); } catch {} }
     // An index added after the fact: SQLite rejects `CREATE UNIQUE INDEX` on a table that already
     // holds two rows with the same owner and name, and refusing to start is worse than the
@@ -282,6 +407,9 @@ export class Store {
     // Stillness justifications carry a GPS fix and a free-text reason, so they are covered by
     // the same retention window the privacy policy promises. They used to be kept forever.
     this.run('DELETE FROM idle_reports WHERE created_at < ?', cutoff);
+    // Invoices, their lines, the stock ledger, products and warehouses are NOT swept either, for a
+    // stronger reason than customers: this file is the company's money record. An invoice that quietly
+    // aged out of the database would leave a customer owing an amount nobody can any longer prove.
     // `customers` is deliberately NOT swept: it is master data, not a personal-activity log, and an
     // engineer whose whole customer list vanished after a year would find the register unreadable.
     // Their own erasure path deletes a customer list by deleting the account (ON DELETE CASCADE).
