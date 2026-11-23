@@ -43,9 +43,52 @@ export interface DailyReport {
   repName: string; repColor: string; visits: DailyVisit[];
 }
 export type VisitPurpose = 'visit' | 'order' | 'collection' | 'note' | 'issue' | 'other';
+/**
+ * One customer on this engineer's own list. The server scopes every read and write to the signed-in
+ * rep, so a phone can never see a colleague's customers.
+ */
+export interface Customer {
+  id: string;
+  repId: string;
+  name: string;
+  phone: string;
+  governorate: string;
+  district: string;
+  village: string;
+  notes: string;
+  lat: number | null;
+  lng: number | null;
+  stage: 'new' | 'following' | 'active' | 'dormant' | 'lost';
+  lostReason: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+  visitCount: number;
+  lastVisitAt: number | null;
+  openVisits: number;
+}
+export interface CustomerInput {
+  name: string;
+  phone: string;
+  governorate: string;
+  district: string;
+  village: string;
+  notes: string;
+  stage: Customer['stage'];
+  /** Required by the server when `stage` is `lost`. */
+  lostReason?: string;
+  /** Pinned from the visit that created him, so the route map can find him later. */
+  lat?: number | null;
+  lng?: number | null;
+}
+export const customerStageLabels: Record<Customer['stage'], string> = {
+  new: 'جديد', following: 'قيد المتابعة', active: 'عميل دائم', dormant: 'برّد', lost: 'مرفوض',
+};
 export interface VisitInput {
   id: string;
   customerName: string;
+  /** Present when the visit was booked from the engineer's own customer list. */
+  customerId?: string;
   governorate: string;
   district: string;
   village: string;

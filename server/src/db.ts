@@ -103,12 +103,42 @@ export class Store {
       CREATE INDEX IF NOT EXISTS daily_reports_date ON daily_reports(report_date);
       CREATE INDEX IF NOT EXISTS daily_reports_time ON daily_reports(created_at);
       CREATE INDEX IF NOT EXISTS daily_report_visits_report ON daily_report_visits(report_id, position);
+      -- Customers: the list each sales engineer owns and writes invoices against.
+      --
+      -- This is the first master-data table in the schema, and it exists because visits.customer_name
+      -- was free text: the same farm arrived as «مزرعة النور» and «النور», so nothing could be counted
+      -- per customer. Uniqueness is (owner, name) — two engineers may each sell to «الحاج محمد», and
+      -- one engineer may not create him twice. The unique index compares names case-insensitively,
+      -- because the difference between «Abu Ali» and «ABU ALI» was never a different farm.
+      --
+      -- lat/lng are the address the manager or the engineer pinned, and they are what later lets a
+      -- check-in be measured against where the customer actually is.
+      CREATE TABLE IF NOT EXISTS customers (
+        id TEXT PRIMARY KEY,
+        rep_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL DEFAULT '',
+        governorate TEXT NOT NULL DEFAULT '',
+        district TEXT NOT NULL DEFAULT '',
+        village TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        lat REAL, lng REAL,
+        stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','following','active','dormant','lost')),
+        lost_reason TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS customers_rep_name ON customers(rep_id, name COLLATE NOCASE);
+      CREATE INDEX IF NOT EXISTS customers_rep_active ON customers(rep_id, active);
       -- Field visits: a rep checks in at a customer, then checks out. The pair is the
       -- auditable record used by the manager timeline and the daily KPIs.
       CREATE TABLE IF NOT EXISTS visits (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         customer_name TEXT NOT NULL,
+        -- Set when the visit was booked from the engineer's customer list. The free-text name stays
+        -- for the row itself (a customer renamed later must not rewrite history).
+        customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
         governorate TEXT NOT NULL DEFAULT '',
         district TEXT NOT NULL DEFAULT '',
         village TEXT NOT NULL DEFAULT '',
@@ -219,7 +249,15 @@ export class Store {
       "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE visits ADD COLUMN recorded_offline INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE visits ADD COLUMN customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL",
+      "ALTER TABLE visits ADD COLUMN customer_linked_at INTEGER",
+      "CREATE INDEX IF NOT EXISTS visits_customer ON visits(customer_id)",
     ]) { try { this.db.exec(sql); } catch {} }
+    // An index added after the fact: SQLite rejects `CREATE UNIQUE INDEX` on a table that already
+    // holds two rows with the same owner and name, and refusing to start is worse than the
+    // duplicates a manager can see and merge himself.
+    try { this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS customers_rep_name ON customers(rep_id, name COLLATE NOCASE)'); }
+    catch (error) { console.warn('[db] duplicate customer names exist; open the customers screen and merge them:', (error as Error).message); }
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
   all(sql: string, ...params: any[]): Row[] { return this.db.prepare(sql).all(...params) as Row[]; }
@@ -244,6 +282,9 @@ export class Store {
     // Stillness justifications carry a GPS fix and a free-text reason, so they are covered by
     // the same retention window the privacy policy promises. They used to be kept forever.
     this.run('DELETE FROM idle_reports WHERE created_at < ?', cutoff);
+    // `customers` is deliberately NOT swept: it is master data, not a personal-activity log, and an
+    // engineer whose whole customer list vanished after a year would find the register unreadable.
+    // Their own erasure path deletes a customer list by deleting the account (ON DELETE CASCADE).
     // An app that is killed (or a phone that dies) never sends "stop shift", so a shift could
     // stay open for days: the manager saw an engineer "in the field" at 3 a.m. and the phone
     // kept re-attaching to a shift from last week. A shift with no fixes for a day is over.

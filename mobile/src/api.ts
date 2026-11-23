@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { Customer, CustomerInput, DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -115,6 +115,21 @@ export const disablePush = (deviceId: string) =>
   request<{ ok: true }>('/api/push/token', { method: 'DELETE', body: JSON.stringify({ deviceId }) });
 export const reportMockLocation = (shiftId: string, deviceId: string) =>
   post<{ ok: true; duplicate?: boolean }>('/api/security/mock-location', { shiftId, deviceId });
+
+/**
+ * The engineer's own customer list, newest visit first. `q` is a server-side search so a list of a
+ * few hundred names stays usable on a phone with a slow connection.
+ */
+export const myCustomers = (q?: string) =>
+  get<{ customers: Customer[] }>(`/api/customers${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+/**
+ * Adding a customer is deliberately not queued: a name typed in a field with no signal can wait in
+ * the outbox, but the visit that references it cannot be given a customer id the server has not
+ * accepted yet. The sheet keeps the form open and says nothing was saved.
+ */
+export const createCustomer = (data: CustomerInput) => post<{ customer: Customer }>('/api/customers', data);
+export const updateCustomer = (id: string, data: Partial<CustomerInput> & { stage?: Customer['stage'] }) =>
+  request<{ customer: Customer }>(`/api/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
 
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);

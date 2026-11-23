@@ -101,6 +101,12 @@ const startShiftSchema = z.object({
 const newVisit = z.object({
   id: z.uuid(),
   customerName: z.string().trim().min(2, 'اسم العميل / المزرعة مطلوب.').max(120),
+  /**
+   * Set by a build that books the visit from the engineer's customer list. The name stays required
+   * (an older app must keep working), but the stored row takes the master data's name and address so
+   * one farm is never counted as two.
+   */
+  customerId: z.uuid().optional(),
   governorate: z.string().trim().max(80).default(''),
   district: z.string().trim().max(80).default(''),
   village: z.string().trim().max(120).default(''),
@@ -401,7 +407,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   // A visit the system closed still shows the automatic text until the engineer writes the real
   // result. That comparison is the only thing standing between him and a lost record.
   const PENDING_RESULT_SQL = `(v.auto_closed=1 AND v.outcome='${AUTO_CLOSED_OUTCOME.replace(/'/g, "''")}')`;
-  const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
+  const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.customer_id AS customerId, v.governorate, v.district,
     v.village, v.phone, v.purpose, v.notes, v.outcome, v.status, v.checked_in_at AS checkedInAt,
     v.checked_out_at AS checkedOutAt, v.duration_seconds AS durationSeconds,
     v.auto_closed AS autoClosed, v.recorded_offline AS recordedOffline, ${PENDING_RESULT_SQL} AS pendingResult,
@@ -1025,6 +1031,194 @@ export function createApp(overrides: Partial<Config> = {}) {
     broadcast();
     res.json({ accepted, duplicates });
   });
+  /* ── Customers: the list each engineer owns, and the register every visit hangs on ─────────
+     Until now a customer was a free-text field on a visit, so «مزرعة النور» and «النور» were two
+     different people to every count and every export, and there was no such thing as «عملاء
+     المهندس ده». This table is the master data: the engineer fills his own list, the manager can
+     see and move it, and everything sales-shaped (visits today, invoices next) points at it. */
+  const CUSTOMER_STAGES = ['new', 'following', 'active', 'dormant', 'lost'] as const;
+  type CustomerStage = (typeof CUSTOMER_STAGES)[number];
+  const customerFields = z.object({
+    name: z.string().trim().min(2, 'اسم العميل / المزرعة مطلوب.').max(120),
+    phone: z.string().trim().max(30).default(''),
+    governorate: z.string().trim().max(80).default(''),
+    district: z.string().trim().max(80).default(''),
+    village: z.string().trim().max(120).default(''),
+    notes: z.string().trim().max(1000).default(''),
+    stage: z.enum(CUSTOMER_STAGES).default('new'),
+    lostReason: z.string().trim().max(300).default(''),
+    /** The address, when it was pinned on the map. Both halves or neither: a lone latitude is a bug. */
+    lat: z.number().finite().min(-90).max(90).nullish(),
+    lng: z.number().finite().min(-180).max(180).nullish(),
+  });
+  // `repId` only means anything on create: an engineer's own POST is signed for one list, a manager
+  // has to say which engineer is getting the customer. It is added before `.strict()`, not after —
+  // a strict flag frozen on the base object rejects the keys the extension brings with it.
+  const newCustomer = customerFields.extend({ repId: z.uuid().optional() }).strict();
+  const patchCustomer = customerFields.partial().extend({ active: z.boolean().optional() }).strict();
+  const addressError = (data: { lat?: number | null | undefined; lng?: number | null | undefined }) =>
+    (data.lat == null) !== (data.lng == null) ? 'لازم خط الطول والعرض مع بعض.' : '';
+
+  const CUSTOMER_SELECT = `SELECT c.*, u.name AS repName, u.color AS repColor,
+      (SELECT COUNT(*) FROM visits v WHERE v.customer_id=c.id) AS visitCount,
+      (SELECT MAX(v.checked_in_at) FROM visits v WHERE v.customer_id=c.id) AS lastVisitAt,
+      (SELECT COUNT(*) FROM visits v WHERE v.customer_id=c.id AND v.status='open') AS openVisits
+    FROM customers c JOIN users u ON u.id=c.rep_id`;
+  const asCustomer = (row: Record<string, any> | undefined) => row ? ({
+    id: row.id, repId: row.rep_id, name: row.name, phone: row.phone,
+    governorate: row.governorate, district: row.district, village: row.village, notes: row.notes,
+    lat: row.lat ?? null, lng: row.lng ?? null,
+    stage: row.stage, lostReason: row.lost_reason, active: !!row.active,
+    createdAt: row.created_at, updatedAt: row.updated_at,
+    repName: row.repName, repColor: row.repColor,
+    visitCount: Number(row.visitCount || 0), lastVisitAt: row.lastVisitAt ?? null, openVisits: Number(row.openVisits || 0),
+  }) : undefined;
+
+  app.get('/api/customers', auth, (req, res) => {
+    const isAdmin = res.locals.user.role === 'admin';
+    const where: string[] = []; const params: any[] = [];
+    // An engineer never queries his way into a colleague's list; a manager can look at anyone.
+    if (!isAdmin) { where.push('c.rep_id=?'); params.push(res.locals.user.id); }
+    else if (typeof req.query.repId === 'string' && req.query.repId) { where.push('c.rep_id=?'); params.push(req.query.repId); }
+    if (!isAdmin || req.query.includeInactive !== '1') where.push('c.active=1');
+    const stage = CUSTOMER_STAGES.includes(String(req.query.stage) as CustomerStage) ? String(req.query.stage) : '';
+    if (stage) { where.push('c.stage=?'); params.push(stage); }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
+    if (q) { where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.village LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 300));
+    const rows = store.all(`${CUSTOMER_SELECT} WHERE ${where.length ? where.join(' AND ') : '1=1'}
+      ORDER BY c.name COLLATE NOCASE LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ customers: rows.map(row => asCustomer(row)!) });
+  });
+
+  app.post('/api/customers', auth, (req, res) => {
+    const parsed = newCustomer.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    if (addressError(parsed.data)) { res.status(400).json({ error: addressError(parsed.data), code: 'ADDRESS_INCOMPLETE' }); return; }
+    const isAdmin = res.locals.user.role === 'admin';
+    // A manager creating a customer has to say who owns him; an engineer always means himself.
+    const repId = isAdmin ? String(parsed.data.repId || '') : String(res.locals.user.id);
+    if (isAdmin && !repId) { res.status(400).json({ error: 'اختار المهندس اللي العميل ده بتاعه.', code: 'REP_REQUIRED' }); return; }
+    const owner = store.get("SELECT id, name FROM users WHERE id=? AND role='rep' AND active=1", repId);
+    if (!owner) { res.status(404).json({ error: 'المهندس غير موجود أو حسابه متوقف.' }); return; }
+    const now = Date.now();
+    const id = randomUUID();
+    try {
+      store.run(`INSERT INTO customers(id,rep_id,name,phone,governorate,district,village,notes,lat,lng,stage,lost_reason,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      id, repId, parsed.data.name, parsed.data.phone, parsed.data.governorate, parsed.data.district, parsed.data.village,
+      parsed.data.notes, parsed.data.lat ?? null, parsed.data.lng ?? null, parsed.data.stage, parsed.data.lostReason, now, now);
+    } catch (error) {
+      // The unique index is the whole point: a duplicated customer is a duplicated sales figure.
+      if (String((error as Error).message).includes('UNIQUE')) {
+        res.status(409).json({
+          error: `«${parsed.data.name}» موجود في قايمتة بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`,
+          code: 'CUSTOMER_EXISTS',
+        });
+        return;
+      }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'customer.create', { customerId: id, repId });
+    invalidateKpis(); broadcast();
+    res.status(201).json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, id)) });
+  });
+
+  /** The engineer owns his list; a manager owns all of them. Nobody edits a colleague's customer. */
+  function loadCustomerForWrite(req: express.Request, res: express.Response) {
+    const row = store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, String(req.params.id)) as Record<string, any> | undefined;
+    if (!row) { res.status(404).json({ error: 'العميل غير موجود.', code: 'CUSTOMER_NOT_FOUND' }); return undefined; }
+    if (res.locals.user.role !== 'admin' && String(row.rep_id) !== String(res.locals.user.id)) {
+      res.status(403).json({ error: 'تقدر تعدّل عملاءك إنت بس.' }); return undefined;
+    }
+    return row;
+  }
+
+  app.patch('/api/customers/:id', auth, (req, res) => {
+    const current = loadCustomerForWrite(req, res);
+    if (!current) return;
+    const parsed = patchCustomer.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    const merged = { ...current, ...parsed.data };
+    if (addressError(parsed.data)) { res.status(400).json({ error: addressError(parsed.data), code: 'ADDRESS_INCOMPLETE' }); return; }
+    // «مرفوض» without a reason is how a lost customer becomes nobody's mistake.
+    if (parsed.data.stage === 'lost' && !String(parsed.data.lostReason ?? current.lost_reason ?? '').trim()) {
+      res.status(400).json({ error: 'اكتب سبب رفض العميل قبل ما تقفله.', code: 'LOST_REASON_REQUIRED' }); return;
+    }
+    try {
+      store.run(`UPDATE customers SET name=?, phone=?, governorate=?, district=?, village=?, notes=?, lat=?, lng=?, stage=?, lost_reason=?, active=?, updated_at=?
+        WHERE id=?`,
+      String(merged.name).trim(), merged.phone ?? '', merged.governorate ?? '', merged.district ?? '', merged.village ?? '',
+      merged.notes ?? '', merged.lat ?? null, merged.lng ?? null, merged.stage, merged.lostReason ?? '',
+      parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0), Date.now(), current.id);
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE')) {
+        res.status(409).json({ error: `«${String(merged.name).trim()}» موجود في قايمتة بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
+        return;
+      }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'customer.update', { customerId: current.id, fields: Object.keys(parsed.data) });
+    invalidateKpis(); broadcast();
+    res.json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
+  });
+
+  /**
+   * Move an engineer's customers to another engineer — the other half of stopping an account.
+   *
+   * Without this, «the man travelled» means the list and its history are orphaned on a closed
+   * login. The visits are left attached to the customer row, so the new owner inherits the whole
+   * relationship, and the old owner keeps credit for the visits he made (they stay his rows).
+   */
+  app.post('/api/customers/:id/assign', adminOnly, (req, res) => {
+    const parsed = z.object({ repId: z.uuid() }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'اختار المهندس الجديد.' }); return; }
+    const customer = store.get('SELECT id, rep_id AS repId, name FROM customers WHERE id=?', String(req.params.id)) as { id: string; repId: string; name: string } | undefined;
+    if (!customer) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
+    const owner = store.get("SELECT id, name FROM users WHERE id=? AND role='rep' AND active=1", parsed.data.repId);
+    if (!owner) { res.status(409).json({ error: 'المهندس الجديد غير موجود أو حسابه متوقف.' }); return; }
+    if (String(customer.repId) === String(owner.id)) { res.json({ ok: true, unchanged: true }); return; }
+    // A name collision in the new owner's list is the one case the unique index will refuse, and
+    // it has to be said in those words — not as a database error.
+    if (store.get('SELECT id FROM customers WHERE rep_id=? AND name COLLATE NOCASE=?', owner.id, customer.name)) {
+      res.status(409).json({ error: `«${customer.name}» موجود عند ${owner.name} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
+    }
+    store.run('UPDATE customers SET rep_id=?, updated_at=? WHERE id=?', owner.id, Date.now(), customer.id);
+    store.audit(res.locals.user.id, 'customer.assign', { customerId: customer.id, from: customer.repId, to: owner.id });
+    invalidateKpis(); broadcast();
+    res.json({ ok: true, customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, customer.id)) });
+  });
+
+  /**
+   * Remove a customer. Only when nothing was ever booked against him: the moment a visit points at
+   * the row, deleting it would delete the only record that the customer exists, and the manager's
+   * register would quietly shrink. Stop him (`active=0`) instead — he leaves the lists and stays
+   * in the history.
+   */
+  app.delete('/api/customers/:id', adminOnly, (req, res) => {
+    const customer = store.get('SELECT id, name, rep_id AS repId FROM customers WHERE id=?', String(req.params.id)) as { id: string; name: string; repId: string } | undefined;
+    if (!customer) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
+    const linked = Number(store.get('SELECT COUNT(*) AS c FROM visits WHERE customer_id=?', customer.id)?.c || 0);
+    if (linked) {
+      res.status(409).json({
+        error: `«${customer.name}» عليه ${linked} زيارة مسجلة — وقّفه بدل الحذف، والسجل يفضل.`,
+        code: 'CUSTOMER_HAS_VISITS', linked,
+      });
+      return;
+    }
+    store.run('DELETE FROM customers WHERE id=?', customer.id);
+    store.audit(res.locals.user.id, 'customer.delete', { customerId: customer.id, repId: customer.repId });
+    invalidateKpis(); broadcast();
+    res.json({ ok: true });
+  });
+
   // ---- Field visits: check in / check out around a customer with GPS proof ----
   app.post('/api/visits/check-in', repOnly, (req, res) => {
     const parsed = newVisit.safeParse(req.body);
@@ -1094,8 +1288,20 @@ export function createApp(overrides: Partial<Config> = {}) {
      * really happened.
      */
     const closedOnArrival = Boolean(open);
-    store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
+    // A customer id is only honoured when the row belongs to this engineer: a visit booked against
+    // somebody else's customer would move another man's sales figure, so it is refused outright.
+    let customerId: string | null = null;
+    if (data.customerId) {
+      const owned = store.get('SELECT id, name FROM customers WHERE id=? AND rep_id=?', data.customerId, res.locals.user.id);
+      if (owned) { customerId = String(owned.id); data.customerName = String(owned.name); }
+      // A live attempt to book against somebody else's customer is refused outright: it would move
+      // another man's sales figure. A visit recorded in a field with no signal is different — it was
+      // lawful when it happened, and the customer may have moved since. Losing the link beats losing
+      // the visit, so it is stored unlinked and the name the engineer typed stands.
+      else if (!offline) { res.status(409).json({ error: 'العميل ده مش في قايمتك — اختاره من قايمتك إنت.', code: 'CUSTOMER_NOT_OWNED' }); return; }
+    }
+    store.run(`INSERT INTO visits(id,user_id,customer_name,customer_id,customer_linked_at,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, customerId, customerId ? now : null, data.governorate,
       data.district, data.village, data.phone, data.purpose, data.notes,
       closedOnArrival ? 'closed' : 'open', checkedInAt, closedOnArrival ? checkedInAt : null,
       closedOnArrival ? 0 : null, closedOnArrival ? 1 : 0, offline ? 1 : 0,

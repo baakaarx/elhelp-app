@@ -246,3 +246,31 @@ export interface RepImpact {
   /** True while he has an open shift on a phone — deleting closes it. */
   trackingNow: boolean;
 }
+
+/**
+ * One customer on an engineer's list (`GET /api/customers`). The visit counters are computed by the
+ * server, not by the browser, so the number here and the number in the monthly register cannot
+ * disagree while somebody is looking at both.
+ */
+export interface Customer {
+  id: string;
+  repId: string;
+  name: string;
+  phone: string;
+  governorate: string;
+  district: string;
+  village: string;
+  notes: string;
+  lat: number | null;
+  lng: number | null;
+  stage: 'new' | 'following' | 'active' | 'dormant' | 'lost';
+  lostReason: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+  repName: string;
+  repColor: string;
+  visitCount: number;
+  lastVisitAt: number | null;
+  openVisits: number;
+}
