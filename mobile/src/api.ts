@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { CatalogueProduct, Customer, CustomerInput, DailyReportInput, GeoPoint, InvoiceInput, MyInvoice, ReportInput, StockReport, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { CatalogueProduct, Customer, CustomerInput, DailyReportInput, GeoPoint, InvoiceInput, MyInvoice, MyTarget, ReportInput, StockReport, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -162,6 +162,16 @@ export const myStockReport = (params: { from?: number; to?: number; warehouseId?
 /** His own unpaid rows only; anything with money on it is the office's to undo. */
 export const voidMyInvoice = (id: string, reason: string) =>
   post<{ ok: true; restored: number }>(`/api/my/invoices/${id}/void`, { reason });
+
+/**
+ * Cash he took at the door. Positive amounts only, and only against his own unpaid bills: a mistake is
+ * corrected by the office, because an undo that can be queued and replayed twice is how a drawer stops
+ * matching a ledger. Needs signal — there is deliberately no offline queue for money.
+ */
+export const payMyInvoice = (id: string, amount: number, note?: string) =>
+  post<{ invoice: MyInvoice; collected: number }>(`/api/my/invoices/${id}/pay`, { amount, ...(note ? { note } : {}) });
+/** His month against the plan the manager set. `month` is 'YYYY-MM'; the server defaults to the current one. */
+export const myTargets = (month?: string) => get<MyTarget>(`/api/my/targets${month ? `?month=${encodeURIComponent(month)}` : ''}`);
 
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);

@@ -208,9 +208,29 @@ export interface KpiRow {
   collected: number;
   dailyReports: number;
   daysWithData: number;
+  /** The money columns, present when the window has sales data (every window does). */
+  invoices?: number;
+  revenue?: number;
+  collected2?: number;
+  outstanding?: number;
+  stockShortInvoices?: number;
+  topProduct?: string;
+  topProductQty?: number;
+  topProductRevenue?: number;
+  topProductUnit?: string;
+  target?: number;
+  targetInvoices?: number;
+  targetProgress?: number | null;
   lastFixAt: number | null;
 }
-export interface KpiResponse { from: string; to: string; timezone: string; rows: KpiRow[] }
+export interface KpiResponse {
+  from: string;
+  to: string;
+  timezone: string;
+  /** The register for the window: what was sold, what was banked, and the company plan. */
+  company?: { sales: { invoices: number; revenue: number; collected: number; outstanding: number; stockShort: number; topProduct: { name: string; qty: number; revenue: number; unit: string } | null }; month: string; target: number };
+  rows: KpiRow[];
+}
 export interface RepSummary {
   date: string;
   timezone: string;
@@ -430,4 +450,48 @@ export interface StockReport {
     id: string; warehouseId: string; warehouseName: string; productId: string; productName: string; unit: string;
     qty: number; kind: StockMovement['kind']; note: string; createdAt: number; by: string; invoiceNumber: string | null; value?: number;
   }[];
+}
+
+/** التحصيل: the event register, grouped by whose money it is and by who typed it. */
+export interface CollectionReport {
+  from: number;
+  to: number;
+  totals: { collected: number; entries: number; customers: number };
+  /** All-time: what the invoices claim was paid, against what the register holds. */
+  lifetime?: { paidOnInvoices: number; registered: number; difference: number };
+  byRep: { repId: string | null; repName: string; repColor: string; collected: number; entries: number; fromField: number; fromOffice: number; outstanding: number; openInvoices: number }[];
+  byCustomer: { customerId: string | null; customerName: string; collected: number; entries: number; lastAt: number | null }[];
+  entries: {
+    id: string; amount: number; source: 'office' | 'field'; note: string; createdAt: number;
+    repId: string | null; repName: string; recordedBy: string; customerId: string | null; customerName: string;
+    invoiceNumber: string | null; invoiceTotal: number | null; invoicePaid: number | null; invoiceStatus: string | null;
+  }[];
+}
+
+/** الأهداف الشهرية: one plan per engineer (and one for the company), plus the live progress. */
+export interface TargetRow {
+  month: string;
+  repId: string | null;
+  repName: string;
+  repColor: string;
+  repActive: boolean;
+  target: number;
+  invoiceTarget: number;
+  note: string;
+  revenue: number;
+  invoices: number;
+  collected: number;
+  remaining: number;
+  progress: number | null;
+  updatedBy: string;
+  updatedAt: number | null;
+}
+export interface TargetsResponse {
+  month: string;
+  from: string;
+  to: string;
+  isCurrentMonth: boolean;
+  company: TargetRow;
+  reps: TargetRow[];
+  retired: TargetRow[];
 }

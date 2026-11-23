@@ -244,6 +244,53 @@ export class Store {
       CREATE TABLE IF NOT EXISTS invoice_series (
         year INTEGER PRIMARY KEY, last_number INTEGER NOT NULL DEFAULT 0
       );
+      -- Every recorded collection, in one row per recording. It is an event log and not a column on
+      -- the invoice, because an invoice can be paid in three visits by two different hands: the office
+      -- typing what it banked, and the engineer typing what he took in front of the customer. The row
+      -- names both — rep_id is the engineer whose money it is (whose name the collection report is
+      -- grouped by), recorded_by is who typed it — so the report can show both without inventing a
+      -- second truth about the same cash.
+      CREATE TABLE IF NOT EXISTS collection_events (
+        id TEXT PRIMARY KEY,
+        invoice_id TEXT REFERENCES invoices(id) ON DELETE SET NULL,
+        customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
+        rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        recorded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        -- The change in what was paid on that invoice. It can be negative: a correction typed as a
+        -- negative collection is honest, and hiding it is how a report stops matching the drawer.
+        amount REAL NOT NULL,
+        source TEXT NOT NULL DEFAULT 'office',
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS collection_events_window ON collection_events(created_at);
+      CREATE INDEX IF NOT EXISTS collection_events_rep ON collection_events(rep_id, created_at);
+      -- Upgrading a database that already kept money in paid_amount: the register starts empty, and a
+      -- report that reads only the register would say the month collected nothing while the invoices
+      -- say otherwise. So the cash already on the books is written once, as an entry per invoice dated
+      -- on the invoice's own day, marked as what it is. An empty register (a fresh install) inserts
+      -- nothing, and after this the register is never empty again, so it never runs twice.
+      INSERT INTO collection_events(id, invoice_id, customer_id, rep_id, recorded_by, amount, source, note, created_at)
+      SELECT lower(hex(randomblob(16))), i.id, i.customer_id, i.rep_id, i.created_by, i.paid_amount, 'office',
+             'من الفواتير: مسدد قبل ما سجل التحصيل يتفعّل', i.invoice_date
+      FROM invoices i
+      WHERE i.paid_amount > 0 AND NOT EXISTS (SELECT 1 FROM collection_events LIMIT 1);
+      -- Monthly targets: «كل مهندس هدفه كام في الشهر»، وهدف للشركة كلها. month is a local
+      -- YYYY-MM, so the row means the same month to the manager and to the phone. A rep_id of NULL is
+      -- the company/office target, which is why the unique key has to spell out the NULL case: SQLite
+      -- treats NULLs as distinct in a UNIQUE index, and without this a manager could save the company
+      -- target twice and the progress bar would read the first one.
+      CREATE TABLE IF NOT EXISTS sales_targets (
+        id TEXT PRIMARY KEY,
+        month TEXT NOT NULL,
+        rep_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        revenue REAL NOT NULL DEFAULT 0 CHECK(revenue >= 0),
+        invoices INTEGER NOT NULL DEFAULT 0 CHECK(invoices >= 0),
+        note TEXT NOT NULL DEFAULT '',
+        updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS sales_targets_month_rep ON sales_targets(month, IFNULL(rep_id, ''));
       -- Field visits: a rep checks in at a customer, then checks out. The pair is the
       -- auditable record used by the manager timeline and the daily KPIs.
       CREATE TABLE IF NOT EXISTS visits (

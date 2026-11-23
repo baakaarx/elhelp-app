@@ -82,6 +82,7 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
         <div className="card stat"><span className="muted small">تقارير الميدان</span><strong>{formatNumber(totals.reports)}</strong><small className="muted">ميداني</small></div>
         <div className="card stat"><span className="muted small">إجمالي التحصيل</span><strong>{formatNumber(totals.collected)}</strong><small className="muted">ج.م</small></div>
       </div>
+      <SalesBoard data={data} from={from} to={to} loading={loading} />
       <div className="panel">
         <h3 className="panel-title">مقارنة الفريق · {from} ← {to}</h3>
         {rows.length === 0 && !loading ? <p className="empty">لا توجد بيانات في هذه الفترة.</p> : (
@@ -112,6 +113,102 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
         </p>
       </div>
     </section>
+  );
+}
+
+/**
+ * «كل مهندس بيبيع بكام» — the money half of the same window.
+ *
+ * It reads the very rows the visit table reads, because `/api/kpis` already joins the register onto
+ * each engineer: revenue and invoices from the invoices of the window, the target from the month the
+ * window is opened in, and the best seller from the invoice lines. Nothing here is stored twice — a
+ * percentage written next to a target is a number that goes stale the moment the office corrects an
+ * invoice at eleven at night.
+ *
+ * Two «collected» numbers appear on this page and they are deliberately not the same. The column in
+ * the table below comes from the invoices (what was banked against bills of this window); the one in
+ * the field table comes from visits and daily reports marked as تحصيل (what the engineer says he
+ * picked up). The gap between them is the reconciliation, not a bug.
+ */
+function SalesBoard({ data, from, to, loading }: { data: KpiResponse | null; from: string; to: string; loading: boolean }) {
+  const rows = useMemo(() => [...(data?.rows ?? [])]
+    .filter(row => (row.invoices ?? 0) > 0 || (row.revenue ?? 0) > 0 || (row.target ?? 0) > 0)
+    .sort((a, b) => (b.revenue ?? 0) - (a.revenue ?? 0) || (b.collected2 ?? 0) - (a.collected2 ?? 0)), [data]);
+  const company = data?.company;
+  const target = company?.target ?? 0;
+  const revenue = company?.sales.revenue ?? 0;
+  const progress = target > 0 ? Math.round((revenue / target) * 100) : null;
+  const money = (value: number) => `${formatNumber(value)} ج.م`;
+
+  return (
+    <div className="panel">
+      <h3 className="panel-title">كل مهندس بيبيع بكام · {from} ← {to}</h3>
+      {company && (
+        <div className="stats">
+          <div className="stat"><span className="label">البيع في الفترة</span><strong>{money(company.sales.revenue)}</strong><small>{formatNumber(company.sales.invoices)} فاتورة</small></div>
+          <div className="stat"><span className="label">هدف الشركة</span><strong>{target ? money(target) : '—'}</strong><small>{progress === null ? 'لا يوجد هدف مسجل للشهر اللي النطاق فيه' : `${formatNumber(progress)}٪ تحقق`}</small></div>
+          <div className="stat"><span className="label">المسدد على الفواتير</span><strong>{money(company.sales.collected)}</strong><small>{money(company.sales.outstanding)} لسه على العملاء</small></div>
+          <div className="stat"><span className="label">الأكثر مبيعًا</span><strong>{company.sales.topProduct?.name || '—'}</strong>
+            <small>{company.sales.topProduct ? `${formatNumber(company.sales.topProduct.qty)} ${company.sales.topProduct.unit} · ${money(company.sales.topProduct.revenue)} · ${formatNumber(company.sales.stockShort)} فاتورة نقصت من المخزن` : 'مافيش بيع في الفترة'}</small></div>
+        </div>
+      )}
+      {rows.length === 0 && !loading ? <p className="empty">مافيش فاتورة ولا هدف في الفترة دي.</p> : (
+        <div className="kpi-table-wrap">
+          <table className="kpi-table">
+            <thead>
+              <tr>
+                <th>المهندس</th><th>البيع (ج.م)</th><th>فواتير</th><th>نسبة الهدف</th>
+                <th>مسدد (ج.م)</th><th>باقي على العملاء</th><th>الأكثر مبيعًا له</th><th>نقص مخزن</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => {
+                const rowTarget = row.target ?? 0;
+                return (
+                  <tr key={row.repId}>
+                    <td><span className="dot" style={{ background: row.color }} aria-hidden="true" /> {row.name}{row.active ? null : <em className="muted small"> · موقوف</em>}</td>
+                    <td className="mono"><strong>{money(row.revenue ?? 0)}</strong></td>
+                    <td className="mono">{formatNumber(row.invoices ?? 0)}{row.targetInvoices ? ` / ${formatNumber(row.targetInvoices)}` : ''}</td>
+                    <td>
+                      {row.targetProgress === null || row.targetProgress === undefined ? (
+                        <span className="muted small">{rowTarget ? '—' : 'مافيش هدف'}</span>
+                      ) : (
+                        <span className={`bar-cell ${row.targetProgress >= 100 ? 'ok-text' : row.targetProgress >= 60 ? '' : 'visit-marks'}`}>
+                          <span className="bar" role="progressbar" aria-valuenow={row.targetProgress} aria-valuemin={0} aria-valuemax={100}>
+                            <i style={{ width: `${Math.min(100, row.targetProgress)}%` }} />
+                          </span>
+                          <span className="mono">{formatNumber(row.targetProgress)}٪</span>
+                        </span>
+                      )}
+                    </td>
+                    <td className="mono">{money(row.collected2 ?? 0)}</td>
+                    <td className={(row.outstanding ?? 0) > 0 ? 'visit-marks' : 'muted small'}>{money(row.outstanding ?? 0)}</td>
+                    <td>{row.topProduct ? <span>{row.topProduct} <small className="muted">{formatNumber(row.topProductQty ?? 0)} {row.topProductUnit} · {money(row.topProductRevenue ?? 0)}</small></span> : <span className="muted small">—</span>}</td>
+                    <td className={(row.stockShortInvoices ?? 0) > 0 ? 'visit-marks' : 'muted small'}>{formatNumber(row.stockShortInvoices ?? 0)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>الإجمالي</td><td className="mono">{money(revenue)}</td>
+                <td className="mono">{formatNumber(company?.sales.invoices ?? 0)}</td>
+                <td className="mono">{progress === null ? '—' : `${formatNumber(progress)}٪`}</td>
+                <td className="mono">{money(company?.sales.collected ?? 0)}</td>
+                <td className="mono">{money(company?.sales.outstanding ?? 0)}</td>
+                <td className="muted small">{company?.sales.topProduct?.name || '—'}</td>
+                <td className="mono">{formatNumber(company?.sales.stockShort ?? 0)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+      <p className="muted small" style={{ marginTop: 10 }}>
+        البيع محسوب من الفواتير غير الملغاة بتاريخ الفاتورة جوه النطاق، والمسدد هو اللي على الفواتير دي نفسها —
+        يعني فلوس استلمها المكتب على فاتورة قديمة بتظهر تحت الشهر اللي اتسدد فيه، مش شهر الفاتورة.
+        «نسبة الهدف» بتقارن بهدف الشهر: نفس الشهر لو النطاق جوه شهر واحد، وشهر آخر يوم في النطاق لو عدّى أكتر من شهر — والتفصيل الشهري الدقيق في تبويب الأهداف.
+      </p>
+    </div>
   );
 }
 

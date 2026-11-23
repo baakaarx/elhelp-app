@@ -175,6 +175,13 @@ export interface MyInvoiceLine {
   unitPrice: number;
   lineTotal: number;
 }
+/** What the manager set for this month, and how far the engineer has got against it. Read-only. */
+export interface MyTarget {
+  month: string;
+  target: { revenue: number; invoices: number; note: string; updatedAt: number | null; revenueProgress: number | null; invoicesProgress: number | null } | null;
+  sold: { invoices: number; revenue: number; collected: number };
+  daysLeft: number;
+}
 export interface MyInvoice {
   id: string;
   number: string | null;

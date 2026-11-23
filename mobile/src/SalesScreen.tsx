@@ -28,12 +28,13 @@ export const moneyText = (value: number) => `${ARABIC.format(Math.round(Number(v
 export const qtyText = (qty: number, unit: string) => `${ARABIC.format(qty)} ${unit}`;
 
 export default function SalesScreen({ customerId, ownerId }: { customerId?: string; ownerId?: string }) {
-  const { invoices, products, outstanding, loading, error, unsupported, refresh, pendingInvoices, submit, cancel } = useSales({ customerId });
+  const { invoices, products, outstanding, loading, error, unsupported, refresh, pendingInvoices, submit, cancel, pay, target } = useSales({ customerId });
   const [pane, setPane] = useState<Pane>('invoices');
   const [query, setQuery] = useState('');
   const [writing, setWriting] = useState(false);
   const [canceling, setCanceling] = useState<MyInvoice | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  const [paying, setPaying] = useState<MyInvoice | null>(null);
   const [sheetMessage, setSheetMessage] = useState('');
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
 
@@ -111,6 +112,12 @@ export default function SalesScreen({ customerId, ownerId }: { customerId?: stri
           <Stat label="لسه على العملاء" value={moneyText(outstanding)} tone="dark" />
         </View>
 
+        {/* الهدف بيقرا من السيرفر كل مرة، مش من رقم اتخزن على الهاتف: رقم ميت على شاشة الموبايل
+            بيفتح مشاكرة مع المكتب. */}
+        {!customerId && target?.target ? (
+          <TargetStrip sold={target.sold} target={target.target} daysLeft={target.daysLeft} month={target.month} />
+        ) : null}
+
         {pane === 'invoices' ? (
           invoices.length === 0 ? (
             <Empty title="مافيش فواتير في الشهرين دول" hint="اكتب فاتورة جديدة من الزر فوق — أو استنى المكتب يسجّلها باسمك." />
@@ -139,6 +146,9 @@ export default function SalesScreen({ customerId, ownerId }: { customerId?: stri
                   <Text style={styles.totalValue}>{moneyText(invoice.total)}</Text>
                 </View>
                 {due > 0 && <Text style={styles.due}>لسه عليه {moneyText(due)}</Text>}
+                {due > 0 ? (
+                  <Button label="سجّل تحصيل" variant="ghost" size="sm" onPress={() => setPaying(invoice)} />
+                ) : null}
                 {invoice.stockShort && <Text style={styles.short}>المخزن كان عاجز وقت الفاتورة — الكمية اتسجلت فوق المتاح.</Text>}
                 {invoice.note ? <Body muted>{invoice.note}</Body> : null}
                 {/* Only a sale with nothing collected on it, typed by him, can be taken back here. */}
@@ -187,6 +197,16 @@ export default function SalesScreen({ customerId, ownerId }: { customerId?: stri
         </Body>
       </ScrollView>
 
+      <PaySheet
+        invoice={paying}
+        onClose={() => setPaying(null)}
+        onPay={async (amount, note) => {
+          if (!paying) return null;
+          const message = await pay(paying.id, amount, note);
+          if (!message) setPaying(null);
+          return message;
+        }}
+      />
       <InvoiceSheet
         visible={writing}
         products={products}
@@ -217,6 +237,81 @@ export default function SalesScreen({ customerId, ownerId }: { customerId?: stri
         />
       </Sheet>
     </View>
+  );
+}
+
+/** The month against the plan the manager set — progress is computed on the server, never here. */
+function TargetStrip({ sold, target, daysLeft, month }: {
+  sold: { invoices: number; revenue: number };
+  target: { revenue: number; invoices: number; revenueProgress: number | null; invoicesProgress: number | null; note: string };
+  daysLeft: number;
+  month: string;
+}) {
+  const percent = Math.max(0, Math.min(100, target.revenueProgress ?? 0));
+  return (
+    <View style={styles.target}>
+      <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <Text style={styles.targetTitle}>هدف {month}</Text>
+        <Text style={styles.targetPct}>{ARABIC.format(target.revenueProgress ?? 0)}٪</Text>
+      </Row>
+      <View style={styles.bar}>
+        <View style={[styles.barFill, { width: `${percent}%` }]} />
+      </View>
+      <Text style={styles.meta}>
+        بعت {moneyText(sold.revenue)} من {moneyText(target.revenue)} · {ARABIC.format(sold.invoices)} فاتورة
+        {target.invoices ? ` من ${ARABIC.format(target.invoices)}` : ''}
+      </Text>
+      <Text style={styles.targetFoot}>
+        {target.revenue > sold.revenue
+          ? `فاضل ${moneyText(target.revenue - sold.revenue)} · ${ARABIC.format(daysLeft)} يوم في الشهر`
+          : `خلصت الهدف — زيادة ${moneyText(sold.revenue - target.revenue)}`}
+        {target.note ? ` · ${target.note}` : ''}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Cash he took at the door. The amount defaults to what the invoice still owes, and the field says so,
+ * because «the cash he took» and «what the invoice still owes» are two different numbers, and the
+ * register stores the first while the invoice carries the second.
+ */
+function PaySheet({ invoice, onClose, onPay }: {
+  invoice: MyInvoice | null;
+  onClose: () => void;
+  onPay: (amount: number, note: string) => Promise<string | null>;
+}) {
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const due = invoice ? Math.max(0, invoice.total - invoice.paidAmount) : 0;
+  useEffect(() => { setAmount(invoice ? String(due) : ''); setNote(''); setMessage(''); }, [invoice, due]);
+  const parsed = parseNumberText(amount) ?? 0;
+  return (
+    <Sheet visible={Boolean(invoice)} onClose={onClose} title="تسجيل تحصيل">
+      {invoice ? (
+        <>
+          <Text style={styles.meta}>
+            {invoice.customerName} · {invoice.number || 'من غير رقم'} — عليه {moneyText(due)} من {moneyText(invoice.total)}
+          </Text>
+          <Field label="المبلغ المستلم (ج.م)" hint={`لو كتبته كامل، الفاتورة تتقفل. التحصيل بيظهر فورًا في تقرير المكتب.`}
+            keyboardType="numeric" value={amount} onChangeText={setAmount} />
+          <Field label="ملاحظة (اختياري)" placeholder="شيك رقمه، أو إن الباقي هيتسلّم بكرة" value={note} onChangeText={setNote} multiline />
+          {parsed > due + 0.005 ? <Text style={styles.warn}>المبلغ أكبر من اللي على الفاتورة — زوّداه على فاتورة تانية.</Text> : null}
+          {message ? <Text style={styles.error}>{message}</Text> : null}
+          <Button label={busy ? 'جارٍ التسجيل…' : 'سجّل التحصيل'} disabled={busy || !(parsed > 0) || parsed > due + 0.005}
+            onPress={() => {
+              setBusy(true);
+              void onPay(parsed, note).then(result => {
+                setBusy(false);
+                if (result) setMessage(result);
+              });
+            }} />
+          <Text style={styles.sheetHint}>التحصيل من الموبايل ما بيرجعش لورا: لو الرقم غلط، المكتب يلغي الفاتورة ويسجّلها صح — والإلغاء بيرجّع الفلوس في سجل التحصيل.</Text>
+        </>
+      ) : null}
+    </Sheet>
   );
 }
 
@@ -498,4 +593,13 @@ const styles = StyleSheet.create({
   addLine: { width: 42, height: 42, borderRadius: radius.md, backgroundColor: colors.cream, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center' },
   addText: { fontFamily: fonts.bold, fontSize: 18, color: colors.green700 },
   warn: { fontFamily: fonts.medium, fontSize: 12.5, color: colors.danger, lineHeight: 18 },
+  target: {
+    gap: 4, padding: space.md, borderRadius: radius.md,
+    backgroundColor: colors.mint, borderWidth: 1, borderColor: colors.line,
+  },
+  targetTitle: { fontFamily: fonts.medium, fontSize: 12.5, color: colors.green900 },
+  targetPct: { fontFamily: fonts.bold, fontSize: 15, color: colors.green700 },
+  bar: { height: 7, borderRadius: radius.pill, backgroundColor: colors.white, overflow: 'hidden', marginBottom: 2 },
+  barFill: { height: '100%', borderRadius: radius.pill, backgroundColor: colors.green700 },
+  targetFoot: { fontFamily: fonts.regular, fontSize: 11.5, color: colors.green700, lineHeight: 17 },
 });

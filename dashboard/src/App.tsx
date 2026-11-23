@@ -10,6 +10,8 @@ import { batteryText, batteryWarning, latestBattery, movementStatus, shiftText }
 import Reports from './Reports';
 import Customers from './Customers';
 import Sales from './Sales';
+import Collections from './Collections';
+import Targets from './Targets';
 import Stock from './Stock';
 import Staff from './Staff';
 import Performance from './Performance';
@@ -19,7 +21,7 @@ import type { IdleReport, ManagerAlert, Overview, Rep, RepImpact, Report, RouteR
 import ConfirmAction from './ConfirmAction';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'sales' | 'stock' | 'team' | 'staff' | 'account' | 'agent';
+type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'sales' | 'collections' | 'targets' | 'stock' | 'team' | 'staff' | 'account' | 'agent';
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'مركز العمليات', icon: '◈' },
   { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
@@ -27,6 +29,8 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
   { id: 'customers', label: 'العملاء', icon: '☰' },
   { id: 'sales', label: 'المبيعات', icon: '£' },
+  { id: 'collections', label: 'التحصيل', icon: '₵' },
+  { id: 'targets', label: 'الأهداف', icon: '◎' },
   { id: 'stock', label: 'المخازن', icon: '⛃' },
   { id: 'team', label: 'فريق الميدان', icon: '◆' },
   { id: 'staff', label: 'حسابات اللوحة', icon: '⚿' },
@@ -41,9 +45,9 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
  * answer 403; it is not what keeps the field private.
  */
 const VISIBLE_TABS: Record<DashScope, Tab[]> = {
-  manager: ['live', 'monthly', 'performance', 'reports', 'customers', 'sales', 'stock', 'team', 'staff', 'agent', 'account'],
+  manager: ['live', 'monthly', 'performance', 'reports', 'customers', 'sales', 'collections', 'targets', 'stock', 'team', 'staff', 'agent', 'account'],
   // The sales office runs the whole register — it just does not hand out logins.
-  sales: ['live', 'monthly', 'performance', 'reports', 'customers', 'sales', 'stock', 'team', 'agent', 'account'],
+  sales: ['live', 'monthly', 'performance', 'reports', 'customers', 'sales', 'collections', 'targets', 'stock', 'team', 'agent', 'account'],
   stock: ['stock', 'account'],
 };
 
@@ -406,6 +410,10 @@ export default function App() {
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers />}
         {tab === 'sales' && <Sales version={feedVersion} canManageStaff={scope === 'manager'} />}
+        {tab === 'collections' && <Collections reps={reps} version={feedVersion} canCollect={isManager(user)} />}
+        {/* Only the manager account sets a target — the server refuses the write for anyone else, so
+            the sales office gets the same table without a box to type in. */}
+        {tab === 'targets' && <Targets version={feedVersion} canManage={scope === 'manager'} />}
         // The sales office reads the shelves; the price and movement forms belong to the warehouse
         // account (and to the manager, who keeps the override).
         {tab === 'stock' && <Stock version={feedVersion} readOnly={scope === 'sales'} canCorrect={scope === 'manager'} />}

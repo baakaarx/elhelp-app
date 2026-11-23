@@ -1397,6 +1397,31 @@ export function createApp(overrides: Partial<Config> = {}) {
     source: row.authorRole === 'rep' ? 'field' : 'dashboard',
   }) : undefined;
 
+  /**
+   * One row per recorded collection. Written wherever a paid amount moves — the office recording what
+   * it banked, and the engineer typing what he took at the farm — so the collection report reads a
+   * register instead of re-summing invoices, and so a manager can see the two hands that touch the
+   * same cash: `repId` is whose money it is, `by` is who typed it.
+   */
+  function recordCollection(args: { invoiceId: string; customerId?: string | null; repId?: string | null; by: string; amount: number; note: string; source: 'office' | 'field' }) {
+    const delta = money(args.amount);
+    // Zero is not a collection. Logging it would let a note edit on an invoice add an empty row to the
+    // month's total — which is exactly the kind of noise that makes a report stop being trustworthy.
+    if (!Number.isFinite(delta) || delta === 0) return;
+    store.run(`INSERT INTO collection_events(id,invoice_id,customer_id,rep_id,recorded_by,amount,source,note,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`,
+      randomUUID(), args.invoiceId, args.customerId ?? null, args.repId ?? null, args.by, delta, args.source, args.note, Date.now());
+  }
+
+  /**
+   * The month key a target is filed under, in the installation's own timezone — the same clock the
+   * dashboard's dates use, so a target saved on the 31st at 11 p.m. belongs to the month the manager
+   * is looking at and not to the one UTC already rolled into.
+   */
+  function monthKey(at: number = Date.now()): string {
+    return localDate(config.timezone, at).slice(0, 7);
+  }
+
   function invoiceLines(invoiceId: string) {
     return store.all(`SELECT l.*, (SELECT COALESCE(SUM(m.qty),0) FROM stock_movements m WHERE m.product_id=l.product_id) AS stockAll
       FROM invoice_lines l WHERE l.invoice_id=? ORDER BY l.position, l.rowid`, invoiceId).map((row: Record<string, any>) => ({
@@ -1761,6 +1786,237 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
   });
 
+  /*
+   * The collection report — «مين حصّل كام في الشهر».
+   *
+   * It reads the event register rather than re-summing invoices, for two reasons. A collection is a
+   * visit with cash in it, not a field on a bill: the same invoice can be paid in three parts by two
+   * hands, and a report that only shows today's totals cannot say who brought the money. And the
+   * difference between the two columns below (who owns the money, who typed it) is the reconciliation
+   * the manager actually does at the end of the day — the engineer's list and the office's banked
+   * amount are two different records of one pile of cash.
+   */
+  app.get('/api/collections', adminOnly, (req, res) => {
+    const day = 86400000;
+    const to = Number.isFinite(Number(req.query.to)) && Number(req.query.to) > 0 ? Number(req.query.to) : Date.now();
+    const from = Number.isFinite(Number(req.query.from)) && Number(req.query.from) > 0 ? Number(req.query.from) : to - 30 * day;
+    if (from > to) { res.status(400).json({ error: 'تاريخ البداية بعد النهاية.' }); return; }
+    const repId = typeof req.query.repId === 'string' && req.query.repId ? req.query.repId : '';
+    const params: any[] = [from, to];
+    let filter = '';
+    if (repId) { filter = ' AND ce.rep_id=?'; params.push(repId); }
+    // Named rather than `window`: this is the only bound the register is read with, and `window` reads
+    // like a browser global in a file that has none.
+    const inWindow = 'ce.created_at>=? AND ce.created_at<=?';
+    const byRep = store.all(`SELECT ce.rep_id AS repId, u.name AS repName, u.color AS repColor,
+        COALESCE(SUM(ce.amount),0) AS collected, COUNT(*) AS entries,
+        COALESCE(SUM(CASE WHEN ce.source='field' THEN ce.amount ELSE 0 END),0) AS fromField,
+        COALESCE(SUM(CASE WHEN ce.source='office' THEN ce.amount ELSE 0 END),0) AS fromOffice
+      FROM collection_events ce LEFT JOIN users u ON u.id=ce.rep_id
+      WHERE ${inWindow}${filter} GROUP BY ce.rep_id, u.name, u.color ORDER BY collected DESC`, ...params) as Array<Record<string, any>>;
+    const byCustomer = store.all(`SELECT ce.customer_id AS customerId, COALESCE(c.name, i.customer_name) AS customerName,
+        COALESCE(SUM(ce.amount),0) AS collected, COUNT(*) AS entries, MAX(ce.created_at) AS lastAt
+      FROM collection_events ce
+      LEFT JOIN customers c ON c.id=ce.customer_id
+      LEFT JOIN invoices i ON i.id=ce.invoice_id
+      WHERE ${inWindow}${filter} GROUP BY ce.customer_id, customerName ORDER BY collected DESC LIMIT 40`, ...params) as Array<Record<string, any>>;
+    const entries = store.all(`SELECT ce.id, ce.amount, ce.source, ce.note, ce.created_at AS createdAt,
+        ce.rep_id AS repId, ru.name AS repName, bu.name AS recordedByName,
+        ce.customer_id AS customerId, COALESCE(c.name, i.customer_name) AS customerName,
+        i.number AS invoiceNumber, i.total AS invoiceTotal, i.paid_amount AS invoicePaid, i.status AS invoiceStatus
+      FROM collection_events ce
+      LEFT JOIN users ru ON ru.id=ce.rep_id
+      LEFT JOIN users bu ON bu.id=ce.recorded_by
+      LEFT JOIN invoices i ON i.id=ce.invoice_id
+      LEFT JOIN customers c ON c.id=ce.customer_id
+      WHERE ${inWindow}${filter} ORDER BY ce.created_at DESC LIMIT 200`, ...params) as Array<Record<string, any>>;
+    // What is still owed, right now, per engineer — the other half of the report. Collecting with
+    // nothing outstanding means an old bill was closed; outstanding without collection is the
+    // follow-up list. Showing only one of the two is how a month looks finished when it is not.
+    const outstanding = store.all(`SELECT i.rep_id AS repId, COALESCE(SUM(i.total - i.paid_amount),0) AS outstanding,
+        COUNT(*) AS openInvoices, MAX(i.invoice_date) AS lastInvoiceAt
+      FROM invoices i WHERE i.voided=0 AND i.status<>'paid' ${repId ? 'AND i.rep_id=?' : ''}
+      GROUP BY i.rep_id`, ...(repId ? [repId] : [])) as Array<Record<string, any>>;
+    const totalsRow = store.get(`SELECT COALESCE(SUM(ce.amount),0) AS collected, COUNT(*) AS entries,
+        COUNT(DISTINCT ce.customer_id) AS customers
+      FROM collection_events ce WHERE ${inWindow}${filter}`, ...params) as Record<string, any>;
+    const owed = (id: any) => outstanding.find(row => String(row.repId ?? '') === String(id ?? ''));
+    // One number the office should never have to discover by hand: what the invoices claim was paid,
+    // against what the register actually holds. They agree by construction — every write to
+    // `paid_amount` writes an event — so any difference is a database that predates the register (or a
+    // bug), and saying it out loud is cheaper than a month of quiet under-reporting.
+    const lifetime = store.get(`SELECT
+        (SELECT COALESCE(SUM(paid_amount),0) FROM invoices WHERE voided=0) AS paidOnInvoices,
+        (SELECT COALESCE(SUM(amount),0) FROM collection_events) AS registered`) as { paidOnInvoices: number; registered: number };
+    const paidOnInvoices = money(lifetime.paidOnInvoices);
+    const registered = money(lifetime.registered);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      from, to,
+      totals: { collected: money(totalsRow.collected), entries: Number(totalsRow.entries || 0), customers: Number(totalsRow.customers || 0) },
+      lifetime: { paidOnInvoices, registered, difference: money(paidOnInvoices - registered) },
+      byRep: byRep.map(row => ({
+        repId: row.repId, repName: row.repName ?? 'بدون مهندس', repColor: row.repColor ?? '#94a3b8',
+        collected: money(row.collected), entries: Number(row.entries), fromField: money(row.fromField), fromOffice: money(row.fromOffice),
+        outstanding: money(owed(row.repId)?.outstanding || 0), openInvoices: Number(owed(row.repId)?.openInvoices || 0),
+      })),
+      byCustomer: byCustomer.map(row => ({
+        customerId: row.customerId, customerName: row.customerName, collected: money(row.collected),
+        entries: Number(row.entries), lastAt: row.lastAt ?? null,
+      })),
+      entries: entries.map(row => ({
+        id: row.id, amount: money(row.amount), source: row.source, note: row.note, createdAt: Number(row.createdAt),
+        repId: row.repId, repName: row.repName ?? 'بدون مهندس', recordedBy: row.recordedByName ?? '',
+        customerId: row.customerId, customerName: row.customerName ?? '', invoiceNumber: row.invoiceNumber ?? null,
+        invoiceTotal: row.invoiceTotal === null || row.invoiceTotal === undefined ? null : money(row.invoiceTotal),
+        invoicePaid: row.invoicePaid === null || row.invoicePaid === undefined ? null : money(row.invoicePaid),
+        invoiceStatus: row.invoiceStatus ?? null,
+      })),
+    });
+  });
+
+  /*
+   * Monthly targets: «كل مهندس هدفه كام، والشركة كام». The table holds the plan and nothing else —
+   * revenue and progress are computed from the invoices every time. A target copied into a row
+   * somewhere is a target that goes stale on the first void.
+   */
+  app.get('/api/targets', adminOnly, (req, res) => {
+    const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : monthKey();
+    // monthBounds validates the month and throws on 2026-13; the monthly register answers 400 for the
+    // same input, so both endpoints agree instead of one of them crashing the request.
+    let bounds: ReturnType<typeof monthBounds>;
+    try { bounds = monthBounds(month); } catch (e) { res.status(400).json({ error: (e as Error).message }); return; }
+    // `<` and not `<=`: `monthBounds().end` is the first instant of the next month, and an invoice is
+    // stamped with a wall-clock millisecond, not a midnight — closing the bound here would bill the
+    // last day of the month twice whenever an invoice lands exactly on the turn.
+    const sold = store.all(`SELECT i.rep_id AS repId, COUNT(*) AS invoices, COALESCE(SUM(i.total),0) AS revenue,
+        COALESCE(SUM(i.paid_amount),0) AS collected
+      FROM invoices i WHERE i.voided=0 AND i.invoice_date>=? AND i.invoice_date<?
+      GROUP BY i.rep_id`, bounds.start, bounds.end) as Array<Record<string, any>>;
+    // `t.rep_id AS repId` is spelled out because `shape()` and the two lookups below read `repId`:
+    // `t.*` alone hands back `rep_id`, and every row would then have looked like the company row.
+    const targets = store.all(`SELECT t.*, t.rep_id AS repId, u.name AS repName, u.color AS repColor, u.active AS repActive, b.name AS updatedByName
+      FROM sales_targets t
+      LEFT JOIN users u ON u.id=t.rep_id
+      LEFT JOIN users b ON b.id=t.updated_by
+      WHERE t.month=? ORDER BY (t.rep_id IS NULL), u.name COLLATE NOCASE`, month) as Array<Record<string, any>>;
+    const reps = store.all("SELECT id, name, color, region FROM users WHERE role='rep' AND active=1 ORDER BY name COLLATE NOCASE") as Array<Record<string, any>>;
+    // The company row is the whole month, not the invoices nobody claimed: `rep_id IS NULL` on an
+    // invoice means «no engineer was credited», and summing only those would report a company that
+    // sold nothing while every engineer's bar is full.
+    const sum = (id: any, field: 'invoices' | 'revenue' | 'collected') => money(
+      (id === null || id === undefined ? sold : sold.filter(row => String(row.repId) === String(id)))
+        .reduce((acc, row) => acc + Number(row[field] || 0), 0));
+    const shape = (row: Record<string, any>) => {
+      const revenue = sum(row.repId, 'revenue');
+      const invoices = Number(sum(row.repId, 'invoices'));
+      const target = money(row.revenue || 0);
+      return {
+        month, repId: row.repId ?? null, repName: row.repName ?? 'الشركة كلها', repColor: row.repColor ?? '#94a3b8',
+        // The company row has no user behind it, so its join is empty by construction — that is not
+        // the same as «this engineer left», which is what the dimmed row on the screen means.
+        repActive: row.repId === null || row.repId === undefined ? true : (row.repActive === undefined ? true : !!row.repActive),
+        target, invoiceTarget: Number(row.invoices || 0), note: row.note ?? '',
+        revenue, invoices, collected: sum(row.repId, 'collected'),
+        remaining: money(Math.max(0, target - revenue)),
+        progress: target > 0 ? Math.round(revenue / target * 100) : null,
+        updatedBy: row.updatedByName ?? '', updatedAt: row.updated_at ?? null,
+      };
+    };
+    const companyRow = targets.find(row => row.repId === null) ?? { repId: null, revenue: 0, invoices: 0, note: '', updated_at: null };
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      month, from: bounds.from, to: bounds.to, isCurrentMonth: month === monthKey(),
+      company: shape(companyRow),
+      // Every active engineer is listed, target or not: a manager has to see who was never given a
+      // number. A departed engineer keeps his row so a closed month still reads complete.
+      reps: reps.map(rep => shape(targets.find(row => String(row.repId) === String(rep.id)) ?? { repId: rep.id, revenue: 0, invoices: 0, note: '', updated_at: null })),
+      retired: targets
+        .filter(row => row.repId !== null && !reps.some(rep => String(rep.id) === String(row.repId)))
+        .map(shape),
+    });
+  });
+
+  const targetInput = z.object({
+    month: z.string().regex(/^\d{4}-\d{2}$/, 'الشهر يكون بصيغة YYYY-MM.'),
+    repId: z.uuid().nullish(),
+    revenue: z.number().finite().min(0).max(1e11).default(0),
+    invoices: z.number().int().min(0).max(100000).default(0),
+    note: z.string().trim().max(300).default(''),
+  }).strict();
+
+  /** The manager's only. A number a rep can write for himself is not a target, it is a wish. */
+  app.put('/api/targets', adminOnly, (req, res) => {
+    if (dashScope(res.locals.user) !== 'manager') { res.status(403).json({ error: 'الأهداف يحددها حساب المدير.', code: 'MANAGER_ONLY' }); return; }
+    const parsed = targetInput.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الهدف غير صحيحة.' }); return; }
+    const data = parsed.data;
+    // `2026-13` is two digits wide, so the shape check lets it through and only the calendar knows it
+    // is a month that never happens. Reading it back answers 400, so writing it has to as well —
+    // otherwise a typo files a plan somewhere nobody will ever look.
+    try { monthBounds(data.month); } catch (e) { res.status(400).json({ error: (e as Error).message }); return; }
+    if (data.repId !== null && data.repId !== undefined && !store.get("SELECT id FROM users WHERE id=? AND role='rep'", data.repId)) {
+      res.status(409).json({ error: 'المهندس غير موجود.' }); return;
+    }
+    store.run(`INSERT INTO sales_targets(id,month,rep_id,revenue,invoices,note,updated_by,updated_at) VALUES (?,?,?,?,?,?,?,?)
+      ON CONFLICT(month, IFNULL(rep_id, '')) DO UPDATE SET revenue=excluded.revenue, invoices=excluded.invoices,
+        note=excluded.note, updated_by=excluded.updated_by, updated_at=excluded.updated_at`,
+      randomUUID(), data.month, data.repId ?? null, money(data.revenue), data.invoices, data.note, res.locals.user.id, Date.now());
+    store.audit(res.locals.user.id, 'target.set', { month: data.month, repId: data.repId ?? null, revenue: money(data.revenue), invoices: data.invoices });
+    invalidateKpis(); broadcast();
+    res.json({ ok: true, month: data.month, repId: data.repId ?? null });
+  });
+
+  /** His own month: what he was asked for and where he stands. No list of colleagues. */
+  app.get('/api/my/targets', repOnly, (req, res) => {
+    const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : monthKey();
+    // monthBounds validates the month and throws on 2026-13; the monthly register answers 400 for the
+    // same input, so both endpoints agree instead of one of them crashing the request.
+    let bounds: ReturnType<typeof monthBounds>;
+    try { bounds = monthBounds(month); } catch (e) { res.status(400).json({ error: (e as Error).message }); return; }
+    const sold = store.get(`SELECT COUNT(*) AS invoices, COALESCE(SUM(total),0) AS revenue, COALESCE(SUM(paid_amount),0) AS collected
+      FROM invoices WHERE voided=0 AND rep_id=? AND invoice_date>=? AND invoice_date<?`,
+      res.locals.user.id, bounds.start, bounds.end) as Record<string, any>;
+    const target = store.get('SELECT revenue, invoices, note, updated_at FROM sales_targets WHERE month=? AND rep_id=?',
+      month, res.locals.user.id) as { revenue: number; invoices: number; note: string; updated_at: number } | undefined;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      month,
+      target: target ? {
+        revenue: money(target.revenue), invoices: Number(target.invoices || 0), note: target.note, updatedAt: target.updated_at ?? null,
+        revenueProgress: Number(target.revenue) > 0 ? Math.round(Number(sold.revenue) / Number(target.revenue) * 100) : null,
+        invoicesProgress: Number(target.invoices) > 0 ? Math.round(Number(sold.invoices) / Number(target.invoices) * 100) : null,
+      } : null,
+      sold: { invoices: Number(sold.invoices || 0), revenue: money(sold.revenue), collected: money(sold.collected) },
+      daysLeft: Math.max(0, Math.ceil((bounds.end - Math.min(Date.now(), bounds.end)) / 86400000)),
+    });
+  });
+
+  /**
+   * The engineer records the cash he took, on his own bill. The office keeps its own record of what it
+   * banked; both are stored, because they are two true things about one pile of money.
+   */
+  app.post('/api/my/invoices/:id/pay', repOnly, (req, res) => {
+    const parsed = z.object({ amount: z.number().finite().positive().max(1e9), note: z.string().trim().max(300).default('') }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'اكتب مبلغ صحيح.' }); return; }
+    const invoice = store.get('SELECT id, number, total, paid_amount AS paidAmount, rep_id AS repId, customer_id AS customerId, voided FROM invoices WHERE id=?',
+      String(req.params.id)) as { id: string; number: string; total: number; paidAmount: number; repId: string; customerId: string | null; voided: number } | undefined;
+    if (!invoice) { res.status(404).json({ error: 'الفاتورة غير موجودة.' }); return; }
+    if (String(invoice.repId) !== String(res.locals.user.id)) { res.status(403).json({ error: 'الفاتورة دي مش ليك.' }); return; }
+    if (Number(invoice.voided)) { res.status(409).json({ error: 'الفاتورة ملغاة.' }); return; }
+    const next = money(Number(invoice.paidAmount) + parsed.data.amount);
+    if (next > money(invoice.total) + 0.005) {
+      res.status(400).json({ error: `المبلغ يوصل الإجمالي لأكتر من ${money(invoice.total)} ج.م — سجّل الباقي على فاتورة تانية.`, code: 'OVERPAYMENT' });
+      return;
+    }
+    store.run('UPDATE invoices SET paid_amount=?, status=?, updated_at=? WHERE id=?', next, paymentStatus(Number(invoice.total), next), Date.now(), invoice.id);
+    recordCollection({ invoiceId: invoice.id, customerId: invoice.customerId, repId: invoice.repId, by: res.locals.user.id,
+      amount: parsed.data.amount, note: parsed.data.note, source: 'field' });
+    store.audit(res.locals.user.id, 'invoice.collect', { invoiceId: invoice.id, number: invoice.number, amount: parsed.data.amount });
+    invalidateKpis(); broadcast(); notifyStock();
+    res.json({ invoice: asInvoice(store.get(`${INVOICE_SELECT} WHERE i.id=?`, invoice.id)), collected: parsed.data.amount });
+  });
+
   // ---- Invoices ----
   app.get('/api/invoices', adminOnly, (req, res) => {
     const where: string[] = []; const params: any[] = [];
@@ -1771,6 +2027,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (typeof req.query.customerId === 'string' && req.query.customerId) { where.push('i.customer_id=?'); params.push(req.query.customerId); }
     if (typeof req.query.warehouseId === 'string' && req.query.warehouseId) { where.push('i.warehouse_id=?'); params.push(req.query.warehouseId); }
     if (['unpaid', 'partial', 'paid'].includes(String(req.query.status))) { where.push('i.status=?'); params.push(String(req.query.status)); }
+    // `open=1` is the reconciliation filter: everything that still owes money, whether or not a part
+    // of it was banked. The collection screen needs the partials — that is where the follow-up lives.
+    if (req.query.open === '1') where.push("i.status IN ('unpaid','partial')");
     if (req.query.stockShort === '1') where.push('i.stock_short=1');
     // «field» = the engineer typed it on his phone, «dashboard» = the office typed it. The manager
     // asks this when a paper note turns up two days after the phone was right there.
@@ -1904,6 +2163,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       });
       if (stockShort) store.run('UPDATE invoices SET stock_short=1 WHERE id=?', id);
     });
+    if (paidAmount > 0) recordCollection({ invoiceId: id, customerId: customer.id, repId, by: res.locals.user.id, amount: paidAmount, note: data.note, source: isAdmin ? 'office' : 'field' });
     store.audit(res.locals.user.id, 'invoice.create', { invoiceId: id, number, repId, warehouseId: warehouse.id, total, lines: lines.length, stockShort });
     invalidateKpis(); broadcast(); notifyStock();
     res.status(201).json({ invoice: asInvoice(store.get(`${INVOICE_SELECT} WHERE i.id=?`, id)), lines: invoiceLines(id), stockShort: !!stockShort });
@@ -1932,8 +2192,12 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.status(409).json({ error: 'المسدد ما بيرجعش لورا — لو فيه خطأ في التحصيل، الغي الفاتورة وسجّلها صح.', code: 'PAYMENT_ROLLBACK' });
       return;
     }
+    const full = store.get('SELECT id, customer_id AS customerId, rep_id AS repId FROM invoices WHERE id=?', invoice.id) as { customerId: string | null; repId: string | null } | undefined;
     store.run('UPDATE invoices SET paid_amount=?, status=?, note=COALESCE(?, note), updated_at=? WHERE id=?',
       paidAmount, paymentStatus(Number(invoice.total), paidAmount), parsed.data.note ?? null, Date.now(), invoice.id);
+    // The delta, not the new total: two edits in one day are one collection, not two.
+    recordCollection({ invoiceId: String(invoice.id), customerId: full?.customerId ?? null, repId: full?.repId ?? null,
+      by: res.locals.user.id, amount: money(paidAmount - money(invoice.paidAmount)), note: parsed.data.note ?? '', source: 'office' });
     store.audit(res.locals.user.id, 'invoice.update', { invoiceId: invoice.id, number: invoice.number, paidAmount });
     invalidateKpis(); broadcast(); notifyStock();
     res.json({ invoice: asInvoice(store.get(`${INVOICE_SELECT} WHERE i.id=?`, invoice.id)) });
@@ -1956,6 +2220,16 @@ export function createApp(overrides: Partial<Config> = {}) {
           randomUUID(), line.productId, warehouseId, Number(line.qty), 'return', invoice.id, `إلغاء الفاتورة ${invoice.number}`, res.locals.user.id, now);
       }
     });
+    // Cancelling a bill money was banked against moves the cash back out, and the register has to say
+    // so: without this row the collections report keeps counting money that no longer belongs to a
+    // sale, and the drawer of whoever typed it never settles.
+    const paidRow = store.get('SELECT paid_amount AS paidAmount, customer_id AS customerId, rep_id AS repId FROM invoices WHERE id=?',
+      invoice.id) as { paidAmount: number; customerId: string | null; repId: string | null } | undefined;
+    const paid = money(Number(paidRow?.paidAmount || 0));
+    if (paid !== 0) {
+      recordCollection({ invoiceId: invoice.id, customerId: paidRow?.customerId ?? null, repId: paidRow?.repId ?? null,
+        by: res.locals.user.id, amount: -paid, note: `إلغاء الفاتورة — ${reason}`, source: 'office' });
+    }
     store.audit(res.locals.user.id, 'invoice.void', { invoiceId: invoice.id, number: invoice.number, reason, lines: lines.length });
     invalidateKpis(); broadcast(); notifyStock();
     res.json({ ok: true, restored: lines.length });
@@ -2035,6 +2309,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       });
       if (stockShort) store.run('UPDATE invoices SET stock_short=1 WHERE id=?', id);
     });
+    if (data.paidAmount > 0) recordCollection({ invoiceId: id, customerId: customer.id, repId: res.locals.user.id, by: res.locals.user.id, amount: money(data.paidAmount), note: data.note, source: 'field' });
     store.audit(res.locals.user.id, 'invoice.create', { invoiceId: id, number, customerId: customer.id, warehouseId: warehouse!.id, total, lines: lines.length, stockShort, source: 'field' });
     invalidateKpis(); broadcast(); notifyStock();
     res.status(201).json({
@@ -2915,6 +3190,63 @@ export function createApp(overrides: Partial<Config> = {}) {
       };
     });
   }
+  /**
+   * The money half of the performance table: what each engineer sold in the window, what was collected
+   * on it, what is still owed, and what his product of the month was. Kept next to the visit and
+   * distance columns on purpose — «بيع بكام» and «لف قد إيه» are read together by the same manager in
+   * the same meeting, and two screens are how those two numbers stop agreeing.
+   */
+  function kpiSalesFor(from: string, to: string) {
+    const bounds = dayBounds(from, config.timezone);
+    const upto = dayBounds(to, config.timezone);
+    const perRep = store.all(`SELECT i.rep_id AS repId, COUNT(*) AS invoices, COALESCE(SUM(i.total),0) AS revenue,
+        COALESCE(SUM(i.paid_amount),0) AS collected, COALESCE(SUM(i.total - i.paid_amount),0) AS outstanding,
+        SUM(CASE WHEN i.stock_short=1 THEN 1 ELSE 0 END) AS stockShort
+      FROM invoices i WHERE i.voided=0 AND i.invoice_date>=? AND i.invoice_date<?
+      GROUP BY i.rep_id`, bounds.start, upto.end) as Array<Record<string, any>>;
+    const top = store.all(`SELECT i.rep_id AS repId, l.product_name AS productName, l.unit AS unit,
+        COALESCE(SUM(l.qty),0) AS qty, COALESCE(SUM(l.line_total),0) AS revenue
+      FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id
+      WHERE i.voided=0 AND i.invoice_date>=? AND i.invoice_date<?
+      GROUP BY i.rep_id, l.product_id, l.product_name, l.unit
+      ORDER BY revenue DESC`, bounds.start, upto.end) as Array<Record<string, any>>;
+    const best = new Map<string, { qty: number; revenue: number; unit: string; topProduct: string }>();
+    for (const row of top) {
+      const key = String(row.repId ?? '');
+      if (best.has(key)) continue;
+      best.set(key, { qty: money(row.qty), revenue: money(row.revenue), unit: String(row.unit ?? ''), topProduct: String(row.productName ?? '') });
+    }
+    // The company's best seller is grouped on its own: summing the per-engineer leaderboard would
+    // report the biggest single-rep line, so a product two engineers sold 50 each loses to one
+    // engineer who sold 80 — and «الأكثر مبيعًا في الشركة» is a question about the product.
+    const companyTop = store.get(`SELECT l.product_name AS productName, l.unit AS unit,
+        COALESCE(SUM(l.qty),0) AS qty, COALESCE(SUM(l.line_total),0) AS revenue
+      FROM invoice_lines l JOIN invoices i ON i.id=l.invoice_id
+      WHERE i.voided=0 AND i.invoice_date>=? AND i.invoice_date<?
+      GROUP BY l.product_id, l.product_name, l.unit ORDER BY revenue DESC LIMIT 1`,
+      bounds.start, upto.end) as Record<string, any> | undefined;
+    const company = {
+      invoices: money(perRep.reduce((acc, row) => acc + Number(row.invoices), 0)),
+      revenue: money(perRep.reduce((acc, row) => acc + Number(row.revenue), 0)),
+      collected: money(perRep.reduce((acc, row) => acc + Number(row.collected), 0)),
+      outstanding: money(perRep.reduce((acc, row) => acc + Number(row.outstanding), 0)),
+      stockShort: perRep.reduce((acc, row) => acc + Number(row.stockShort || 0), 0),
+      topProduct: companyTop ? { name: String(companyTop.productName ?? ''), qty: money(companyTop.qty), revenue: money(companyTop.revenue), unit: String(companyTop.unit ?? '') } : null,
+    };
+    return { perRep, best, company };
+  }
+
+  /**
+   * Which month's plan the sales figures are measured against: the window's own month when it sits
+   * inside one, otherwise the month it ends in — someone looking at «the last 30 days» wants the
+   * running month, not the one that closed. Both the screen and the export call this, so the
+   * percentage in the Excel file is the percentage on the monitor.
+   */
+  function kpiTargetMonth(from: string, to: string): string {
+    const candidate = from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : to.slice(0, 7);
+    return /^\d{4}-\d{2}$/.test(candidate) ? candidate : monthKey();
+  }
+
   function kpiRowsFor(from: string, to: string) {
     const key = `${from}|${to}`;
     const hit = kpiCache.get(key);
@@ -2942,15 +3274,49 @@ export function createApp(overrides: Partial<Config> = {}) {
     try { dayBounds(from, config.timezone); dayBounds(to, config.timezone); } catch { res.status(400).json({ error: 'نطاق التواريخ غير صحيح.' }); return; }
     if (to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
     if (rangeTooLong(from, to)) { res.status(400).json(RANGE_ERROR); return; }
-    res.json({ from, to, timezone: config.timezone, rows: kpiRowsFor(from, to) });
+    const sales = kpiSalesFor(from, to);
+    const month = kpiTargetMonth(from, to);
+    const targets = store.all('SELECT rep_id, revenue, invoices FROM sales_targets WHERE month=?', month) as Array<Record<string, any>>;
+    const targetFor = (id: any) => targets.find(row => String(row.rep_id ?? '') === String(id ?? ''));
+    res.json({
+      from, to, timezone: config.timezone,
+      company: { sales: sales.company, month, target: money(targetFor(null)?.revenue || 0) },
+      rows: kpiRowsFor(from, to).map(row => {
+        const sold = sales.perRep.find(entry => String(entry.repId ?? '') === String(row.repId));
+        const best = sales.best.get(String(row.repId));
+        const target = targetFor(row.repId);
+        const revenue = money(sold?.revenue || 0);
+        const goal = Number(target?.revenue || 0);
+        return {
+          ...row,
+          invoices: Number(sold?.invoices || 0), revenue, collected2: money(sold?.collected || 0),
+          outstanding: money(sold?.outstanding || 0), stockShortInvoices: Number(sold?.stockShort || 0),
+          topProduct: best?.topProduct ?? '', topProductQty: best?.qty ?? 0, topProductRevenue: best?.revenue ?? 0, topProductUnit: best?.unit ?? '',
+          target: money(target?.revenue || 0), targetInvoices: Number(target?.invoices || 0),
+          targetProgress: goal > 0 ? Math.round(revenue / goal * 100) : null,
+        };
+      }),
+    });
   });
-  const KPI_HEADER = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
-  const KPI_WIDTHS = [26, 18, 12, 14, 16, 12, 12, 14, 14];
+  const KPI_HEADER = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية',
+    'فواتير', 'المبيعات (ج.م)', 'المسدد على الفواتير (ج.م)', 'لسه عليه (ج.م)', 'نقص من المخزن', 'الأكثر مبيعًا', 'الهدف الشهري (ج.م)', 'نسبة الهدف %'];
+  const KPI_WIDTHS = [26, 18, 12, 14, 16, 12, 12, 14, 14, 10, 16, 16, 16, 12, 22, 18, 14];
   function kpiExportRows(from: string, to: string): CellValue[][] {
-    return byActivity(kpiRowsFor(from, to)).map(r => [
-      r.name, r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
-      Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.collected, r.dailyReports,
-    ]);
+    const sales = kpiSalesFor(from, to);
+    const month = kpiTargetMonth(from, to);
+    const targets = store.all('SELECT rep_id, revenue FROM sales_targets WHERE month=?', month) as Array<Record<string, any>>;
+    return byActivity(kpiRowsFor(from, to)).map(r => {
+      const sold = sales.perRep.find(entry => String(entry.repId ?? '') === String(r.repId));
+      const best = sales.best.get(String(r.repId));
+      const target = Number(targets.find(row => String(row.rep_id ?? '') === String(r.repId))?.revenue || 0);
+      return [
+        r.name, r.region, r.daysWithData, r.visits, r.avgVisitSeconds ? Math.round(r.avgVisitSeconds / 60) : 0,
+        Number((r.distanceMeters / 1000).toFixed(1)), r.reports, r.collected, r.dailyReports,
+        Number(sold?.invoices || 0), money(sold?.revenue || 0), money(sold?.collected || 0), money(sold?.outstanding || 0),
+        Number(sold?.stockShort || 0), best ? `${best.topProduct} (${best.qty} ${best.unit})` : '', target,
+        target > 0 ? Math.round(Number(sold?.revenue || 0) / target * 100) : '',
+      ];
+    });
   }
   app.get('/api/kpis.csv', adminOnly, (req, res) => {
     const today = localDate(config.timezone);

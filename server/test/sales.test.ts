@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { Store } from '../src/db.js';
 import { hashPassword } from '../src/auth.js';
 
 /**
@@ -624,4 +628,304 @@ test('the money record outlives retention and the people in it', async () => {
   assert.equal(row.customer_name, 'عميل هيمشي', 'and the name on the invoice is the one from the day it was written');
   const after = await client.get('/api/sales/summary').set(admin);
   assert.ok(after.body.byRep.some((entry: any) => entry.repName === 'بدون مهندس'), 'the orphaned sale is shown, not hidden');
+});
+
+/* ------------------------------------------------------------------ التحصيل والأهداف */
+
+/** The day the server will read, in its own timezone — no SQLite clock tricks. */
+const CAIRO_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' });
+const serverDay = () => CAIRO_DAY.format(new Date());
+/** A window that surely contains the row that was just written. */
+const windowQuery = (extra = '') => `from=${Date.now() - 3 * DAY}&to=${Date.now() + DAY}${extra}`;
+const collectionRows = async (auth: Record<string, string>, extra = '') =>
+  (await client.get(`/api/collections?${windowQuery(extra)}`).set(auth)).body;
+
+test('a collection is an event: an edit writes the difference, not the new total', async () => {
+  const engineer = await rep('ياسر تحصيل');
+  const warehouse = await newWarehouse();
+  const product = await newProduct(`أسمنت مقاوم ${randomUUID().slice(0, 6)}`, 400);
+  const customerId = await customerOf(engineer.id);
+  await move(warehouse.id, product.id, 50);
+
+  const invoice = (await client.post('/api/invoices').set(admin).send({
+    customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 10 }], paidAmount: 500,
+  })).body.invoice;
+  assert.equal(invoice.total, 4000);
+
+  // Typing 1500 into a box that means «total paid» must not book 1500 of cash on top of the 500.
+  const patched = await client.patch(`/api/invoices/${invoice.id}`).set(admin).send({ paidAmount: 1500 });
+  assert.equal(patched.status, 200, JSON.stringify(patched.body));
+  assert.equal(patched.body.invoice.paidAmount, 1500);
+
+  const report = await collectionRows(admin, `&repId=${engineer.id}`);
+  assert.equal(report.totals.collected, 1500, 'the register sums the events, and the events are the deltas');
+  assert.equal(report.totals.entries, 2);
+  assert.deepEqual(report.entries.map((row: any) => row.amount).sort((a: number, b: number) => a - b), [500, 1000]);
+  const row = report.byRep.find((entry: any) => entry.repId === engineer.id);
+  assert.equal(row.collected, 1500);
+  assert.equal(row.fromOffice, 1500, 'the office typed both, so none of it is the engineer’s cash');
+  assert.equal(row.fromField, 0);
+  assert.equal(row.outstanding, 2500, 'what was paid is shown next to what is still owed');
+  assert.equal(row.openInvoices, 1);
+  assert.equal(report.byCustomer[0].collected, 1500);
+  const adminName = String(store.get("SELECT name FROM users WHERE role='admin' LIMIT 1")!.name);
+  assert.equal(report.entries[0].recordedBy, adminName, 'and every entry says who typed it, not only whose money it is');
+
+  // Money does not walk backwards through the invoice editor: voiding is the correction path.
+  const rollback = await client.patch(`/api/invoices/${invoice.id}`).set(admin).send({ paidAmount: 200 });
+  assert.equal(rollback.status, 409);
+  assert.equal(rollback.body.code, 'PAYMENT_ROLLBACK');
+
+  // The register and the invoice books are written together, so they agree: that is the one check on
+  // this screen that tells an office whether it is looking at money or at a half-migrated database.
+  assert.equal(Math.abs(report.lifetime.difference) < 0.01, true, 'no drift between what was banked and what was registered');
+
+  // A bill with no cash on it is not a collection, so the register stays a record of money.
+  await client.post('/api/invoices').set(admin).send({ customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 1 }] });
+  assert.equal((await collectionRows(admin, `&repId=${engineer.id}`)).totals.entries, 2, 'no entry for a zero payment');
+
+  // An engineer may not read the company's cash register — only his own month.
+  assert.equal((await client.get('/api/collections').set(engineer.auth)).status, 403);
+
+  // And the warehouse account, whose dashboard is shelves and nothing else, is refused by the same
+  // allowlist that guards every other money route — the register is not its to read.
+  const clerk = await staff('stock');
+  assert.equal((await client.get(`/api/collections?${windowQuery()}`).set(clerk.auth)).status, 403);
+  assert.equal((await client.put('/api/targets').set(clerk.auth).send({ month: serverDay().slice(0, 7), revenue: 1 })).status, 403);
+});
+
+test('voiding a paid invoice moves the cash back out of the register', async () => {
+  const engineer = await rep('رضا رجيع');
+  const warehouse = await newWarehouse();
+  const product = await newProduct(`بوية ${randomUUID().slice(0, 6)}`, 250);
+  const customerId = await customerOf(engineer.id);
+  await move(warehouse.id, product.id, 20);
+  const invoice = (await client.post('/api/invoices').set(admin).send({
+    customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 8 }], paidAmount: 2000,
+  })).body.invoice;
+
+  assert.equal((await collectionRows(admin, `&repId=${engineer.id}`)).byRep[0].collected, 2000);
+
+  const voided = await client.post(`/api/invoices/${invoice.id}/void`).set(admin).send({ reason: 'العميل رجع البضاعة' });
+  assert.equal(voided.status, 200, JSON.stringify(voided.body));
+
+  const after = await collectionRows(admin, `&repId=${engineer.id}`);
+  assert.equal(after.totals.collected, 0, 'the money that went back out is an entry, not a vanished row');
+  assert.equal(after.totals.entries, 2, 'the trail keeps both: 2000 in, 2000 out');
+  const reversal = after.entries.find((entry: any) => entry.amount < 0);
+  assert.ok(reversal, 'a negative entry exists');
+  assert.match(reversal.note, /إلغاء الفاتورة/);
+  assert.equal(after.byRep[0].outstanding, 0, 'a voided bill stops being somebody’s outstanding balance');
+});
+
+test('the engineer books the cash he took, on his own bill, and never more than it owes', async () => {
+  const mine = await rep('مهندس الكاش');
+  const colleague = await rep('مهندس جنبه');
+  const warehouse = await newWarehouse();
+  const product = await newProduct(`سيراميك 60 ${randomUUID().slice(0, 6)}`, 300);
+  await move(warehouse.id, product.id, 20);
+  const customerId = await customerOf(mine.id);
+
+  const created = await client.post('/api/my/invoices').set(mine.auth).send({ customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 4 }] });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.invoice.id as string;
+  assert.equal(created.body.invoice.total, 1200);
+
+  const paid = await client.post(`/api/my/invoices/${id}/pay`).set(mine.auth).send({ amount: 700, note: 'كاش من صاحب المزرعة' });
+  assert.equal(paid.status, 200, JSON.stringify(paid.body));
+  assert.equal(paid.body.collected, 700);
+  assert.equal(paid.body.invoice.paidAmount, 700);
+  assert.equal(paid.body.invoice.status, 'partial');
+
+  const over = await client.post(`/api/my/invoices/${id}/pay`).set(mine.auth).send({ amount: 600 });
+  assert.equal(over.status, 400);
+  assert.equal(over.body.code, 'OVERPAYMENT', 'the rest belongs on a second bill, not on this one');
+  assert.equal((await client.post(`/api/my/invoices/${id}/pay`).set(mine.auth).send({ amount: -700 })).status, 400, 'no undo from the field');
+  assert.equal((await client.post(`/api/my/invoices/${id}/pay`).set(mine.auth).send({ amount: 500 })).status, 200, 'and the exact remainder closes it');
+
+  const stolen = await client.post(`/api/my/invoices/${id}/pay`).set(colleague.auth).send({ amount: 100 });
+  assert.equal(stolen.status, 403, 'a bill is only paid by the engineer it belongs to');
+  const byOffice = await client.post(`/api/my/invoices/${id}/pay`).set(admin).send({ amount: 100 });
+  assert.equal(byOffice.status, 403, 'the office uses its own endpoint, so the source stays honest');
+
+  const report = await collectionRows(admin, `&repId=${mine.id}`);
+  assert.equal(report.totals.collected, 1200);
+  assert.equal(report.byRep[0].fromField, 1200, 'his cash is credited as his, typed by him');
+  assert.equal(report.byRep[0].fromOffice, 0);
+  assert.ok(report.entries.every((entry: any) => entry.source === 'field'));
+  assert.equal(report.byRep[0].openInvoices, 0, 'paid in full, so it is off the follow-up list');
+});
+
+test('the office and the field are two hands on the same invoice', async () => {
+  const engineer = await rep('مهندس تقسيم');
+  const warehouse = await newWarehouse();
+  const product = await newProduct(`جبس ${randomUUID().slice(0, 6)}`, 100);
+  await move(warehouse.id, product.id, 40);
+  const customerId = await customerOf(engineer.id);
+
+  const his = (await client.post('/api/my/invoices').set(engineer.auth).send({ customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 10 }] })).body.invoice;
+  const ours = (await client.post('/api/invoices').set(admin).send({ customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 10 }], paidAmount: 400 })).body.invoice;
+  assert.equal(his.total, 1000);
+  assert.equal(ours.total, 1000);
+
+  const report = await collectionRows(admin, `&repId=${engineer.id}`);
+  assert.equal(report.totals.collected, 400);
+  assert.equal(report.byRep[0].fromField, 0);
+  assert.equal(report.byRep[0].fromOffice, 400);
+
+  const open = await client.get(`/api/invoices?open=1&repId=${engineer.id}`).set(admin);
+  assert.equal(open.status, 200);
+  assert.equal(open.body.invoices.length, 2, 'open=1 keeps a half-paid bill in the follow-up list, not only an untouched one');
+  assert.deepEqual([...new Set(open.body.invoices.map((bill: any) => bill.status))].sort(), ['partial', 'unpaid']);
+
+  const rest = await client.patch(`/api/invoices/${ours.id}`).set(admin).send({ paidAmount: 1000 });
+  assert.equal(rest.body.invoice.status, 'paid');
+  const settled = await collectionRows(admin, `&repId=${engineer.id}`);
+  assert.equal(settled.totals.collected, 1000, '400 banked at the desk, 600 banked after it');
+  assert.equal(settled.entries.length, 2, 'two entries, and the second one is 600 not 1000');
+  assert.equal((await client.get(`/api/invoices?open=1&repId=${engineer.id}`).set(admin)).body.invoices.length, 1, 'that bill leaves the list, the other stays');
+});
+
+test('a target is a plan: the manager writes it, the invoices measure it', async () => {
+  const engineer = await rep('مهندس هدف');
+  const warehouse = await newWarehouse();
+  const product = await newProduct(`أسمنت ${randomUUID().slice(0, 6)}`, 500);
+  const customerId = await customerOf(engineer.id);
+  await move(warehouse.id, product.id, 20);
+  const month = (await client.get('/api/targets').set(admin)).body.month as string;
+
+  const set = await client.put('/api/targets').set(admin).send({ month, repId: engineer.id, revenue: 5000, invoices: 2, note: 'نص الشهر للمقاولات' });
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  // Writing the same plan twice updates it instead of appending a history nobody asked for.
+  await client.put('/api/targets').set(admin).send({ month, repId: engineer.id, revenue: 5000, invoices: 2, note: 'اتعدل' });
+  await client.put('/api/targets').set(admin).send({ month, repId: null, revenue: 10, invoices: 0 });
+  assert.equal(Number(store.get('SELECT COUNT(*) AS c FROM sales_targets WHERE month=?', month)!.c), 2, 'one row for the engineer, one for the company');
+  assert.equal(Number(store.get('SELECT COUNT(*) AS c FROM sales_targets WHERE month=? AND rep_id IS NULL', month)!.c), 1, 'the company plan is the NULL row, not a fake engineer');
+
+  const before = await client.get(`/api/targets?month=${month}`).set(admin);
+  const planned = before.body.reps.find((entry: any) => entry.repId === engineer.id);
+  assert.equal(planned.target, 5000);
+  assert.equal(planned.invoiceTarget, 2);
+  assert.equal(planned.note, 'اتعدل', 'and the last write is the plan, not the first one');
+  assert.equal(planned.revenue, 0, 'nothing sold yet — the percentage is computed from the register, never stored next to the target');
+  assert.equal(planned.progress, 0);
+  assert.ok(before.body.reps.some((entry: any) => entry.repId !== engineer.id && entry.target === 0), 'an engineer with no plan is listed anyway, at zero');
+
+  await client.post('/api/invoices').set(admin).send({ customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 8 }], paidAmount: 1000 });
+  const measured = (await client.get(`/api/targets?month=${month}`).set(admin)).body.reps.find((entry: any) => entry.repId === engineer.id);
+  assert.equal(measured.revenue, 4000, 'eight at 500: the invoices are the measurement');
+  assert.equal(measured.invoices, 1);
+  assert.equal(measured.collected, 1000);
+  assert.equal(measured.progress, 80);
+  assert.equal(measured.remaining, 1000);
+
+  const mine = await client.get('/api/my/targets').set(engineer.auth);
+  assert.equal(mine.status, 200);
+  assert.equal(mine.body.target.revenue, 5000, 'he sees his own plan');
+  assert.equal(mine.body.target.revenueProgress, 80);
+  assert.equal(mine.body.sold.revenue, 4000);
+  assert.ok(mine.body.daysLeft >= 0);
+  const unplanned = await rep('زميل من غير هدف');
+  const colleague = await client.get('/api/my/targets').set(unplanned.auth);
+  assert.equal(colleague.body.target, null, 'and nobody else’s — including the company number');
+
+  // Who may write a plan.
+  const office = await staff('sales');
+  assert.equal((await client.put('/api/targets').set(office.auth).send({ month, repId: engineer.id, revenue: 1 })).status, 403, 'the sales office cannot set a target');
+  assert.equal((await client.put('/api/targets').set(engineer.auth).send({ month, repId: engineer.id, revenue: 1 })).status, 403, 'and neither can the engineer it is for');
+  assert.equal((await client.get(`/api/targets?month=${month}`).set(office.auth)).status, 200, 'but the office reads the same board');
+  assert.equal((await client.put('/api/targets').set(admin).send({ month, repId: randomUUID(), revenue: 1 })).status, 409, 'a plan for a man who does not exist is refused');
+  assert.equal((await client.put('/api/targets').set(admin).send({ month: '2026-13', revenue: 1 })).status, 400, 'a month that does not exist is refused, not clipped');
+  assert.equal((await client.get('/api/targets?month=2026-13').set(admin)).status, 400);
+});
+
+test('the money columns ride along with the KPI table, and so with the export', async () => {
+  const engineer = await rep('مهندس مؤشرات');
+  const warehouse = await newWarehouse();
+  const paint = await newProduct(`بوية بلاستيك ${randomUUID().slice(0, 6)}`, 240);
+  const tiles = await newProduct(`سيراميك ${randomUUID().slice(0, 6)}`, 190);
+  const customerId = await customerOf(engineer.id);
+  await move(warehouse.id, paint.id, 30);
+  await move(warehouse.id, tiles.id, 10);
+  const today = serverDay();
+  await client.put('/api/targets').set(admin).send({ month: today.slice(0, 7), repId: engineer.id, revenue: 1000 });
+  // Set the company plan here rather than reading whatever an earlier test left: the number on the
+  // company row is the company's, and it has to be the one this screen is showing.
+  await client.put('/api/targets').set(admin).send({ month: today.slice(0, 7), repId: null, revenue: 777000 });
+  await client.post('/api/invoices').set(admin).send({
+    customerId, warehouseId: warehouse.id,
+    lines: [{ productId: paint.id, qty: 10 }, { productId: tiles.id, qty: 1 }], paidAmount: 600,
+  });
+
+  const res = await client.get(`/api/kpis?from=${today}&to=${today}`).set(admin);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const row = res.body.rows.find((entry: any) => entry.repId === engineer.id);
+  assert.equal(row.revenue, 2590);
+  assert.equal(row.invoices, 1);
+  assert.equal(row.collected2, 600);
+  assert.equal(row.outstanding, 1990);
+  assert.equal(row.topProduct, paint.name, 'the best seller by money, not by count');
+  assert.equal(row.topProductRevenue, 2400);
+  assert.equal(row.target, 1000);
+  assert.equal(row.targetProgress, 259);
+  // The company aggregate is the whole day, not this engineer's invoice, so it is checked as a
+  // superset: the window that contains his 2590 must report at least his money and a best seller.
+  assert.ok(res.body.company.sales.revenue >= 2590, 'the company row sums every engineer in the window');
+  assert.ok(res.body.company.sales.topProduct.revenue >= 2400, 'and its best seller is at least as big as his');
+  assert.equal(res.body.company.target, 777000, 'the company row carries the company plan of the window’s month');
+
+  const csv = await client.get(`/api/kpis.csv?from=${today}&to=${today}`).set(admin);
+  assert.equal(csv.status, 200);
+  const header = csv.text.split('\n')[0];
+  assert.ok(header.includes('المبيعات') && header.includes('المسدد على الفواتير') && header.includes('نسبة الهدف'), 'the export gained the money columns instead of becoming a different report');
+  assert.ok(csv.text.includes('2590'), 'and the numbers in the file are the numbers on the screen');
+  assert.ok(csv.text.includes(paint.name), 'the best-seller column carries the name, not an id');
+});
+
+test('the company row is the month, not the invoices nobody claimed', async () => {
+  const month = (await client.get('/api/targets').set(admin)).body.month as string;
+  const board = await client.get(`/api/targets?month=${month}`).set(admin);
+  assert.equal(board.status, 200);
+  const sums = store.get('SELECT COALESCE(SUM(total),0) AS revenue, COUNT(*) AS invoices FROM invoices WHERE voided=0')!;
+  assert.equal(Math.round(Number(board.body.company.revenue) * 100), Math.round(Number(sums.revenue) * 100),
+    'the company number is every engineer’s sale added up — not only the bills with no engineer on them');
+  assert.equal(Number(board.body.company.invoices), Number(sums.invoices));
+  assert.equal(board.body.company.repActive, true, 'and the company row is never the dimmed one');
+  const perRep = board.body.reps.reduce((acc: number, row: any) => acc + row.revenue, 0)
+    + board.body.retired.reduce((acc: number, row: any) => acc + row.revenue, 0);
+  // A sale whose engineer was deleted keeps its money and loses its credit, so the rows do not add up
+  // to the company total by themselves — the unclaimed remainder is the difference, and it is shown.
+  const unclaimed = Number(store.get('SELECT COALESCE(SUM(total),0) AS revenue FROM invoices WHERE voided=0 AND rep_id IS NULL')!.revenue);
+  assert.equal(Math.round((perRep + unclaimed) * 100), Math.round(Number(sums.revenue) * 100), 'every EGP is either under an engineer or under «بدون مهندس»');
+});
+
+test('an old database carries its cash into the register when it opens, once', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'elhelp-upgrade-'));
+  const file = join(dir, 'mandoub.db');
+  try {
+    const now = Date.now();
+    const opened = new Store(file);
+    opened.run('INSERT INTO warehouses(id,name,created_at,updated_at) VALUES (?,?,?,?)', 'w-old', `مخزن ${randomUUID().slice(0, 6)}`, now, now);
+    opened.run(`INSERT INTO invoices(id,number,customer_name,warehouse_id,invoice_date,subtotal,discount,total,paid_amount,status,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, 'i-old', 'INV-2020-0001', 'مزرعة من الزمن ده', 'w-old', now - 400 * DAY, 3000, 0, 3000, 3000, 'paid', now, now);
+    assert.equal(Number(opened.get('SELECT COUNT(*) AS c FROM collection_events')!.c), 0, 'the write happened while there was no register to write to');
+    opened.close();
+
+    const upgraded = new Store(file);
+    const rows = upgraded.all('SELECT amount, source, note, created_at AS createdAt, invoice_id AS invoiceId FROM collection_events') as Array<Record<string, any>>;
+    assert.equal(rows.length, 1, 'the cash already on the books becomes one entry');
+    assert.equal(Number(rows[0].amount), 3000);
+    assert.equal(rows[0].invoiceId, 'i-old');
+    assert.equal(rows[0].source, 'office');
+    assert.match(String(rows[0].note), /قبل ما سجل التحصيل/, 'and the row says where it came from');
+    assert.equal(Number(rows[0].createdAt), now - 400 * DAY, 'dated on the invoice’s own day, so a month report reads the month the money moved');
+    upgraded.close();
+
+    const again = new Store(file);
+    assert.equal(Number(again.get("SELECT COUNT(*) AS c FROM collection_events WHERE invoice_id='i-old'")!.c), 1,
+      'reopening a database whose register is already written never duplicates the old cash');
+    again.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
