@@ -231,6 +231,9 @@ export function createApp(overrides: Partial<Config> = {}) {
    * every customer name and phone number one fetch away. Test: «the warehouse account sees the
    * warehouses and nothing else».
    */
+  // `/api/stock` already covers `/api/stock/report` by the prefix rule below — the monthly statement is
+  // quantities, which is the warehouse clerk's own record. The value columns are dropped inside that
+  // route for this scope, so a clerk who prints the sheet hands over counts and not a price list.
   const STOCK_ROUTES = ['/api/products', '/api/warehouses', '/api/stock', '/api/auth/me', '/api/auth/logout'];
   const stockAllowed = (path: string) => STOCK_ROUTES.some(route => path === route || path.startsWith(`${route}/`));
   function scopeGate(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -1334,11 +1337,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     kind: z.enum(['receipt', 'return', 'count', 'writeoff']),
     qty: z.number().finite().positive().max(1e6),
     note: z.string().trim().max(300).default(''),
+    /** Manager only: «this actually happened on that day». See the route for what it takes to honour that. */
+    at: z.number().int().positive().optional(),
   }).strict();
 
   const newInvoice = z.object({
     customerId: z.uuid(),
-    warehouseId: z.uuid(),
+    /** Required for the office; an engineer in the field may leave it out and get the warehouse of his customer's area. */
+    warehouseId: z.uuid().optional(),
     /** The engineer the sale belongs to. Defaults to whoever owns the customer. */
     repId: z.uuid().optional(),
     invoiceDate: z.number().int().positive().optional(),
@@ -1367,7 +1373,8 @@ export function createApp(overrides: Partial<Config> = {}) {
     return money(Number(store.get('SELECT COALESCE(SUM(qty),0) AS q FROM stock_movements WHERE warehouse_id=? AND product_id=?', warehouseId, productId)?.q || 0));
   }
 
-  const INVOICE_SELECT = `SELECT i.*, u.name AS repName, u.color AS repColor, c.name AS customerNameFromList, w.name AS warehouseName
+  const INVOICE_SELECT = `SELECT i.*, u.name AS repName, u.color AS repColor, c.name AS customerNameFromList, w.name AS warehouseName,
+    (SELECT x.role FROM users x WHERE x.id=i.created_by) AS authorRole
     FROM invoices i
     LEFT JOIN users u ON u.id=i.rep_id
     LEFT JOIN customers c ON c.id=i.customer_id
@@ -1381,6 +1388,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     paidAmount: money(row.paid_amount), status: row.status, stockShort: !!row.stock_short,
     note: row.note, voided: !!row.voided, voidReason: row.void_reason, voidedAt: row.voided_at ?? null,
     createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at,
+    /**
+     * Who typed the invoice: the engineer standing at the farm, or the office. The sale is credited
+     * to `repId` either way — this only says where the numbers came from, which is the difference
+     * between «he sold it» and «he sold it and he booked it himself», and the one thing the office
+     * needs to see when a paper note arrives two days late.
+     */
+    source: row.authorRole === 'rep' ? 'field' : 'dashboard',
   }) : undefined;
 
   function invoiceLines(invoiceId: string) {
@@ -1563,12 +1577,51 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.post('/api/stock/movements', adminOnly, catalogueOwnerOnly, (req, res) => {
     const parsed = newMovement.safeParse(req.body ?? {});
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الحركة غير صحيحة.' }); return; }
-    const { productId, warehouseId, kind, note } = parsed.data;
+    const { productId, warehouseId, kind, note, at } = parsed.data;
     if (!store.get('SELECT id FROM products WHERE id=?', productId)) { res.status(404).json({ error: 'المنتج غير موجود.' }); return; }
     if (!store.get('SELECT id FROM warehouses WHERE id=?', warehouseId)) { res.status(404).json({ error: 'المخزن غير موجود.' }); return; }
-    const before = onHand(warehouseId, productId);
+    /*
+     * A dated correction. The statement the manager asked for has a real hole without it: a truck that
+     * arrived on the 3rd and was typed on the 15th lands in the wrong month, and «الفاتح» and «الرصيده»
+     * then stop agreeing with the paper sheet. So a past date is accepted for a receipt or a return, and
+     * only by the manager account, because the person who counts the shelf is the last person who should
+     * be able to move one backwards.
+     *
+     * A past-dated count is refused outright: «the level on the 3rd was 140» is a statement about a
+     * snapshot nobody kept, and turning it into a delta against today's figure is how a correction
+     * creates two wrong numbers instead of one.
+     */
+    const atMs = at && at > 0 ? Math.min(at, Date.now()) : Date.now();
+    const backdated = Date.now() - atMs > 60000;
+    if (backdated) {
+      if (dashScope(res.locals.user) !== 'manager') {
+        res.status(403).json({ error: 'تاريخ الحركة يكون النهاردة — التصحيح بتاريخ قديم للمدير.', code: 'BACKDATE_MANAGER_ONLY' });
+        return;
+      }
+      if (kind === 'count' || kind === 'writeoff') {
+        res.status(400).json({ error: 'الجرد والخصم مايرجعش لورا — سجلهم بتاريخ النهاردة.', code: 'BACKDATE_KIND' });
+        return;
+      }
+    }
+    const levelAt = (moment: number) => money(Number(store.get(
+      'SELECT COALESCE(SUM(qty),0) AS q FROM stock_movements WHERE warehouse_id=? AND product_id=? AND created_at<=?',
+      warehouseId, productId, moment)?.q || 0));
+    const before = levelAt(Date.now());
     const signed = kind === 'count' ? money(parsed.data.qty - before)
       : kind === 'writeoff' ? -money(parsed.data.qty) : money(parsed.data.qty);
+    if (backdated && signed > 0) {
+      // A dated receipt is the one place where the same movement can be entered twice and both look
+      // legitimate — once on the day, once as a correction. Same sign, same amount, same week is treated
+      // as a duplicate and refused; it is rejected before it can make the month wrong in both directions.
+      const twin = store.get(`SELECT id FROM stock_movements
+        WHERE warehouse_id=? AND product_id=? AND kind=? AND qty=? AND created_at>=?
+          AND ABS(created_at - ?) <= ? LIMIT 1`,
+      warehouseId, productId, kind, signed, atMs - 7 * 86400000, atMs, 7 * 86400000) as { id: string } | undefined;
+      if (twin) {
+        res.status(409).json({ error: 'فيه حركة بنفس الكمية والنوع قرب نفس اليوم — دي مسجلة على الأرجح. الغيها وسجّلها صح، أو اكتبها بتاريخ النهاردة لو فعلاً حاجة تانية.', code: 'BACKDATE_CONFLICT' });
+        return;
+      }
+    }
     if (signed === 0) { res.status(400).json({ error: 'الجرد طابق اللي في الدفتر — مفيش حاجة تتسجل.', code: 'NO_CHANGE' }); return; }
     // No «not enough stock» refusal here, and that is deliberate. A count is bounded by what the
     // shelves hold, and a writeoff exists precisely to say «there is less than the ledger claims» —
@@ -1577,10 +1630,135 @@ export function createApp(overrides: Partial<Config> = {}) {
     const id = randomUUID();
     const now = Date.now();
     store.run('INSERT INTO stock_movements(id,product_id,warehouse_id,qty,kind,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)',
-      id, productId, warehouseId, signed, kind, note, res.locals.user.id, now);
-    store.audit(res.locals.user.id, 'stock.movement', { movementId: id, productId, warehouseId, kind, qty: signed });
+      id, productId, warehouseId, signed, kind, note, res.locals.user.id, atMs);
+    store.audit(res.locals.user.id, 'stock.movement', { movementId: id, productId, warehouseId, kind, qty: signed, backdated: backdated ? atMs : undefined });
     broadcast(); notifyStock();
-    res.status(201).json({ movement: { id, qty: signed, kind, onHand: money(before + signed) } });
+    // `onHand` is today's level, not the level on the day being corrected — the screen showing this row
+    // is showing the shelf as it stands now, and inventing an as-of figure here would be the first
+    // number in this product that means two different things depending on a date nobody typed.
+    res.status(201).json({ movement: { id, qty: signed, kind, onHand: money(before + signed), createdAt: atMs, backdated } });
+  });
+
+  /*
+   * The monthly statement of a warehouse — «فاضل قد إيه، ودخل قد إيه، وخرج قد إيه، والسجل بتاع
+   * كل عملية». One row per product per month, and the ledger under it is every movement that made
+   * those numbers, in the order they happened.
+   *
+   * Two rules make this worth more than a filtered list. The opening figure is the sum of everything
+   * before the window rather than a number somebody remembers, so the month closes on the shelf
+   * rather than on an argument. And the money columns exist only for a manager or the sales office:
+   * the warehouse account keeps the quantities and the movements, because the person who counts the
+   * bags is not the person who should be editing what they are worth.
+   */
+  app.get('/api/stock/report', adminOnly, (req, res) => {
+    const day = 86400000;
+    const to = Number.isFinite(Number(req.query.to)) && Number(req.query.to) > 0 ? Number(req.query.to) : Date.now();
+    const from = Number.isFinite(Number(req.query.from)) && Number(req.query.from) > 0 ? Number(req.query.from) : to - 60 * day;
+    if (from > to) { res.status(400).json({ error: 'تاريخ البداية بعد النهاية.' }); return; }
+    const warehouseId = typeof req.query.warehouseId === 'string' && req.query.warehouseId ? req.query.warehouseId : '';
+    const scope = dashScope(res.locals.user);
+    const wantsValues = scope !== 'stock';
+
+    const rows = store.all(`SELECT w.id AS warehouseId, w.name AS warehouseName, w.governorate AS governorate,
+        p.id AS productId, p.name AS productName, p.unit AS unit, p.default_price AS price,
+        COALESCE((SELECT SUM(m.qty) FROM stock_movements m
+          WHERE m.warehouse_id=w.id AND m.product_id=p.id AND m.created_at<?), 0) AS opening,
+        COALESCE((SELECT SUM(m.qty) FROM stock_movements m
+          WHERE m.warehouse_id=w.id AND m.product_id=p.id), 0) AS onHand
+      FROM warehouses w JOIN products p ON p.active=1
+      WHERE (w.active=1 OR EXISTS (SELECT 1 FROM stock_movements m2 WHERE m2.warehouse_id=w.id AND m2.created_at>=? AND m2.created_at<=?))
+        ${warehouseId ? 'AND w.id=?' : ''}
+      ORDER BY w.name COLLATE NOCASE, p.name COLLATE NOCASE`,
+      from, from, to, ...(warehouseId ? [warehouseId] : [])) as Array<Record<string, any>>;
+    const movements = store.all(`SELECT m.id, m.qty, m.kind, m.note, m.created_at AS createdAt, m.created_by AS createdBy,
+        m.warehouse_id AS warehouseId, m.product_id AS productId, u.name AS byName,
+        p.name AS productName, p.unit AS unit, p.default_price AS price,
+        (SELECT i.number FROM invoices i WHERE i.id=m.invoice_id) AS invoiceNumber
+      FROM stock_movements m
+      LEFT JOIN products p ON p.id=m.product_id
+      LEFT JOIN users u ON u.id=m.created_by
+      WHERE m.created_at>=? AND m.created_at<=? ${warehouseId ? 'AND m.warehouse_id=?' : ''}
+      ORDER BY m.created_at DESC, m.rowid DESC LIMIT 4000`,
+      from, to, ...(warehouseId ? [warehouseId] : [])) as Array<Record<string, any>>;
+
+    const grouped = new Map<string, Array<Record<string, any>>>();
+    for (const movement of movements) {
+      const key = `${movement.warehouseId}:${movement.productId}`;
+      const list = grouped.get(key); if (list) list.push(movement); else grouped.set(key, [movement]);
+    }
+    const perProduct = new Map<string, { in: number; out: number; adjust: number; count: number }>();
+    for (const [key, list] of grouped) {
+      const acc = { in: 0, out: 0, adjust: 0, count: list.length };
+      for (const movement of list) {
+        const qty = Number(movement.qty);
+        if (movement.kind === 'count' || movement.kind === 'writeoff') acc.adjust += qty;
+        else if (qty > 0) acc.in += qty;
+        else acc.out += qty;
+      }
+      perProduct.set(key, acc);
+    }
+    // A product with movements but no active catalogue row (stopped after it sold) still has to
+    // appear in the statement, or the month would not balance against the shelf.
+    const seen = new Set(rows.map(row => `${row.warehouseId}:${row.productId}`));
+    for (const [key, list] of grouped) {
+      if (seen.has(key)) continue;
+      const [warehouseId2, productId] = key.split(':');
+      const first = list[0];
+      rows.push({
+        warehouseId: warehouseId2, warehouseName: '', governorate: '',
+        productId, productName: first.productName ?? 'صنف محذوف', unit: first.unit ?? '', price: first.price ?? 0, opening: 0, onHand: 0,
+      });
+    }
+    const report = rows.map(row => {
+      const key = `${row.warehouseId}:${row.productId}`;
+      const acc = perProduct.get(key) ?? { in: 0, out: 0, adjust: 0, count: 0 };
+      const opening = money(row.opening);
+      const onHand = money(row.onHand);
+      const price = money(row.price);
+      const outQty = Math.abs(money(acc.out));
+      const item: Record<string, any> = {
+        warehouseId: row.warehouseId, warehouseName: row.warehouseName, productId: row.productId,
+        productName: row.productName, unit: row.unit, opening, inQty: money(acc.in), outQty,
+        adjustments: money(acc.adjust), closing: money(opening + acc.in + acc.out + acc.adjust),
+        movements: acc.count, onHand,
+      };
+      if (wantsValues) {
+        item.price = price;
+        item.inValue = money(acc.in * price);
+        item.outValue = money(outQty * price);
+        item.closingValue = money(onHand * price);
+      }
+      return item;
+    }).filter(row => row.movements > 0 || row.opening !== 0 || row.onHand !== 0);
+    const totals: Record<string, any> = report.reduce((acc, row) => ({
+      inQty: money(acc.inQty + row.inQty), outQty: money(acc.outQty + row.outQty),
+      closingValue: money(Number(acc.closingValue ?? 0) + Number(row.closingValue ?? 0)),
+      inValue: money(Number(acc.inValue ?? 0) + Number(row.inValue ?? 0)),
+      outValue: money(Number(acc.outValue ?? 0) + Number(row.outValue ?? 0)),
+    }), { inQty: 0, outQty: 0, closingValue: 0, inValue: 0, outValue: 0 });
+    if (!wantsValues) delete totals.closingValue; else { delete totals.inQty; delete totals.outQty; }
+    const named = new Map(report.map(row => [`${row.warehouseId}:${row.productId}`, row]));
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      from, to, valuesVisible: wantsValues,
+      warehouses: [...new Set(report.map(row => row.warehouseName).filter(Boolean))],
+      rows: report, totals,
+      ledger: movements.slice(0, 400).map(movement => {
+        const row = named.get(`${movement.warehouseId}:${movement.productId}`);
+        return {
+          id: movement.id, warehouseId: movement.warehouseId, warehouseName: row?.warehouseName ?? '',
+          productId: movement.productId, productName: row?.productName ?? String(movement.productName ?? ''),
+          unit: row?.unit ?? String(movement.unit ?? ''),
+          qty: money(movement.qty), kind: movement.kind, note: movement.note, createdAt: movement.createdAt,
+          by: String(movement.byName ?? ''), invoiceNumber: movement.invoiceNumber ?? null,
+          // The movement itself carries no price; the catalogue's current one is used, and the note
+          // below says so, because a statement that looks like a historical price list invites a
+          // fight over last March.
+          ...(wantsValues ? { value: money(Number(movement.qty) * Number(row?.price ?? movement.price ?? 0)) } : {}),
+        };
+      }),
+      truncated: movements.length >= 4000,
+    });
   });
 
   // ---- Invoices ----
@@ -1594,6 +1772,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (typeof req.query.warehouseId === 'string' && req.query.warehouseId) { where.push('i.warehouse_id=?'); params.push(req.query.warehouseId); }
     if (['unpaid', 'partial', 'paid'].includes(String(req.query.status))) { where.push('i.status=?'); params.push(String(req.query.status)); }
     if (req.query.stockShort === '1') where.push('i.stock_short=1');
+    // «field» = the engineer typed it on his phone, «dashboard» = the office typed it. The manager
+    // asks this when a paper note turns up two days after the phone was right there.
+    if (req.query.enteredBy === 'field') where.push("EXISTS (SELECT 1 FROM users x WHERE x.id=i.created_by AND x.role='rep')");
+    if (req.query.enteredBy === 'dashboard') where.push("NOT EXISTS (SELECT 1 FROM users x WHERE x.id=i.created_by AND x.role='rep')");
     const from = Number(req.query.from); if (Number.isFinite(from) && from > 0) { where.push('i.invoice_date>=?'); params.push(from); }
     const to = Number(req.query.to); if (Number.isFinite(to) && to > 0) { where.push('i.invoice_date<=?'); params.push(to); }
     const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
@@ -1616,10 +1798,19 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
 
   /**
-   * Write an invoice. Everything about the money is recomputed here, and the warehouse movements go
-   * in the same transaction, so the two can never be seen apart.
+   * Write an invoice — from the office dashboard and from the engineer's phone.
+   *
+   * The engineer used to write the sale on paper and the office typed it in hours later; now the
+   * line is written where the truck was unloaded. That is not a looser server: the same code runs
+   * for both, the customer's owner is still the one the sale is credited to, the prices come from
+   * the catalogue, the totals are computed here, and the invoice lands on the customer's name in the
+   * dashboard the second it is accepted. What an engineer cannot do is point his sale at somebody
+   * else (`canChooseRep`) or pick a warehouse in another governorate.
+   *
+   * Mounted on `auth` rather than `adminOnly` on purpose: the warehouse account is an administrator
+   * for sign-in, and it is kept out by the scope gate, which is where that rule is written down.
    */
-  app.post('/api/invoices', adminOnly, (req, res) => {
+  app.post('/api/invoices', auth, (req, res) => {
     const parsed = newInvoice.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الفاتورة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
@@ -1627,11 +1818,38 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     const data = parsed.data;
     const isAdmin = res.locals.user.role === 'admin';
-    const customer = store.get('SELECT id, name, rep_id AS repId FROM customers WHERE id=?', data.customerId) as { id: string; name: string; repId: string } | undefined;
+    const customer = store.get('SELECT id, name, rep_id AS repId, governorate FROM customers WHERE id=?', data.customerId) as { id: string; name: string; repId: string; governorate: string } | undefined;
     if (!customer) { res.status(404).json({ error: 'اختار العميل من قائمة المهندس الأول.' }); return; }
     if (!isAdmin && String(customer.repId) !== String(res.locals.user.id)) { res.status(403).json({ error: 'تقدر تسجّل فواتير عملاءك إنت بس.' }); return; }
-    const warehouse = store.get('SELECT id, name FROM warehouses WHERE id=? AND active=1', data.warehouseId) as { id: string; name: string } | undefined;
-    if (!warehouse) { res.status(404).json({ error: 'المخزن غير موجود أو متوقف.' }); return; }
+    /*
+     * Which warehouse the goods leave from. The office picks it. The engineer gets it from his
+     * customer's area, and when that is ambiguous he is asked rather than guessed for: a warehouse
+     * chosen by guess work moves stock between two stores and turns into a shortage nobody can
+     * explain at the end of the month.
+     */
+    let warehouse: { id: string; name: string; governorate?: string } | undefined;
+    if (data.warehouseId) {
+      warehouse = store.get('SELECT id, name, governorate FROM warehouses WHERE id=? AND active=1', data.warehouseId) as { id: string; name: string; governorate: string } | undefined;
+      if (!warehouse) { res.status(404).json({ error: 'المخزن غير موجود أو متوقف.' }); return; }
+      if (!isAdmin) {
+        const mine = store.get('SELECT governorate FROM users WHERE id=?', res.locals.user.id) as { governorate: string } | undefined;
+        const area = String(warehouse.governorate || '');
+        if (area && String(mine?.governorate || '') && area !== String(mine?.governorate || '')) {
+          res.status(403).json({ error: 'المخزن ده في محافظة تانية — كلّم المكتب يسجّل الفاتورة دي.', code: 'WAREHOUSE_NOT_YOURS' });
+          return;
+        }
+      }
+    } else {
+      if (isAdmin) { res.status(400).json({ error: 'اختار المخزن اللي هيصرف.', code: 'WAREHOUSE_REQUIRED' }); return; }
+      // Two rows is the most either query needs to read: one means «this is it», two means
+      // «somebody has to choose», and that is decided from the count rather than a guess.
+      const areaRows = store.all('SELECT id, name, governorate FROM warehouses WHERE active=1 AND governorate<>\'\' AND governorate=? LIMIT 2',
+        String(customer.governorate || '')) as { id: string; name: string; governorate: string }[];
+      const candidates = areaRows.length > 0 ? areaRows : store.all('SELECT id, name, governorate FROM warehouses WHERE active=1 LIMIT 2') as { id: string; name: string; governorate: string }[];
+      if (candidates.length === 0) { res.status(409).json({ error: 'مافيش مخزن شغال — كلّم المكتب يفتتح مخزن الأول.', code: 'NO_WAREHOUSE' }); return; }
+      if (candidates.length > 1) { res.status(409).json({ error: 'عندك أكتر من مخزن — اختار المخزن اللي البضاعة خرجت منه.', code: 'WAREHOUSE_AMBIGUOUS' }); return; }
+      warehouse = candidates[0];
+    }
     /*
      * The sale belongs to the engineer who owns the customer, and only the manager account can say
      * otherwise. Note `dashScope(...) === 'manager'` rather than the role check the rest of the file
@@ -1744,6 +1962,197 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
 
   /*
+   * The engineer's own view. He writes the invoice here instead of on paper, and he reads back the
+   * ones already booked in his name plus the prices and stock he is quoting from — nothing else.
+   * These routes exist because /api/invoices and /api/sales/summary are dashboard routes: a rep
+   * calling them would be reading the whole company's numbers, and the phone must not be able to do
+   * that even by accident.
+   */
+  app.post('/api/my/invoices', repOnly, (req, res) => {
+    const parsed = newInvoice.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: 'راجع العميل والكميات — ' + (parsed.error.issues[0]?.message || 'البيانات غير صحيحة.'), issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    const data = parsed.data;
+    // He may name himself on the invoice — a phone that re-sends its own id must not be punished for
+    // it — but never a colleague. Moving revenue between engineers stays the manager's decision.
+    if (data.repId && String(data.repId) !== String(res.locals.user.id)) {
+      res.status(400).json({ error: 'الفاتورة تتسجل باسمك إنت — مفيش نسبة لمهندس تاني من الموبايل.', code: 'REP_NOT_ALLOWED' });
+      return;
+    }
+    const customer = store.get('SELECT id, name, rep_id AS repId, governorate FROM customers WHERE id=?', data.customerId) as { id: string; name: string; repId: string; governorate: string } | undefined;
+    if (!customer) { res.status(404).json({ error: 'اختار العميل من قايمتك الأول — الفاتورة ما تتكتبش لعميل مش مسجل.' }); return; }
+    if (String(customer.repId) !== String(res.locals.user.id)) { res.status(403).json({ error: 'العميل ده مش في قايمتك — لو عميل لمهندس تاني، سيّب مكتب المبيعات يسجّلها.', code: 'CUSTOMER_NOT_OWNED' }); return; }
+    let warehouse: { id: string; name: string } | undefined;
+    if (data.warehouseId) {
+      warehouse = store.get('SELECT id, name FROM warehouses WHERE id=? AND active=1', data.warehouseId) as { id: string; name: string } | undefined;
+      if (!warehouse) { res.status(404).json({ error: 'المخزن غير موجود أو متوقف.' }); return; }
+    } else {
+      const areaRows = store.all("SELECT id, name FROM warehouses WHERE active=1 AND governorate<>'' AND governorate=? LIMIT 2", String(customer.governorate || '')) as { id: string; name: string }[];
+      const candidates = areaRows.length > 0 ? areaRows : store.all('SELECT id, name FROM warehouses WHERE active=1 LIMIT 2') as { id: string; name: string }[];
+      if (candidates.length === 0) { res.status(409).json({ error: 'مافيش مخزن شغال — كلّم المكتب يفتتح مخزن الأول.', code: 'NO_WAREHOUSE' }); return; }
+      if (candidates.length > 1) { res.status(409).json({ error: 'عندك أكتر من مخزن — اختار المخزن اللي البضاعة خرجت منه.', code: 'WAREHOUSE_AMBIGUOUS' }); return; }
+      warehouse = candidates[0];
+    }
+    const lines: Array<{ productId: string; productName: string; unit: string; qty: number; unitPrice: number; lineTotal: number }> = [];
+    for (const line of data.lines) {
+      const product = store.get('SELECT id, name, unit, default_price AS defaultPrice, active FROM products WHERE id=?', line.productId) as Record<string, any> | undefined;
+      if (!product) { res.status(409).json({ error: 'في منتج مش موجود في الأصناف.', code: 'PRODUCT_NOT_FOUND' }); return; }
+      if (!Number(product.active) && line.qty > 0) { res.status(409).json({ error: `«${product.name}» متوقف — كلّم المكتب ينشّطه.`, code: 'PRODUCT_INACTIVE' }); return; }
+      // The price is the catalogue's. An engineer quoting a number he agreed with a farmer is a
+      // discount negotiation, and that belongs on the office's desk where someone can be asked about
+      // it — `unitPrice` is accepted for the office only, and here it is deliberately ignored.
+      const unitPrice = money(Number(product.defaultPrice || 0));
+      const qty = Number(line.qty);
+      lines.push({ productId: String(product.id), productName: String(product.name), unit: String(product.unit), qty, unitPrice, lineTotal: money(qty * unitPrice) });
+    }
+    const subtotal = money(lines.reduce((sum, line) => sum + line.lineTotal, 0));
+    // A discount is not the engineer's to grant either; the office applies it when it reviews the bill.
+    const total = money(subtotal);
+    if (total <= 0) { res.status(400).json({ error: 'إجمالي الفاتورة صفر — الأصناف دي ملهاش سعر في المخزن لسه.', code: 'EMPTY_INVOICE' }); return; }
+
+    const id = randomUUID();
+    const now = Date.now();
+    let number = '';
+    let stockShort = 0;
+    store.transaction(() => {
+      const year = Number(localDate(config.timezone, now).slice(0, 4));
+      const series = store.get(`INSERT INTO invoice_series(year,last_number) VALUES(?,1)
+        ON CONFLICT(year) DO UPDATE SET last_number=last_number+1 RETURNING last_number AS n`, year) as { n: number } | undefined;
+      number = `INV-${year}-${String(Number(series?.n || 1)).padStart(4, '0')}`;
+      store.run(`INSERT INTO invoices(id,number,customer_id,customer_name,rep_id,warehouse_id,invoice_date,subtotal,discount,total,paid_amount,status,stock_short,note,created_by,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      id, number, customer.id, customer.name, res.locals.user.id, warehouse!.id, now, subtotal, 0, total,
+      money(data.paidAmount), paymentStatus(total, money(data.paidAmount)), 0, data.note, res.locals.user.id, now, now);
+      lines.forEach((line, index) => {
+        store.run('INSERT INTO invoice_lines(id,invoice_id,product_id,product_name,unit,qty,unit_price,line_total,position) VALUES (?,?,?,?,?,?,?,?,?)',
+          randomUUID(), id, line.productId, line.productName, line.unit, line.qty, line.unitPrice, line.lineTotal, index);
+        const before = onHand(warehouse!.id, line.productId);
+        if (before - line.qty < -0.001) stockShort = 1;
+        store.run('INSERT INTO stock_movements(id,product_id,warehouse_id,qty,kind,invoice_id,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+          randomUUID(), line.productId, warehouse!.id, -line.qty, 'sale', id, `فاتورة ${number}`, res.locals.user.id, now);
+      });
+      if (stockShort) store.run('UPDATE invoices SET stock_short=1 WHERE id=?', id);
+    });
+    store.audit(res.locals.user.id, 'invoice.create', { invoiceId: id, number, customerId: customer.id, warehouseId: warehouse!.id, total, lines: lines.length, stockShort, source: 'field' });
+    invalidateKpis(); broadcast(); notifyStock();
+    res.status(201).json({
+      invoice: asInvoice(store.get(`${INVOICE_SELECT} WHERE i.id=?`, id)), lines: invoiceLines(id), stockShort: !!stockShort,
+    });
+  });
+
+  /*
+   * His shelves, in his own units: what he took out, what came back, and what is left — quantities
+   * only, and only movements his own invoices caused. The manager's monthly statement carries the
+   * money; this carries enough for a man in a farm to say «I can bring you four, not ten» without
+   * calling the office. A sale somebody else made on the same pallet is not his to see.
+   */
+  app.get('/api/my/stock/report', repOnly, (req, res) => {
+    const day = 86400000;
+    const to = Number.isFinite(Number(req.query.to)) && Number(req.query.to) > 0 ? Number(req.query.to) : Date.now();
+    const from = Number.isFinite(Number(req.query.from)) && Number(req.query.from) > 0 ? Number(req.query.from) : to - 30 * day;
+    const repId = String(res.locals.user.id);
+    const own = 'EXISTS (SELECT 1 FROM invoices i WHERE i.id=m.invoice_id AND i.rep_id=?)';
+    /*
+     * The pairs he has moved at all, then one read per pair for the three figures the sheet needs:
+     * the shelf when the window opened, the level now, and what his own invoices drew in between.
+     * Written as separate small queries rather than one clever statement on purpose — «الفاتح» must be
+     * the shelf as it stood at the start of the month whatever happened since (the receipt that filled
+     * it is usually older than the window), and a person checking a number on paper should be able to
+     * find the same single query behind it.
+     */
+    const pairs = store.all(`SELECT DISTINCT m0.warehouse_id AS warehouseId, w.name AS warehouseName,
+        m0.product_id AS productId, p.name AS productName, p.unit AS unit
+      FROM stock_movements m0
+      JOIN warehouses w ON w.id=m0.warehouse_id
+      JOIN products p ON p.id=m0.product_id
+      WHERE EXISTS (SELECT 1 FROM invoices i WHERE i.id=m0.invoice_id AND i.rep_id=?)
+      LIMIT 200`, repId) as Array<Record<string, any>>;
+    const rows: Array<Record<string, any>> = [];
+    for (const pair of pairs) {
+      const opening = Number(store.get('SELECT COALESCE(SUM(qty),0) AS q FROM stock_movements WHERE warehouse_id=? AND product_id=? AND created_at<?',
+        pair.warehouseId, pair.productId, from)?.q || 0);
+      const onHand = Number(store.get('SELECT COALESCE(SUM(qty),0) AS q FROM stock_movements WHERE warehouse_id=? AND product_id=?',
+        pair.warehouseId, pair.productId)?.q || 0);
+      // `drawn`/`returned`/`lines` rather than `out`/`in`/`rows`: two of those are keywords in SQLite
+      // and the failure is a bare 500 from the driver, which is not worth the shorter names.
+      const own = store.get(`SELECT COALESCE(SUM(CASE WHEN m.qty<0 THEN -m.qty ELSE 0 END),0) AS drawn,
+          COALESCE(SUM(CASE WHEN m.qty>0 THEN m.qty ELSE 0 END),0) AS returned, COUNT(*) AS lines
+        FROM stock_movements m WHERE m.warehouse_id=? AND m.product_id=? AND m.created_at>=? AND m.created_at<=?
+          AND EXISTS (SELECT 1 FROM invoices i WHERE i.id=m.invoice_id AND i.rep_id=?)`,
+      pair.warehouseId, pair.productId, from, to, repId) as { drawn: number; returned: number; lines: number };
+      const drawn = money(own?.drawn || 0);
+      const back = money(own?.returned || 0);
+      // `closing` is the warehouse's level now, not «opening + his own draws»: he is not the keeper of
+      // the stock, so a figure derived only from his rows would read as −17 and be useless to him. What
+      // he drew is shown beside it, which is the number he actually came for.
+      rows.push({
+        warehouseId: pair.warehouseId, warehouseName: pair.warehouseName, productId: pair.productId,
+        productName: pair.productName, unit: pair.unit,
+        opening: money(opening), inQty: back, outQty: drawn, adjustments: 0,
+        closing: money(onHand), movements: Number(own?.lines || 0), onHand: money(onHand),
+      });
+    }
+    rows.sort((a, b) => String(a.warehouseName).localeCompare(String(b.warehouseName)) || String(a.productName).localeCompare(String(b.productName)));
+    const movements = store.all(`SELECT m.id, m.qty, m.kind, m.note, m.created_at AS createdAt, m.product_id AS productId,
+        m.warehouse_id AS warehouseId, p.name AS productName, p.unit AS unit, w.name AS warehouseName,
+        (SELECT i.number FROM invoices i WHERE i.id=m.invoice_id) AS invoiceNumber
+      FROM stock_movements m
+      JOIN products p ON p.id=m.product_id
+      JOIN warehouses w ON w.id=m.warehouse_id
+      WHERE m.created_at>=? AND m.created_at<=? AND ${own}
+      ORDER BY m.created_at DESC, m.rowid DESC LIMIT 200`, from, to, repId) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      from, to, valuesVisible: false,
+      rows,
+      totals: {},
+      ledger: movements.map(movement => ({
+        createdAt: Number(movement.createdAt), productName: movement.productName, unit: movement.unit,
+        warehouseName: movement.warehouseName, qty: money(movement.qty), kind: movement.kind,
+        note: movement.note, by: '', invoiceNumber: movement.invoiceNumber ?? null,
+      })),
+    });
+  });
+
+  /** The stores the engineer can name on an invoice: ids and names, no stock figures. */
+  app.get('/api/my/warehouses', repOnly, (_req, res) => {
+    const rows = store.all('SELECT id, name, governorate, district FROM warehouses WHERE active=1 ORDER BY name COLLATE NOCASE') as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ warehouses: rows.map(row => ({ id: row.id, name: row.name, governorate: row.governorate, district: row.district })) });
+  });
+
+  /**
+   * The engineer may cancel a sale he typed wrongly, while it is still only his and still nothing was
+   * collected on it. Once a coin is recorded against it, only the office can undo it: undoing a
+   * payment from the field is how a collection goes missing from the books without anyone noticing.
+   */
+  app.post('/api/my/invoices/:id/void', repOnly, (req, res) => {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 300) : '';
+    if (reason.length < 2) { res.status(400).json({ error: 'اكتب سبب إلغاء الفاتورة.', code: 'REASON_REQUIRED' }); return; }
+    const invoice = store.get('SELECT id, number, voided, rep_id AS repId, paid_amount AS paidAmount, created_by AS createdBy FROM invoices WHERE id=?', String(req.params.id)) as { id: string; number: string; voided: number; repId: string; paidAmount: number; createdBy: string } | undefined;
+    if (!invoice) { res.status(404).json({ error: 'الفاتورة غير موجودة.' }); return; }
+    if (String(invoice.repId) !== String(res.locals.user.id)) { res.status(403).json({ error: 'الفاتورة دي مش ليك.' }); return; }
+    if (Number(invoice.voided)) { res.status(409).json({ error: 'الفاتورة ملغاة بالفعل.' }); return; }
+    if (String(invoice.createdBy) !== String(res.locals.user.id)) { res.status(403).json({ error: 'المكتب هو اللي كتب الفاتورة دي، وهو اللي يلغيها.', code: 'NOT_YOUR_ENTRY' }); return; }
+    if (money(invoice.paidAmount) > 0) { res.status(409).json({ error: 'في تحصيل مسجل على الفاتورة — الإلغاء يبقى لمكتب المبيعات.', code: 'HAS_PAYMENT' }); return; }
+    const lines = store.all('SELECT product_id AS productId, qty FROM invoice_lines WHERE invoice_id=?', invoice.id) as Array<{ productId: string; qty: number }>;
+    const now = Date.now();
+    store.transaction(() => {
+      store.run('UPDATE invoices SET voided=1, void_reason=?, voided_at=?, updated_at=? WHERE id=?', reason, now, now, invoice.id);
+      const warehouseId = String(store.get('SELECT warehouse_id AS w FROM invoices WHERE id=?', invoice.id)!.w);
+      for (const line of lines) {
+        store.run('INSERT INTO stock_movements(id,product_id,warehouse_id,qty,kind,invoice_id,note,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+          randomUUID(), line.productId, warehouseId, Number(line.qty), 'return', invoice.id, `إلغاء من الموبايل ${invoice.number}`, res.locals.user.id, now);
+      }
+    });
+    store.audit(res.locals.user.id, 'invoice.void', { invoiceId: invoice.id, number: invoice.number, reason, lines: lines.length, source: 'field' });
+    invalidateKpis(); broadcast(); notifyStock();
+    res.json({ ok: true, restored: lines.length });
+  });
+
+  /*
    * The engineer's read-only view. The sales office writes invoices, and the man in the field sees
    * the ones that are his and the prices and stock he is quoting from — nothing else. These routes
    * exist because /api/invoices and /api/sales/summary are dashboard routes: a rep calling them would
@@ -1820,6 +2229,12 @@ export function createApp(overrides: Partial<Config> = {}) {
       FROM invoices i WHERE ${clause} AND i.status<>'paid'
       GROUP BY i.customer_id, i.customer_name ORDER BY outstanding DESC LIMIT 25`, ...params) as Array<Record<string, any>>;
     const count = Number(totalsRow.count || 0);
+    // Who typed the sale. The manager asked for the engineer to book his own invoice instead of
+    // writing it on paper, and this is the number that says whether it actually happened: a month of
+    // «dashboard» rows with a phone in every bag means the paper won anyway.
+    const bySource = store.all(`SELECT CASE WHEN EXISTS (SELECT 1 FROM users x WHERE x.id=i.created_by AND x.role='rep')
+        THEN 'field' ELSE 'dashboard' END AS enteredBy, COUNT(*) AS invoices, COALESCE(SUM(i.total),0) AS total
+      FROM invoices i WHERE ${clause} GROUP BY enteredBy`, ...params) as Array<Record<string, any>>;
     res.setHeader('Cache-Control', 'private, no-store');
     res.json({
       from, to,
@@ -1835,6 +2250,10 @@ export function createApp(overrides: Partial<Config> = {}) {
       })),
       topProducts: topProducts.map(row => ({ productId: row.productId, productName: row.productName, unit: row.unit, qty: money(row.qty), revenue: money(row.revenue) })),
       balances: balances.map(row => ({ customerId: row.customerId, customerName: row.customerName, outstanding: money(row.outstanding), lastInvoiceAt: row.lastInvoiceAt ?? null, invoices: Number(row.invoices) })),
+      bySource: {
+        field: bySource.find(row => row.enteredBy === 'field') ? { invoices: Number(bySource.find(row => row.enteredBy === 'field')!.invoices), total: money(bySource.find(row => row.enteredBy === 'field')!.total) } : { invoices: 0, total: 0 },
+        dashboard: bySource.find(row => row.enteredBy === 'dashboard') ? { invoices: Number(bySource.find(row => row.enteredBy === 'dashboard')!.invoices), total: money(bySource.find(row => row.enteredBy === 'dashboard')!.total) } : { invoices: 0, total: 0 },
+      },
     });
   });
 

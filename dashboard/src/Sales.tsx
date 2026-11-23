@@ -32,6 +32,8 @@ export default function Sales({ version = 0, canManageStaff = false }: { version
   const [statusFilter, setStatusFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [includeVoided, setIncludeVoided] = useState(false);
+  /** 'field' = typed by the engineer on his phone, 'dashboard' = typed at the office desk. */
+  const [enteredBy, setEnteredBy] = useState('all');
   const [error, setError] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -50,6 +52,7 @@ export default function Sales({ version = 0, canManageStaff = false }: { version
     if (statusFilter !== 'all') list.set('status', statusFilter);
     if (query.trim()) list.set('q', query.trim());
     if (includeVoided) list.set('includeVoided', '1');
+    if (enteredBy !== 'all') list.set('enteredBy', enteredBy);
     try {
       const [s, i] = await Promise.all([
         api<SalesSummary>(`/api/sales/summary?${scope}`),
@@ -58,7 +61,7 @@ export default function Sales({ version = 0, canManageStaff = false }: { version
       setSummary(s); setInvoices(i.invoices); setError('');
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحميل المبيعات.'); }
     finally { setLoaded(true); }
-  }, [period, repFilter, warehouseFilter, statusFilter, query, includeVoided]);
+  }, [period, repFilter, warehouseFilter, statusFilter, query, includeVoided, enteredBy]);
 
   useEffect(() => { void refresh(); }, [refresh, version]);
   useEffect(() => {
@@ -122,6 +125,14 @@ export default function Sales({ version = 0, canManageStaff = false }: { version
           <span>دوّر</span>
           <input value={query} placeholder="رقم الفاتورة أو اسم العميل" onChange={event => setQuery(event.target.value)} />
         </label>
+        <label className="field inline">
+          <span>اللي كتبها</span>
+          <select value={enteredBy} onChange={event => setEnteredBy(event.target.value)}>
+            <option value="all">الكل</option>
+            <option value="field">المهندس من الميدان</option>
+            <option value="dashboard">المكتب من الداشبورد</option>
+          </select>
+        </label>
         <label className="field inline"><span>الملغاة</span>
           <input type="checkbox" checked={includeVoided} onChange={event => setIncludeVoided(event.target.checked)} style={{ width: 'auto' }} />
         </label>
@@ -184,7 +195,12 @@ export default function Sales({ version = 0, canManageStaff = false }: { version
           </div>
 
           <div className="panel">
-            <h3 className="panel-title">الفواتير</h3>
+            <h3 className="panel-title">
+              الفواتير
+              <span className="muted small">
+                {` · ${formatNumber(summary.bySource?.field?.invoices ?? 0)} كتبها المهندس من الموبايل · ${formatNumber(summary.bySource?.dashboard?.invoices ?? 0)} كتبها المكتب`}
+              </span>
+            </h3>
             {invoices.length === 0 ? <p className="empty">مافيش فواتير بالفلاتر دي.</p> : (
               <ul className="stack-list">
                 {invoices.map(invoice => (
@@ -194,6 +210,7 @@ export default function Sales({ version = 0, canManageStaff = false }: { version
                       <div className="grow">
                         <h3>
                           <button className="btn ghost sm" onClick={() => void open(invoice)} style={{ padding: 0, border: 'none', fontFamily: 'inherit', fontSize: 'inherit' }}>{invoice.customerName}</button>
+                          {invoice.source === 'field' && <span className="pill"> من الميدان</span>}
                           {invoice.voided && <span className="muted small"> · ملغاة</span>}
                           {invoice.stockShort && !invoice.voided && <span className="visit-marks"> · مخزن عاجز</span>}
                         </h3>

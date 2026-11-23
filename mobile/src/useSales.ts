@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { myCatalogue, myInvoices } from './api';
-import type { CatalogueProduct, MyInvoice } from './types';
+import { ApiError, createMyInvoice, myCatalogue, myInvoices, voidMyInvoice } from './api';
+import { enqueueInvoice, flushOutbox } from './reports';
+import type { CatalogueProduct, InvoiceInput, MyInvoice } from './types';
 
 /**
  * The engineer's own sales and the catalogue, both read from the server on entry.
@@ -23,6 +24,11 @@ export interface SalesBundle {
   /** The server has no sales endpoints (an older build): hide the tab instead of showing an error. */
   unsupported: boolean;
   refresh: () => Promise<void>;
+  /** Sales typed with no signal, waiting on the phone. */
+  pendingInvoices: number;
+  /** 'sent' landed on the server; 'queued' is on the phone and will go by itself. */
+  submit: (invoice: InvoiceInput, ownerId?: string) => Promise<'sent' | 'queued'>;
+  cancel: (id: string, reason: string) => Promise<boolean>;
 }
 
 /** `customerId` narrows the money pane to one farm — the question asked from the customer sheet. */
@@ -35,6 +41,7 @@ export function useSales(options: { enabled?: boolean; customerId?: string } = {
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState('');
   const [unsupported, setUnsupported] = useState(false);
+  const [pendingInvoices, setPendingInvoices] = useState(0);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -56,5 +63,31 @@ export function useSales(options: { enabled?: boolean; customerId?: string } = {
 
   useEffect(() => { if (enabled) void refresh(); }, [enabled, refresh]);
 
-  return { invoices, products, outstanding, loading, error, unsupported, refresh };
+  /**
+   * A sale that cannot reach the server is kept on the phone, not thrown away — that is the whole
+   * point of replacing the paper notebook. `outboxKey` treats a payload with no `id` as unique, so
+   * two invoices typed minutes apart are never merged into one, and the recorded time rides along
+   * unread: the office's books are dated by the server's clock, not by whichever phone was slow.
+   */
+  const submit = useCallback(async (invoice: InvoiceInput, ownerId?: string) => {
+    try {
+      await createMyInvoice(invoice);
+      await refresh();
+      return 'sent';
+    } catch (e) {
+      if ((e as ApiError).status !== 0) throw e;
+      await enqueueInvoice({ ...invoice, recordedAt: Date.now() }, ownerId);
+      const result = await flushOutbox(ownerId).catch(() => null);
+      setPendingInvoices(result?.pendingInvoices ?? 1);
+      if (result && result.sent > 0) await refresh();
+      return 'queued';
+    }
+  }, [refresh]);
+
+  const cancel = useCallback(async (id: string, reason: string) => {
+    try { await voidMyInvoice(id, reason); await refresh(); return true; }
+    catch { return false; }
+  }, [refresh]);
+
+  return { invoices, products, outstanding, loading, error, unsupported, refresh, pendingInvoices, submit, cancel };
 }

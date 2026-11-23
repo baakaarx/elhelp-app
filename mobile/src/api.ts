@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { CatalogueProduct, Customer, CustomerInput, DailyReportInput, GeoPoint, MyInvoice, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { CatalogueProduct, Customer, CustomerInput, DailyReportInput, GeoPoint, InvoiceInput, MyInvoice, ReportInput, StockReport, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -140,6 +140,28 @@ export const myInvoices = (customerId?: string) =>
   get<{ invoices: MyInvoice[]; outstanding: number }>(`/api/my/invoices${customerId ? `?customerId=${encodeURIComponent(customerId)}` : ''}`);
 /** Prices and what is on the shelf — so a promise made in a farm matches what the truck can carry. */
 export const myCatalogue = () => get<{ products: CatalogueProduct[] }>('/api/my/catalogue');
+/**
+ * The engineer's own invoice, written where the goods were handed over. `recordedAt` is the moment he
+ * typed it and is only sent after a trip through the outbox; the server stamps the invoice with its
+ * own clock either way, so a sale that reached it two days late is still booked on the day it happened
+ * in the only sense that matters — it is not the office's entry, it is his.
+ */
+export const createMyInvoice = (invoice: InvoiceInput & { recordedAt?: number }) =>
+  post<{ invoice: MyInvoice; stockShort: boolean }>('/api/my/invoices', invoice);
+/** The stores he may name on an invoice: ids and names, no stock figures and no prices. */
+export const myWarehouses = () => get<{ warehouses: { id: string; name: string; governorate: string; district: string }[] }>('/api/my/warehouses');
+/** His own shelves: what is left, what came in and what went out in the period. Quantities only. */
+export const myStockReport = (params: { from?: number; to?: number; warehouseId?: string } = {}) => {
+  const query = new URLSearchParams();
+  if (params.from) query.set('from', String(params.from));
+  if (params.to) query.set('to', String(params.to));
+  if (params.warehouseId) query.set('warehouseId', params.warehouseId);
+  const text = query.toString();
+  return get<StockReport>(`/api/my/stock/report${text ? `?${text}` : ''}`);
+};
+/** His own unpaid rows only; anything with money on it is the office's to undo. */
+export const voidMyInvoice = (id: string, reason: string) =>
+  post<{ ok: true; restored: number }>(`/api/my/invoices/${id}/void`, { reason });
 
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);

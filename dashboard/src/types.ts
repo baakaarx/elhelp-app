@@ -366,6 +366,8 @@ export interface Invoice {
   createdAt: number;
   lineCount?: number;
   lines?: InvoiceLine[];
+  /** 'field' = the engineer typed it on his phone; 'dashboard' = the office typed it. */
+  source?: 'field' | 'dashboard';
 }
 
 export interface SalesSummary {
@@ -384,6 +386,7 @@ export interface SalesSummary {
   byRep: { repId: string | null; repName: string; repColor: string; invoices: number; total: number; paid: number; outstanding: number; openInvoices: number }[];
   topProducts: { productId: string | null; productName: string; unit: string; qty: number; revenue: number }[];
   balances: { customerId: string | null; customerName: string; outstanding: number; lastInvoiceAt: number | null; invoices: number }[];
+  bySource?: { field: { invoices: number; total: number }; dashboard: { invoices: number; total: number } };
 }
 
 export interface StaffAccount {
@@ -394,4 +397,37 @@ export interface StaffAccount {
   active: boolean;
   createdAt: number;
   lastSeen: number | null;
+}
+
+/** The monthly statement of the warehouses: opening → in → out → closing, and the ledger behind it. */
+export interface StockReportRow {
+  warehouseId: string;
+  warehouseName: string;
+  productId: string;
+  productName: string;
+  unit: string;
+  opening: number;
+  inQty: number;
+  outQty: number;
+  adjustments: number;
+  closing: number;
+  movements: number;
+  onHand: number;
+  price?: number;
+  inValue?: number;
+  outValue?: number;
+  closingValue?: number;
+}
+export interface StockReport {
+  from: number;
+  to: number;
+  valuesVisible: boolean;
+  warehouses: string[];
+  rows: StockReportRow[];
+  totals: Record<string, number>;
+  truncated?: boolean;
+  ledger: {
+    id: string; warehouseId: string; warehouseName: string; productId: string; productName: string; unit: string;
+    qty: number; kind: StockMovement['kind']; note: string; createdAt: number; by: string; invoiceNumber: string | null; value?: number;
+  }[];
 }

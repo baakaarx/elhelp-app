@@ -159,7 +159,8 @@ export const visitPurposeLabels: Record<VisitPurpose, string> = {
   visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
 /** `visit-checkin` / `visit-checkout` are the two halves of a visit typed without a signal. */
-export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout';
+/** `invoice` is a sale the engineer typed with no signal — the office's dashboard cannot show it yet. */
+export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout' | 'invoice';
 export interface OutboxItem {
   key: string; kind: OutboxKind; payload: string; createdAt: number; attempts: number;
   /** A permanent server rejection is retained but paused until the engineer manually retries. */
@@ -187,6 +188,8 @@ export interface MyInvoice {
   status: 'unpaid' | 'partial' | 'paid';
   stockShort: boolean;
   note: string;
+  createdBy?: string;
+  source?: 'field' | 'dashboard';
   lines: MyInvoiceLine[];
 }
 export interface CatalogueProduct {
@@ -202,6 +205,42 @@ export interface SalesTotals {
   paid: number;
   outstanding: number;
   count: number;
+}
+/**
+ * What an engineer sends to book a sale. No price and no discount: the catalogue owns the first and
+ * the office owns the second, so a phone cannot negotiate its own numbers into the books.
+ */
+export interface InvoiceInput {
+  customerId: string;
+  warehouseId?: string;
+  lines: { productId: string; qty: number }[];
+  paidAmount?: number;
+  note?: string;
+}
+/** The engineer's own copy of the warehouse statement: quantities, no money columns. */
+export interface StockReportRow {
+  warehouseName: string;
+  productName: string;
+  unit: string;
+  opening: number;
+  inQty: number;
+  outQty: number;
+  adjustments: number;
+  closing: number;
+  movements: number;
+  onHand: number;
+}
+export interface StockReport {
+  from: number;
+  to: number;
+  valuesVisible: boolean;
+  rows: StockReportRow[];
+  totals: Record<string, number>;
+  ledger: {
+    createdAt: number; productName: string; unit: string; qty: number; kind: string;
+    note: string; by: string; invoiceNumber: string | null; warehouseName?: string;
+  }[];
+  truncated?: boolean;
 }
 export const invoiceStatusLabels: Record<MyInvoice['status'], string> = {
   unpaid: 'غير محصّل', partial: 'نص تحصيل', paid: 'محصّل',

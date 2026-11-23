@@ -408,7 +408,7 @@ export default function App() {
         {tab === 'sales' && <Sales version={feedVersion} canManageStaff={scope === 'manager'} />}
         // The sales office reads the shelves; the price and movement forms belong to the warehouse
         // account (and to the manager, who keeps the override).
-        {tab === 'stock' && <Stock version={feedVersion} readOnly={scope === 'sales'} />}
+        {tab === 'stock' && <Stock version={feedVersion} readOnly={scope === 'sales'} canCorrect={scope === 'manager'} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
         {tab === 'staff' && scope === 'manager' && <Staff />}
         {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}

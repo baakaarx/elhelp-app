@@ -71,8 +71,9 @@ async function customerOf(repId: string, name = `مزرعة ${randomUUID().slice
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return res.body.customer.id as string;
 }
-async function move(warehouseId: string, productId: string, qty: number, kind: 'receipt' | 'count' | 'writeoff' | 'return' = 'receipt') {
-  const res = await client.post('/api/stock/movements').set(admin).send({ warehouseId, productId, qty, kind });
+/** `at` puts the movement on an earlier day — the manager's dated correction. */
+async function move(warehouseId: string, productId: string, qty: number, kind: 'receipt' | 'count' | 'writeoff' | 'return' = 'receipt', at?: number) {
+  const res = await client.post('/api/stock/movements').set(admin).send({ warehouseId, productId, qty, kind, ...(at ? { at } : {}) });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return res.body.movement.onHand as number;
 }
@@ -434,6 +435,170 @@ test('an engineer can ask what one customer owes, and nothing more', async () =>
   const peek = await client.get(`/api/my/invoices?customerId=${strangerId}`).set(auth).send();
   assert.equal(peek.status, 200);
   assert.equal(peek.body.invoices.length, 0, 'the filter narrows his own rows; it never widens them');
+});
+
+test('the engineer books his own invoice and it lands on his customer in the dashboard', async () => {
+  const repRow = await rep('مهندس الكارنية');
+  const auth = repRow.auth;
+  const warehouse = await newWarehouse();
+  const product = await newProduct('لابداه ٢٥ كيلو', 400);
+  await move(warehouse.id, product.id, 30);
+  const customerId = await customerOf(repRow.id, 'عمارة الكارنية');
+
+  // He tried to invent a price and a discount. Neither is his to decide: the catalogue prices and
+  // the office discounts. He may name himself, and only himself, on the sale.
+  const written = await client.post('/api/my/invoices').set(auth).send({
+    customerId, warehouseId: warehouse.id,
+    lines: [{ productId: product.id, qty: 4, unitPrice: 1 }],
+    discount: 500, repId: repRow.id,
+  });
+  assert.equal(written.status, 201, JSON.stringify(written.body));
+  const invoice = written.body.invoice;
+  assert.equal(invoice.total, 1600, 'four at the catalogue price — the invented unitPrice and discount were ignored');
+  assert.equal(invoice.discount, 0);
+  assert.equal(invoice.paidAmount, 0, 'nothing was collected, so nothing is claimed');
+  assert.equal(invoice.status, 'unpaid');
+  assert.equal(invoice.source, 'field', 'the dashboard can see who typed it');
+  assert.equal(invoice.customerName, 'عمارة الكارنية', 'and on whose name it landed');
+
+  assert.equal((await stockOf(warehouse.id, product.id)).onHand, 26, 'the shelf moved on his sale, no separate trip to the office');
+
+  const list = await client.get(`/api/invoices?customerId=${customerId}`).set(admin);
+  assert.equal(list.body.invoices.length, 1);
+  assert.equal(list.body.invoices[0].number, invoice.number, 'the office reads the same row he wrote');
+
+  const counted = await client.get(`/api/sales/summary?warehouseId=${warehouse.id}`).set(admin);
+  assert.equal(counted.body.bySource.field.invoices, 1);
+  assert.equal(counted.body.bySource.field.total, 1600);
+
+  // He cannot sell for a farmer who is not his, and he cannot re-point his own sale at a colleague.
+  const other = await rep('مهندس تاني');
+  const foreignCustomer = await customerOf(other.id, 'مزرعة مش بتاعته');
+  const stolen = await client.post('/api/my/invoices').set(auth).send({ customerId: foreignCustomer, lines: [{ productId: product.id, qty: 1 }] });
+  assert.equal(stolen.status, 403);
+  assert.equal(stolen.code ?? stolen.body.code, 'CUSTOMER_NOT_OWNED');
+
+  // An invoice he typed is his to cancel while it is only his — and not one coin recorded against it.
+  const voided = await client.post(`/api/my/invoices/${invoice.id}/void`).set(auth).send({ reason: 'كمية غلط' });
+  assert.equal(voided.status, 200, JSON.stringify(voided.body));
+  assert.equal((await stockOf(warehouse.id, product.id)).onHand, 30, 'and the bags go back on the shelf');
+
+  const billed = await client.post('/api/my/invoices').set(auth).send({ customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 2 }], paidAmount: 100 });
+  assert.equal(billed.body.invoice.paidAmount, 100, 'the cash he took is on the row the office then reads');
+  assert.equal(billed.body.invoice.status, 'partial');
+  const paid = await client.post(`/api/my/invoices/${billed.body.invoice.id}/void`).set(auth).send({ reason: 'هشيل الفاتورة' });
+  assert.equal(paid.status, 409, 'a sale with money collected on it is the office’s to undo');
+  assert.equal(paid.body.code, 'HAS_PAYMENT');
+});
+
+test('the monthly statement closes on the shelf, and the clerk sees counts not prices', async () => {
+  const warehouse = await newWarehouse();
+  const product = await newProduct('سيراميك ٦٠', 120);
+  const since = Date.now() - 3 * 86400000;
+  await move(warehouse.id, product.id, 100);            // the receipt
+  await move(warehouse.id, product.id, 7, 'writeoff');  // seven bags broke on the floor: −7
+  await move(warehouse.id, product.id, 140, 'count');   // a count states the level it found, so +47
+  const repRow = await rep('مهندس الجرد');
+  const customerId = await customerOf(repRow.id, 'عميل الجرد');
+  await client.post('/api/my/invoices').set(repRow.auth).send({ customerId, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 13 }] });
+
+  const report = await client.get(`/api/stock/report?warehouseId=${warehouse.id}&from=${since}&to=${Date.now() + 86400000}`).set(admin);
+  assert.equal(report.status, 200);
+  const row = report.body.rows.find((item: any) => item.productId === product.id);
+  assert.ok(row, 'the product is in the statement');
+  assert.equal(row.inQty, 100, 'the receipt is what came in');
+  assert.equal(row.outQty, 13, 'the sale is what went out');
+  assert.equal(row.adjustments, 40, 'a 47-bag count correction and seven broken bags');
+  assert.equal(row.closing, 100 + 40 - 13, 'opening + in + adjustments − out = what is on the shelf');
+  assert.equal(row.closing, (await stockOf(warehouse.id, product.id)).onHand, 'and it equals the live figure, not somebody’s memory');
+  assert.equal(row.closingValue, row.closing * 120, 'the manager sees the value');
+  assert.equal(report.body.totals.closingValue, row.closingValue);
+
+  const clerk = await staff('stock', 'بتاع الجرد');
+  const theirs = await client.get(`/api/stock/report?warehouseId=${warehouse.id}&from=${since}&to=${Date.now() + 86400000}`).set(clerk.auth);
+  assert.equal(theirs.status, 200, 'the statement is his own paperwork');
+  assert.equal(theirs.body.valuesVisible, false);
+  const clerkRow = theirs.body.rows.find((item: any) => item.productId === product.id);
+  assert.equal(clerkRow.closing, row.closing, 'he reads the same quantities');
+  assert.equal(clerkRow.closingValue, undefined, 'and none of the money');
+  assert.equal(clerkRow.price, undefined, 'not even the price he is not allowed to change');
+  assert.equal(theirs.body.ledger[0].value, undefined, 'the ledger rows carry no value either');
+  assert.ok(theirs.body.ledger.some((item: any) => item.kind === 'sale' && item.invoiceNumber), 'the movement says which invoice took the goods');
+
+  const bogus = await client.get(`/api/stock/report?from=${Date.now()}&to=${since}`).set(admin);
+  assert.equal(bogus.status, 400);
+});
+
+test('the engineer sees his own draws from the shelf, without the money', async () => {
+  const warehouse = await newWarehouse();
+  const otherStore = await newWarehouse('مخزن تاني للجرد');
+  const product = await newProduct('بوصية ٢ بوصة', 60);
+  // The receipt is dated before the window on purpose: that is what a monthly statement is for — the
+  // opening figure is the shelf as it stood when the month started, not the movements inside it.
+  await move(warehouse.id, product.id, 50, 'receipt', Date.now() - 5 * 86400000);
+  const mine = await rep('مهندس البوص');
+  const theirs = await rep('مهندس تاني على نفس الصنف');
+  const myCustomer = await customerOf(mine.id, 'عميل البوص');
+  const theirCustomer = await customerOf(theirs.id, 'عميل البوص التاني');
+  await client.post('/api/my/invoices').set(mine.auth).send({ customerId: myCustomer, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 8 }] });
+  await client.post('/api/invoices').set(admin).send({ customerId: theirCustomer, warehouseId: warehouse.id, lines: [{ productId: product.id, qty: 5 }] });
+  await move(otherStore.id, product.id, 200);
+
+  const since = Date.now() - 3 * 86400000;
+  const report = await client.get(`/api/my/stock/report?from=${since}&to=${Date.now() + 86400000}`).set(mine.auth);
+  assert.equal(report.status, 200);
+  assert.equal(report.body.valuesVisible, false, 'no price column on a phone');
+  const row = report.body.rows.find((item: any) => item.productName === 'بوصية ٢ بوصة');
+  assert.ok(row, 'his own draw is on the sheet');
+  assert.equal(row.outQty, 8, 'eight pieces, which is what he handed over');
+  assert.equal(row.closing, 37, 'and the shelf level he has to quote from — the office took five of them too');
+
+  const list = await client.get(`/api/my/stock/report?from=${since}&to=${Date.now() + 86400000}`).set(theirs.auth);
+  const theirRow = list.body.rows.find((item: any) => item.productName === 'بوصية ٢ بوصة');
+  assert.ok(!theirRow || theirRow.outQty !== 8, 'and he cannot read another engineer\'s sales out of it');
+  assert.ok(report.body.ledger.every((item: any) => item.invoiceNumber), 'every line names the invoice that moved it');
+  assert.equal(report.body.ledger[0].price, undefined);
+  assert.equal(report.body.ledger[0].value, undefined);
+});
+
+test('a dated correction is the manager’s, and a dated lie is not anybody’s', async () => {
+  const warehouse = await newWarehouse();
+  const product = await newProduct('اسمنت dated', 320);
+  const past = Date.now() - 12 * 86400000;
+  const clerk = await staff('stock', 'بتاع حركة قديمة');
+  const office = await staff('sales', 'مكتب حركة قديمة');
+
+  // The clerk is the one standing at the shelf, and his entry is the level today — never last week.
+  const denied = await client.post('/api/stock/movements').set(clerk.auth).send({ warehouseId: warehouse.id, productId: product.id, qty: 10, kind: 'receipt', at: past });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.code, 'BACKDATE_MANAGER_ONLY');
+  const officeDenied = await client.post('/api/stock/movements').set(office.auth).send({ warehouseId: warehouse.id, productId: product.id, qty: 10, kind: 'receipt', at: past });
+  assert.equal(officeDenied.status, 403, 'a count of the shelf is not the office’s to backdate either');
+
+  const fixed = await client.post('/api/stock/movements').set(admin).send({ warehouseId: warehouse.id, productId: product.id, qty: 10, kind: 'receipt', at: past });
+  assert.equal(fixed.status, 201, JSON.stringify(fixed.body));
+  assert.equal(fixed.body.movement.backdated, true);
+  assert.equal(fixed.body.movement.createdAt, past, 'the row is filed on the day it happened');
+  assert.equal(fixed.body.movement.onHand, 10, 'and the level shown is today’s');
+
+  // «the level on that day was X» cannot be honoured with a delta against today.
+  const badCount = await client.post('/api/stock/movements').set(admin).send({ warehouseId: warehouse.id, productId: product.id, qty: 40, kind: 'count', at: past });
+  assert.equal(badCount.status, 400);
+  assert.equal(badCount.body.code, 'BACKDATE_KIND');
+
+  // The same truck typed twice, once on the day and once as a correction, is refused rather than
+  // doubling the shelf.
+  const twin = await client.post('/api/stock/movements').set(admin).send({ warehouseId: warehouse.id, productId: product.id, qty: 10, kind: 'receipt', at: past + 2 * 86400000 });
+  assert.equal(twin.status, 409);
+  assert.equal(twin.body.code, 'BACKDATE_CONFLICT');
+  assert.equal((await stockOf(warehouse.id, product.id)).onHand, 10, 'and the shelf never moved twice');
+
+  // A month statement reads the dated row where it belongs, not where it was typed.
+  const monthAgo = Date.now() - 30 * 86400000;
+  const statement = await client.get(`/api/stock/report?warehouseId=${warehouse.id}&from=${monthAgo}&to=${Date.now() + 86400000}`).set(admin);
+  const row = statement.body.rows.find((item: any) => item.productId === product.id);
+  assert.ok(row.inQty > 0, 'the receipt lands inside the window it is dated in');
+  assert.equal(row.opening, 0, 'nothing was on the shelf before it');
 });
 
 test('the money record outlives retention and the people in it', async () => {
