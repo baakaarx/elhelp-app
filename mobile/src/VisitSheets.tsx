@@ -202,7 +202,7 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
 
   return (
     <Sheet visible={Boolean(visit)} onClose={onClose} title={`${late ? 'تسجيل نتيجة الزيارة' : 'إنهاء زيارة'} · ${visit.customerName}`}>
-      <Field label="نتيجة الزيارة *" value={outcome} onChangeText={setOutcome} multiline placeholder="اتفقنا على توريد ٢٠ كرتونة الأسبوع القادم" style={{ minHeight: 80 }} />
+      <Field label="نتيجة الزيارة *" value={outcome} onChangeText={setOutcome} multiline placeholder="مثال: اتفقنا على ١٠ شيكارة يوريا و٢٤ عبوة مبيد الأسبوع الجاي" style={{ minHeight: 80 }} />
       {isMoney && <Field label="المبلغ المحصَّل (ج.م)" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" style={styles.ltr} hint="يُضاف تلقائيًا إلى تقارير التحصيل في لوحة المدير." />}
       <Field label="ملاحظات إضافية" value={notes} onChangeText={setNotes} multiline style={{ minHeight: 60 }} />
       {error ? <Text style={styles.error}>{error}</Text> : null}

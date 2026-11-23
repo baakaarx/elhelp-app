@@ -22,7 +22,14 @@ const MOVEMENT_KINDS = [
 const KIND_LABELS: Record<StockMovement['kind'], string> = {
   opening: 'رصيد ابتداي', receipt: 'استلام', sale: 'صرف بفاتورة', return: 'مرتجع', count: 'جرد', writeoff: 'خصم / تالف',
 };
-const emptyProduct = { name: '', unit: 'كرتونة', defaultPrice: '', notes: '' };
+const emptyProduct = { name: '', unit: '', defaultPrice: '', notes: '' };
+/**
+ * The units a pesticide and fertilizer dealer counts in. Suggestions, not a closed list — a new
+ * package shape should not need a code change — but they are here because the unit is not a label:
+ * it is the thing the price is for. «كرتونة» chosen by mistake next to a bottle price is a carton
+ * sold for the price of a bottle, and a shelf that drops 1 for what left as 12.
+ */
+const UNIT_SUGGESTIONS = ['عبوة', 'زجاجة', 'لتر', 'مللي', 'جركن', 'جالون', 'شيكارة', 'كيس', 'كرتونة', 'تنكة', 'كيلو', 'طن'];
 const emptyWarehouse = { name: '', governorate: '', district: '', notes: '' };
 
 export default function Stock({ readOnly = false, canCorrect = false, version = 0 }: { readOnly?: boolean; canCorrect?: boolean; version?: number }) {
@@ -36,7 +43,10 @@ export default function Stock({ readOnly = false, canCorrect = false, version = 
   const [showAllProducts, setShowAllProducts] = useState(false);
   const [productForm, setProductForm] = useState(emptyProduct);
   const [addingProduct, setAddingProduct] = useState(false);
-  const [priceEdit, setPriceEdit] = useState<{ id: string; price: string } | null>(null);
+  // Set when the same form is editing an existing صنف. It is the only way to fix a unit that was
+  // typed wrong: the price box alone could not, and the wrong unit is the one mistake that quietly
+  // changes both the money and the shelf.
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   // The warehouse is part of the movement, not a filter above it. It used to be only the filter — so
   // with «كل المخازن» showing, a receipt silently went to whichever store came first in the list,
   // which is exactly how a shelf ends up wrong in two places at once.
@@ -107,28 +117,32 @@ export default function Stock({ readOnly = false, canCorrect = false, version = 
   const movementWarehouse = moveForm.warehouseId || suggestedWarehouse;
   useEffect(() => { setMoveForm(form => ({ ...form, warehouseId: '' })); }, [warehouseId]);
 
-  async function saveProduct() {
-    if (productForm.name.trim().length < 2) { setError('اكتب اسم المنتج.'); return; }
-    setBusy(true);
-    try {
-      await post('/api/products', {
-        name: productForm.name.trim(), unit: productForm.unit.trim() || 'كرتونة',
-        defaultPrice: Number(productForm.defaultPrice || 0), notes: productForm.notes.trim(),
-      });
-      setProductForm(emptyProduct); setAddingProduct(false); setError('');
-      await refresh();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إضافة المنتج.'); }
-    finally { setBusy(false); }
+  function openProductForm(product: Product | null) {
+    setEditingProduct(product);
+    setProductForm(product
+      ? { name: product.name, unit: product.unit, defaultPrice: String(product.defaultPrice), notes: product.notes ?? '' }
+      : emptyProduct);
+    setAddingProduct(true);
   }
 
-  async function savePrice(product: Product) {
-    if (!priceEdit) return;
+  async function saveProduct() {
+    if (productForm.name.trim().length < 2) { setError('اكتب اسم المنتج.'); return; }
+    // The unit is not decoration, so it is not guessed. «سيبها فاضي تتسجل كرتونة» was a wrong answer.
+    if (!productForm.unit.trim()) { setError('اكتب الوحدة: السعر ده سعر الوحدة نفسها — سعر العبوة غير سعر الكرتونة اللي جواها 12 عبوة، ومن غير وحدة الرقم بلا معنى.'); return; }
+    const price = Number(productForm.defaultPrice || 0);
+    if (productForm.defaultPrice.trim() === '') { setError('اكتب سعر الوحدة. سيّبها فاضي مش «لحد ما أحد يفتكر» — الصنف الفاضي سعره هيتباع ببلاش أول فاتورة.'); return; }
+    if (!(price >= 0)) { setError('سعر الوحدة لازم يكون رقم صحيح.'); return; }
     setBusy(true);
+    const body = {
+      name: productForm.name.trim(), unit: productForm.unit.trim(),
+      defaultPrice: price, notes: productForm.notes.trim(),
+    };
     try {
-      await patch(`/api/products/${product.id}`, { defaultPrice: Number(priceEdit.price || 0) });
-      setPriceEdit(null); setError('');
+      if (editingProduct) await patch(`/api/products/${editingProduct.id}`, body);
+      else await post('/api/products', body);
+      setProductForm(emptyProduct); setAddingProduct(false); setEditingProduct(null); setError('');
       await refresh();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تعديل السعر.'); }
+    } catch (e) { setError(e instanceof Error ? e.message : (editingProduct ? 'تعذر تعديل الصنف.' : 'تعذر إضافة المنتج.')); }
     finally { setBusy(false); }
   }
 
@@ -222,7 +236,7 @@ export default function Stock({ readOnly = false, canCorrect = false, version = 
                     <td className={row.low ? 'error' : ''}>
                       <strong className="mono">{formatNumber(row.onHand)}</strong> {row.unit}
                     </td>
-                    <td className="mono">{formatNumber(row.price)} ج.م</td>
+                    <td className="mono">{formatNumber(row.price)} ج.م <span className="muted small">/ {row.unit}</span></td>
                     <td className="muted small">{row.lastMovementAt ? ago(row.lastMovementAt) : '—'}</td>
                   </tr>
                 ))}
@@ -324,25 +338,20 @@ export default function Stock({ readOnly = false, canCorrect = false, version = 
                     <div className="grow">
                       <h3>{product.name} {!product.active && <span className="muted small">· متوقف</span>}</h3>
                       <p className="muted small">
-                        الوحدة: {product.unit} · سعر الوحدة {formatNumber(product.defaultPrice)} ج.م · {formatNumber(product.soldLines)} سطر فاتورة
+                        {formatNumber(product.defaultPrice)} ج.م لكل {product.unit} · {formatNumber(product.soldLines)} سطر فاتورة
                         {product.notes ? ` · ${product.notes}` : ''}
+                        {product.soldLines > 0 ? <span className="muted small"> · تعديل الاسم أو السعر ما يغيّرش الفواتير اللي اتكتبت: كل سطر حافظ سعره ووحّدته من يومها</span> : null}
                       </p>
                       <p className={onHandFor.get(product.id) ? 'muted small' : 'visit-marks'}>
                         متاح {warehouseId === 'all' ? 'في كل المخازن' : `في «${warehouses.find(item => item.id === warehouseId)?.name}»`}: {formatNumber(product.onHand)} {product.unit}
                       </p>
                     </div>
-                    {!readOnly && (priceEdit?.id === product.id ? (
-                      <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                        <input className="mono" style={{ width: 90 }} value={priceEdit.price} onChange={event => setPriceEdit({ id: product.id, price: event.target.value })} />
-                        <button className="btn primary sm" disabled={busy} onClick={() => void savePrice(product)}>سعر</button>
-                        <button className="btn ghost sm" onClick={() => setPriceEdit(null)}>إلغاء</button>
-                      </span>
-                    ) : (
+                    {!readOnly && (
                       <div className="report-actions">
-                        <button className="btn ghost sm" onClick={() => setPriceEdit({ id: product.id, price: String(product.defaultPrice) })}>عدّل سعر الوحدة</button>
+                        <button className="btn ghost sm" onClick={() => openProductForm(product)}>{editingProduct?.id === product.id ? 'قيد التعديل' : 'تعديل الصنف'}</button>
                         <button className="btn ghost sm" onClick={() => void toggleProduct(product)}>{product.active ? 'إيقاف' : 'تفعيل'}</button>
                       </div>
-                    ))}
+                    )}
                   </div>
                 </li>
               ))}
@@ -350,10 +359,14 @@ export default function Stock({ readOnly = false, canCorrect = false, version = 
           )}
           {!readOnly && (addingProduct ? (
             <div className="panel">
-              <h4 className="panel-title">صنف جديد</h4>
+              <h4 className="panel-title">{editingProduct ? `تعديل: ${editingProduct.name}` : 'صنف جديد'}</h4>
               <div className="two-col">
                 <label className="field"><span>اسم الصنف</span><input value={productForm.name} onChange={event => setProductForm(f => ({ ...f, name: event.target.value }))} /></label>
-                <label className="field"><span>الوحدة</span><input value={productForm.unit} onChange={event => setProductForm(f => ({ ...f, unit: event.target.value }))} /></label>
+                <label className="field">
+                  <span>الوحدة اللي الصنف بيتبيّع بيها</span>
+                  <input list="unit-suggestions" value={productForm.unit} onChange={event => setProductForm(f => ({ ...f, unit: event.target.value }))} placeholder="عبوة / شيكارة / جركن…" />
+                  <datalist id="unit-suggestions">{UNIT_SUGGESTIONS.map(item => <option key={item} value={item} />)}</datalist>
+                </label>
                 <label className="field">
                   <span>سعر الوحدة (ج.م){productForm.unit.trim() ? ` لكل ${productForm.unit.trim()}` : ''}</span>
                   <input className="mono" value={productForm.defaultPrice} onChange={event => setProductForm(f => ({ ...f, defaultPrice: event.target.value }))} />
@@ -361,15 +374,16 @@ export default function Stock({ readOnly = false, canCorrect = false, version = 
                 <label className="field"><span>ملاحظة</span><input value={productForm.notes} onChange={event => setProductForm(f => ({ ...f, notes: event.target.value }))} /></label>
               </div>
               <p className="muted small">
-                السعر دا سعر الوحدة اللي فوقها، مش الإجمالي. الفاتورة بتضربه في الكمية: {formatNumber(Number(productForm.defaultPrice || 0))} × ٣ {productForm.unit.trim() || 'كراتين'} = {formatNumber(Number(productForm.defaultPrice || 0) * 3)} ج.م.
-                لو عايز تسعّر الشيكارة لوحدها، اكتب الوحدة «شيكارة» بدل الكرتونة.
+                السعر ده سعر الوحدة اللي فوقها بالظبط، مش الإجمالي ومش سعر العبوة جوه الكرتونة. الفاتورة بتضربه في الكمية: {formatNumber(Number(productForm.defaultPrice || 0))} × ٣ {productForm.unit.trim() || 'وحدة'} = {formatNumber(Number(productForm.defaultPrice || 0) * 3)} ج.م.
+                مثال: مبيد بـ240 ج.م للعبوة، والكرتونة فيها 12 عبوة — اختار الوحدة «عبوة» وسعّرها 240 وادخل المخزن بالعبوات، أو سمّي الوحدة «كرتونة» وسعّرها 2880. اللي ما ينفعش: وحدة «كرتونة» وسعر 240، ساعتها الفاتورة بتبيع الكرتونة بسعر العبوة والمخزن بينقص 1 مكان 12.
+                {editingProduct ? ` التعديل ده على المخزون واللي هيكتب من دلوقتي بس${editingProduct.soldLines ? ` — الـ${formatNumber(editingProduct.soldLines)} سطر فاتورة اللي اتكتبوا قبل كده كل واحد فيهم شايف سعره ووحّدته` : ''}.` : ''}
               </p>
               <div className="filters">
-                <button className="btn primary sm" disabled={busy} onClick={() => void saveProduct()}>{busy ? 'جارٍ الحفظ…' : 'حفظ الصنف'}</button>
-                <button className="btn ghost sm" onClick={() => { setAddingProduct(false); setProductForm(emptyProduct); }}>إلغاء</button>
+                <button className="btn primary sm" disabled={busy} onClick={() => void saveProduct()}>{busy ? 'جارٍ الحفظ…' : (editingProduct ? 'حفظ التعديل' : 'حفظ الصنف')}</button>
+                <button className="btn ghost sm" onClick={() => { setAddingProduct(false); setEditingProduct(null); setProductForm(emptyProduct); }}>إلغاء</button>
               </div>
             </div>
-          ) : <button className="btn ghost sm" onClick={() => setAddingProduct(true)}>+ صنف جديد</button>)}
+          ) : <button className="btn ghost sm" onClick={() => openProductForm(null)}>+ صنف جديد</button>)}
         </div>
 
         <div className="panel">

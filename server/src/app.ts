@@ -1320,15 +1320,31 @@ export function createApp(overrides: Partial<Config> = {}) {
   const patchWarehouse = warehouseFields.partial().extend({ active: z.boolean().optional() });
 
   const productFields = z.object({
-    name: z.string().trim().min(2, 'اسم المنتج مطلوب.').max(120),
-    unit: z.string().trim().min(1).max(20).default('كرتونة'),
+    name: z.string('اكتب اسم المنتج.').trim().min(2, 'اسم المنتج مطلوب.').max(120),
+    // Required, with no fallback: «كرتونة» as a default was a wrong unit waiting to happen, and the
+    // unit is what the price means. A pesticide at ٢٤ for the عبوة is not ٢٤٠ for the كرتونة.
+    unit: z.string('اكتب الوحدة — السعر لازم يكون لوحدة واحدة واضحة (عبوة، شيكارة، جركن، كرتونة).')
+      .trim().min(1, 'اكتب الوحدة — السعر لازم يكون لوحدة واحدة واضحة.').max(20),
     // The price lives on the catalogue, written by the warehouse account. A phone never carries a
-    // price list, so there is exactly one number to argue about.
-    defaultPrice: z.number().finite().min(0).max(1e9).default(0),
+    // price list, so there is exactly one number to argue about. Required on create, too: a price that
+    // defaults to zero is an invoice that sells the goods for free the first time anybody tries.
+    defaultPrice: z.number('اكتب سعر الوحدة — من غير سعر الفاتورة هتتباع ببلاش.').finite().min(0, 'سعر الوحدة لازم يكون رقم صحيح.').max(1e9),
     notes: z.string().trim().max(300).default(''),
   });
   const newProduct = productFields;
-  const patchProduct = productFields.partial().extend({ active: z.boolean().optional() });
+  /**
+   * A patch is written from scratch rather than `productFields.partial()`: the create schema gives
+   * `defaultPrice` and `notes` defaults, and a default that fires on a PATCH request is an overwrite —
+   * «just change the price» would blank the note and zero nothing only because the form happened to
+   * send every field. Here an absent key stays absent, and the route writes only what arrived.
+   */
+  const patchProduct = z.object({
+    name: z.string().trim().min(2, 'اسم المنتج مطلوب.').max(120),
+    unit: productFields.shape.unit,
+    defaultPrice: z.number().finite().min(0).max(1e9),
+    notes: z.string().trim().max(300),
+    active: z.boolean(),
+  }).partial().strict();
 
   const newMovement = z.object({
     productId: z.uuid(), warehouseId: z.uuid(),
@@ -1530,12 +1546,23 @@ export function createApp(overrides: Partial<Config> = {}) {
     const product = store.get('SELECT id, name FROM products WHERE id=?', String(req.params.id));
     if (!product) { res.status(404).json({ error: 'المنتج غير موجود.' }); return; }
     const parsed = patchProduct.safeParse(req.body ?? {});
-    if (!parsed.success) { res.status(400).json({ error: 'بيانات المنتج غير صحيحة.' }); return; }
-    const merged = { ...product, ...parsed.data };
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات المنتج غير صحيحة.' }); return; }
+    // Only the keys that arrived are written. A partial request is a normal thing to receive — the
+    // «عدّل سعر الوحدة» box sends one number, the «إيقاف» button sends one flag — and rewriting the
+    // other columns from a row this route never read is how a price edit used to reset the unit to
+    // «كرتونة» and a pause used to send the price to zero.
+    const data = parsed.data as Record<string, unknown>;
+    const sets: string[] = [];
+    const params: any[] = [];
+    if (data.name !== undefined) { sets.push('name=?'); params.push(String(data.name).trim()); }
+    if (data.unit !== undefined) { sets.push('unit=?'); params.push(String(data.unit).trim()); }
+    if (data.defaultPrice !== undefined) { sets.push('default_price=?'); params.push(Number(data.defaultPrice)); }
+    if (data.notes !== undefined) { sets.push('notes=?'); params.push(String(data.notes)); }
+    if (data.active !== undefined) { sets.push('active=?'); params.push(data.active ? 1 : 0); }
+    if (!sets.length) { res.status(400).json({ error: 'مافيش حاجة اتغيّرت — اكتب السعر أو الوحدة.', code: 'NO_CHANGE' }); return; }
+    sets.push('updated_at=?'); params.push(Date.now()); params.push(product.id);
     try {
-      store.run('UPDATE products SET name=?, unit=?, default_price=?, notes=?, active=?, updated_at=? WHERE id=?',
-        String(merged.name).trim(), merged.unit ?? 'كرتونة', Number(merged.defaultPrice ?? 0), merged.notes ?? '',
-        parsed.data.active === undefined ? 1 : (parsed.data.active ? 1 : 0), Date.now(), product.id);
+      store.run(`UPDATE products SET ${sets.join(', ')} WHERE id=?`, ...params);
     } catch (error) {
       if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: 'اسم المنتج ده موجود في صنف تاني.', code: 'PRODUCT_EXISTS' }); return; }
       throw error;

@@ -166,9 +166,14 @@ export class Store {
       CREATE TABLE IF NOT EXISTS products (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        unit TEXT NOT NULL DEFAULT 'كرتونة',
+        -- What one of this product is: عبوة، شيكارة، جركن، كرتونة… deliberately with no default.
+        -- A guessed unit is not cosmetic: the invoice multiplies this unit's price by a quantity in
+        -- this unit, so a pesticide priced per bottle and defaulted to «كرتونة» sells a carton for
+        -- the price of a bottle, and the shelf drops 1 for what physically left as 12.
+        unit TEXT NOT NULL,
         -- The catalogue price is the warehouse's answer, not the engineer's: it is set here so one
-        -- price is used everywhere and a phone cannot invent one.
+        -- price is used everywhere and a phone cannot invent one. It is the price of one unit and
+        -- nothing else, which is why the two columns share a row and a form.
         default_price REAL NOT NULL DEFAULT 0 CHECK(default_price >= 0),
         notes TEXT NOT NULL DEFAULT '',
         active INTEGER NOT NULL DEFAULT 1,

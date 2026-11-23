@@ -929,3 +929,68 @@ test('an old database carries its cash into the register when it opens, once', (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the unit is not a label: it is what the price means, and a patch writes only what was sent', async () => {
+  const warehouse = await newWarehouse();
+  const create = (body: Record<string, unknown>) => client.post('/api/products').set(admin).send(body);
+
+  // No unit, no product. A guessed «كرتونة» next to a bottle price sells a carton for the price of a
+  // bottle and drops 1 off the shelf for what physically left as 12.
+  const named = (base: string) => `${base} ${randomUUID().slice(0, 6)}`;
+  const missing = await create({ name: named('مبيد حشري'), defaultPrice: 240 });
+  assert.equal(missing.status, 400, 'the unit has no default on the server either');
+  assert.match(String(missing.body.error), /الوحدة/);
+  const blank = await create({ name: named('سماد'), unit: '   ', defaultPrice: 240 });
+  assert.equal(blank.status, 400);
+  // And a price that was never typed is not a price of zero.
+  assert.equal((await create({ name: named('سماد'), unit: 'عبوة' })).status, 400, 'defaultPrice is required, not defaulted');
+
+  const product = await create({ name: named('مبيد فطري'), unit: 'عبوة', defaultPrice: 240, notes: 'الكرتونة 12 عبوة' });
+  assert.equal(product.status, 201, JSON.stringify(product.body));
+  const id = product.body.product.id as string;
+
+  // The regression this whole shape exists for: the price box sends one field, and the route used to
+  // rewrite all five from a row it had only half read — so repricing a product reset its unit to
+  // «كرتونة» and erased its note.
+  const repriced = await client.patch(`/api/products/${id}`).set(admin).send({ defaultPrice: 260 });
+  assert.equal(repriced.status, 200, JSON.stringify(repriced.body));
+  const row = () => store.get('SELECT name, unit, default_price AS price, notes, active FROM products WHERE id=?', id)!;
+  assert.equal(row().price, 260);
+  assert.equal(row().unit, 'عبوة', 'a price edit leaves the unit alone');
+  assert.equal(row().notes, 'الكرتونة 12 عبوة', 'and it leaves the note alone');
+
+  // The «إيقاف» button sends a flag only. It must not zero the price on its way past.
+  const paused = await client.patch(`/api/products/${id}`).set(admin).send({ active: false });
+  assert.equal(paused.status, 200);
+  assert.equal(Number(row().active), 0);
+  assert.equal(row().price, 260, 'pausing a product is not a way to make it free');
+  assert.equal(row().unit, 'عبوة');
+  const resumed = await client.patch(`/api/products/${id}`).set(admin).send({ active: true });
+  assert.equal(resumed.status, 200);
+  assert.equal(Number(row().active), 1);
+  assert.equal(row().price, 260);
+
+  // Fixing a unit that was typed wrong is the whole point of the editor, and an empty patch is a bug
+  // in the caller rather than a silent no-op.
+  assert.equal((await client.patch(`/api/products/${id}`).set(admin).send({})).status, 400);
+  assert.equal((await client.patch(`/api/products/${id}`).set(admin).send({ unit: '' })).status, 400);
+  const renamed = await client.patch(`/api/products/${id}`).set(admin).send({ unit: 'كرتونة', defaultPrice: 2880 });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  assert.equal(row().unit, 'كرتونة');
+  assert.equal(row().price, 2880);
+  assert.equal(row().notes, 'الكرتونة 12 عبوة', 'a field nobody mentioned survives every save');
+  const lying = await client.patch(`/api/products/${id}`).set(admin).send({ unit: 'كرتونة', onHand: 9999 });
+  assert.equal(lying.status, 400, 'the shelf is not a product field');
+
+  // The unit the catalogue carries is the unit the invoice line is written with, and the price of that
+  // unit is what multiplies the quantity — for a bottle and a carton alike.
+  const customerId = await customerOf((await rep('مهندس وحدة')).id);
+  await move(warehouse.id, id, 300);
+  const invoice = (await client.post('/api/invoices').set(admin).send({
+    customerId, warehouseId: warehouse.id, lines: [{ productId: id, qty: 2 }],
+  })).body;
+  assert.equal(invoice.lines[0].unit, 'كرتونة');
+  assert.equal(invoice.lines[0].unitPrice, 2880);
+  assert.equal(invoice.invoice.total, 5760, '2 × the carton price, not 2 × the bottle price');
+  assert.equal((await stockOf(warehouse.id, id)).onHand, 298, 'and the shelf drops the cartons it billed, not one bottle');
+});
