@@ -443,12 +443,15 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* ---------- KPI table ---------- */
 .kpi-table-wrap { overflow-x: auto; }
-.kpi-table { width: 100%; border-collapse: collapse; font-size: .84rem; min-width: 900px; }
-.kpi-table th, .kpi-table td { padding: 9px 8px; text-align: right; border-bottom: 1px solid var(--line); vertical-align: middle; }
-.kpi-table thead th { background: var(--sky-100); color: var(--navy-800); font-weight: 700; white-space: nowrap; }
-.kpi-table tbody tr:hover { background: #f7fafc; }
-.kpi-table tfoot td { font-weight: 700; background: #f2f6fa; border-top: 2px solid var(--line); }
-.kpi-table td .dot { display: inline-block; margin-inline-end: 6px; }
+/* `.money-table` is the same grid with its own name: the performance page shows a visits table and a
+   sales table, and the second one is not a copy of the first — it is a different question. Naming it
+   separately also keeps `.kpi-table` a unique handle on that page for the browser tests. */
+.kpi-table, .money-table { width: 100%; border-collapse: collapse; font-size: .84rem; min-width: 900px; }
+.kpi-table th, .kpi-table td, .money-table th, .money-table td { padding: 9px 8px; text-align: right; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.kpi-table thead th, .money-table thead th { background: var(--sky-100); color: var(--navy-800); font-weight: 700; white-space: nowrap; }
+.kpi-table tbody tr:hover, .money-table tbody tr:hover { background: #f7fafc; }
+.kpi-table tfoot td, .money-table tfoot td { font-weight: 700; background: #f2f6fa; border-top: 2px solid var(--line); }
+.kpi-table td .dot, .money-table td .dot { display: inline-block; margin-inline-end: 6px; }
 .bar-cell { display: flex; align-items: center; gap: 8px; }
 .bar { flex: 1; min-width: 42px; height: 7px; border-radius: 999px; background: #e9eff5; overflow: hidden; }
 .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--sky-500), var(--gold-500)); border-radius: 999px; }

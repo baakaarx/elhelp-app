@@ -154,7 +154,7 @@ function SalesBoard({ data, from, to, loading }: { data: KpiResponse | null; fro
       )}
       {rows.length === 0 && !loading ? <p className="empty">مافيش فاتورة ولا هدف في الفترة دي.</p> : (
         <div className="kpi-table-wrap">
-          <table className="kpi-table">
+          <table className="money-table">
             <thead>
               <tr>
                 <th>المهندس</th><th>البيع (ج.م)</th><th>فواتير</th><th>نسبة الهدف</th>
