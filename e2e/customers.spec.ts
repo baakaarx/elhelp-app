@@ -86,6 +86,8 @@ test.describe('قايمعة عملاء الشركة', () => {
     await engineer.locator('input').fill(area.governorate);
     await engineer.getByRole('button', { name: 'احفظ' }).click();
     await expect(engineer.getByText(`منطقته: ${area.governorate}`)).toBeVisible();
-    await expect(page.locator('.empty', { hasText: 'مفيش مهندس مسجّل عنده المنطقة دي' })).toHaveCount(0);
+    // The column that used to say «مفيش مهندس مسجّل عنده المنطقة دي» for this area now names him —
+    // writing the region is the only thing that ever produces a suggestion.
+    await expect(areaRow(page, area.district).locator('td').nth(5)).toContainText('مصطفى كامل');
   });
 });
