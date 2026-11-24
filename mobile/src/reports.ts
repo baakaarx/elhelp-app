@@ -1,4 +1,4 @@
-import { checkInVisit, checkOutVisit, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
+import { checkInVisit, checkOutVisit, createOrder, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
 import { createQueue, type Outbox } from './queue';
 import { sendLocationChunks } from './locationQueue';
 import { replayOutboxActions } from './outboxReplay';
@@ -62,6 +62,14 @@ export async function enqueueVisitCheckOut(visitId: string, body: CheckOutBody &
   // The `id` is the queue key only; it is never part of the body the server sees.
   await addOutboxItem('visit-checkout', { id: `checkout:${visitId}`, visitId, body }, userId);
 }
+/**
+ * An order agreed in a yard with two bars of signal. It carries its own uuid from the start — the
+ * server treats a replay of that id as the same order — so retrying a send can never double a
+ * quantity the office already priced.
+ */
+export async function enqueueOrder(order: import('./types').OrderInput & { recordedAt: number }, userId?: string) {
+  await addOutboxItem('order', order, userId);
+}
 
 /** Clear only after the engineer confirms pending work should be discarded. */
 export async function clearOutbox(): Promise<void> {
@@ -83,7 +91,7 @@ export async function outboxOwnerStatus(userId: string | null): Promise<{ blocke
  * shows it and keeps the queue intact instead of splitting and dropping the batches.
  */
 export interface FlushResult {
-  sent: number; pending: number; pendingVisits: number; notice?: string;
+  sent: number; pending: number; pendingVisits: number; pendingOrders: number; notice?: string;
   /** A non-empty queue belongs to another account (or has no recoverable owner). */
   blockedByOwner?: boolean;
 }
@@ -104,13 +112,14 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
   const userId = requestedUserId ?? await ownerForCurrentSession();
   if (pendingBefore === 0) {
     if (userId) await setOutboxOwner(userId);
-    return { sent: 0, pending: 0, pendingVisits: 0 };
+    return { sent: 0, pending: 0, pendingVisits: 0, pendingOrders: 0 };
   }
   const savedOwner = await getOutboxOwner();
   const ownership = outboxOwnership(savedOwner, userId, pendingBefore);
   if (!ownership.allowed) {
     const pendingVisits = await queue.count('visit-checkin') + await queue.count('visit-checkout');
-    return { sent: 0, pending: pendingBefore, pendingVisits, notice: ownership.notice, blockedByOwner: true };
+    const pendingOrders = await queue.count('order');
+    return { sent: 0, pending: pendingBefore, pendingVisits, pendingOrders, notice: ownership.notice, blockedByOwner: true };
   }
   const items = await queue.list(200);
   const replay = await replayOutboxActions(items, queue, {
@@ -118,6 +127,7 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
     checkOut: checkOutVisit,
     report: sendReport,
     dailyReport: sendDailyReport,
+    createOrder,
   }, { retryRejected });
   let sent = replay.sent;
   let notice = replay.notice;
@@ -152,6 +162,7 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
   }
   const pending = await queue.count();
   const pendingVisits = await queue.count('visit-checkin') + await queue.count('visit-checkout');
+  const pendingOrders = await queue.count('order');
   if (pending === 0) await setOutboxOwner(userId);
-  return notice ? { sent, pending, pendingVisits, notice } : { sent, pending, pendingVisits };
+  return notice ? { sent, pending, pendingVisits, pendingOrders, notice } : { sent, pending, pendingVisits, pendingOrders };
 }

@@ -362,3 +362,16 @@ test('an edit that touches one field leaves the fields that were not sent alone'
   assert.equal(touched.body.customer.lostReason, 'السعر أعلى من السوق', 'the reason survived an unrelated edit');
   assert.equal(touched.body.customer.stage, 'lost');
 });
+
+test('an exact unnamed district never moves customers from other districts', async () => {
+  const rep = await makeRep('مهندس الاختبار');
+  const a = await book({ name: 'من غير مركز', governorate: 'اختبار الحدود', district: '' });
+  const b = await book({ name: 'مركز تاني', governorate: 'اختبار الحدود', district: 'مدينة' });
+  assert.equal(a.status, 201); assert.equal(b.status, 201);
+  const body = { governorate: 'اختبار الحدود', district: '', repId: rep.id, onlyUnassigned: true, exactArea: true };
+  const preview = await client.post('/api/customers/assign-area').set(admin).send({ ...body, dryRun: true });
+  assert.equal(preview.body.wouldMove, 1);
+  const moved = await client.post('/api/customers/assign-area').set(admin).send(body);
+  assert.equal(moved.body.moved, 1);
+  assert.equal((await client.get('/api/customers').set(admin)).body.customers.find((row: any) => row.id === b.body.customer.id).repId, null);
+});

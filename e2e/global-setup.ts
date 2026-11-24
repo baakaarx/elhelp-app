@@ -124,6 +124,18 @@ export default async function globalSetup() {
   const tiered = await api.patch(`/api/customers/${nourId}`, { data: { priceTierId: wholesale.id }, headers: admin });
   if (!tiered.ok()) throw new Error(`e2e: quoting the seeded customer failed (${tiered.status()}) ${await tiered.text()}`);
 
+  // The queue the office opens to: one order the field already sent, on the customer who holds the
+  // wholesale type, so the pricing sheet has a real prefill to be checked against — 2 × 1150 is
+  // typed by nobody; it arrives on the list price the office itself entered two lines above.
+  const orderCustomerId = await book(repIds[0], { name: 'عميل اختبار الطلبية', governorate: 'البحيرة', district: 'إيتاي البارود' });
+  const orderTier = await api.patch(`/api/customers/${orderCustomerId}`, { data: { priceTierId: wholesale.id }, headers: admin });
+  if (!orderTier.ok()) throw new Error(`e2e: pricing order customer failed (${orderTier.status()})`);
+  const seededOrder = await api.post('/api/orders', {
+    data: { id: randomUUID(), customerId: orderCustomerId, notes: 'التسليم الأحد الصبح', lines: [{ productId, qty: 2 }] },
+    headers: firstAuth,
+  });
+  if (!seededOrder.ok()) throw new Error(`e2e: seeding the field order failed (${seededOrder.status()}) ${await seededOrder.text()}`);
+
   // Engineer 2: a visit left open for hours, so the manager sees the unclosed check-in.
   const second = E2E_REPS[1];
   const secondAuth = await repAuth(second.email);

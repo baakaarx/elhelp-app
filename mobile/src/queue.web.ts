@@ -4,7 +4,7 @@ import type { OutboxItem, OutboxKind } from './types';
 
 const KEY = 'mandoub.outbox';
 const READ_ERROR = 'تعذّر قراءة البيانات المعلّقة على هذا الهاتف؛ لم نمسحها. لا تحذف بيانات التطبيق أو المتصفح، واطلب المساعدة قبل المتابعة.';
-const KINDS = new Set<OutboxKind>(['location', 'report', 'daily-report', 'visit-checkin', 'visit-checkout']);
+const KINDS = new Set<OutboxKind>(['location', 'report', 'daily-report', 'visit-checkin', 'visit-checkout', 'order']);
 
 function isOutboxItem(value: unknown): value is OutboxItem {
   if (!value || typeof value !== 'object') return false;

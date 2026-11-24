@@ -191,6 +191,58 @@ check('while the office still sees it', (await get('/api/products?includeInactiv
 
 check('and the smoke item is taken away again', (await del(`/api/products/${productId}`, admin)).status === 200);
 
+section('the order the field agrees is the order the office prices');
+/*
+ * The workflow in one section, because it is the only part of this app where two accounts write the
+ * same row and must never see each other's half: the engineer books items against his customer from
+ * his phone (no GPS, no name typed by hand), and the number that closes it is written only on the
+ * office side — and then never again. If any of those three walls loses a brick in a deploy, the
+ * damage is money, so the box that serves the phones is asked here, not in a test file.
+ */
+const orderProduct = await post('/api/products', admin, { name: `smoke صنف طلبيات ${Date.now()}`, category: 'fertilizer', unit: 'شيكارة', unitSize: '٥٠ كجم' });
+const orderProductId = String(orderProduct.body?.product?.id || '');
+const orderTierId = String(tiers[0]?.id || '');
+check('the office gives the smoke customer a buyer type and the item its list price',
+  (await patch(`/api/customers/${bookCustomerId}`, admin, { priceTierId: orderTierId })).status === 200
+  && (await put(`/api/products/${orderProductId}/prices`, admin, { prices: [{ tierId: orderTierId, price: 750 }] })).status === 200);
+const orderOne = await post('/api/orders', rep, {
+  id: crypto.randomUUID(), customerId: bookCustomerId, notes: 'التسليم السبت',
+  lines: [{ productId: orderProductId, qty: 3 }],
+}, 'rep');
+check('the engineer records the order against his customer and one press sends it', orderOne.status === 201 && orderOne.body?.order?.status === 'sent', JSON.stringify(orderOne.body).slice(0, 120));
+check('the phone answer carries quantities and no number', Boolean(orderOne.body?.order) && !('total' in orderOne.body.order) && !('price' in (orderOne.body.order.lines[0] || {})), Object.keys(orderOne.body?.order || {}).join(','));
+check('a customer name typed by hand is refused the same way a visit refuses it', (await post('/api/orders', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, customerName: 'محمود', lines: [{ productId: orderProductId, qty: 1 }] }, 'rep')).status === 400);
+check('a line without a product behind it is named, not stored', (await post('/api/orders', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, lines: [{ productId: crypto.randomUUID(), qty: 1 }] }, 'rep')).status === 400);
+const replayed = await post('/api/orders', rep, orderOne.body?.order ? { id: String(orderOne.body.order.id), customerId: bookCustomerId, lines: [{ productId: orderProductId, qty: 3 }] } : {}, 'rep');
+check('an offline queue that replays the send does not double the order', replayed.status === 200 && replayed.body?.duplicate === true, `${replayed.status} ${JSON.stringify(replayed.body).slice(0, 80)}`);
+const officeQueue = (await get('/api/orders?status=sent', admin)).body?.orders || [];
+const queuedOrder = officeQueue.find(row => row.id === orderOne.body?.order?.id);
+check('the office queue holds it with the rep and the list price beside every line', queuedOrder?.repName && queuedOrder?.lines?.[0]?.suggestedPrice === 750, JSON.stringify(queuedOrder || {}).slice(0, 140));
+const badgeAfterSend = await get('/api/overview', admin);
+check('the badge counts what waits', Number(badgeAfterSend.body?.sentOrders) >= 1, String(badgeAfterSend.body?.sentOrders));
+const alertsAfterSend = (await get('/api/alerts', admin)).body?.alerts || [];
+check('the alert feed says so before anyone refreshes', alertsAfterSend.some(row => row.code === 'orders_awaiting_pricing'), JSON.stringify(alertsAfterSend.map(row => row.code)));
+const draftOrder = await post('/api/orders', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, lines: [{ productId: orderProductId, qty: 1 }], send: false }, 'rep');
+check('a draft the engineer keeps is nobody\'s business but his', draftOrder.status === 201 && draftOrder.body?.order?.status === 'draft');
+const draftId = String(draftOrder.body?.order?.id || '');
+check('and while it waits, he may rewrite it', (await patch(`/api/orders/${draftId}`, rep, { notes: 'اتغيرت الكمية', lines: [{ productId: orderProductId, qty: 2 }] }, 'rep')).status === 200);
+const sentDraft = await post(`/api/orders/${draftId}/send`, rep, {}, 'rep');
+check('until he sends it — then the office owns it', sentDraft.status === 200 && sentDraft.body?.order?.status === 'sent');
+check('a sent order refuses its author\'s pen', (await patch(`/api/orders/${draftId}`, rep, { notes: 'غيّرت رأيي' }, 'rep')).status === 409);
+check('the office cannot price half a sheet and stamp it closed', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [] })).status === 400);
+check('a number that contradicts the buyer type it claims is asked about, not guessed at', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 700, tierId: orderTierId }] })).status === 400);
+const priced = await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 750, tierId: orderTierId }] });
+check('the matching price closes it with a total the list can vouch for', priced.status === 200 && priced.body?.order?.total === 2250 && priced.body?.order?.status === 'priced', JSON.stringify(priced.body).slice(0, 120));
+const repView = (await get('/api/orders?limit=300', rep, 'rep')).body?.orders || [];
+const closedSeen = repView.find(row => row.id === orderOne.body?.order?.id);
+check('the phone learns it closed — and still no number', closedSeen?.status === 'priced' && !('total' in (closedSeen || {})) && !('price' in (closedSeen?.lines?.[0] || {})), JSON.stringify(closedSeen || {}).slice(0, 120));
+check('a priced order is a written page: nothing re-prices it', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 1 }] })).status === 409);
+check('and the item it was priced against cannot be deleted under it', (await del(`/api/products/${orderProductId}`, admin)).status === 409);
+check('same for the customer the order was booked on', (await del(`/api/customers/${bookCustomerId}`, admin)).status === 409);
+check('a stopped item cannot enter a new order, but the old line stays readable',
+  (await patch(`/api/products/${orderProductId}`, admin, { active: false })).status === 200
+  && (await post('/api/orders', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, lines: [{ productId: orderProductId, qty: 1 }] }, 'rep')).status === 400);
+
 section('a visit is a check-in, a result and a duration');
 const visitId = crypto.randomUUID();
 const checkedIn = await post('/api/visits/check-in', rep, { id: visitId, customerId: bookCustomerId, purpose: 'collection', location: fix(31.2, 29.9, 7) }, 'rep');

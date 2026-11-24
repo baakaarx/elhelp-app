@@ -5,10 +5,10 @@ import { signInAsManager } from './helpers';
  * The customer book, driven the way the office uses it.
  *
  * Three things are checked here and nowhere else: that a customer can be entered with no engineer
- * attached (the state that has to be possible), that the area workbench answers with a preview before
- * it moves anybody, and that a repeated name is refused in words instead of creating a second row for
- * the same farm. The seed in `global-setup.ts` already holds «مزرعة النور» for أحمد حسن and
- * «مزرعة الدلتا» for سارة منصور, so every count below is relative to that.
+ * attached (the state that has to be possible), that the area workbench states the move on the button
+ * itself before anything is pressed, and that a repeated name is refused in words instead of creating
+ * a second row for the same farm. The seed in `global-setup.ts` already holds «مزرعة النور» for أحمد
+ * حسن and «مزرعة الدلتا» for سارة منصور, so every count below is relative to that.
  */
 const unique = `عميل اختبار ${Date.now().toString().slice(-6)}`;
 const area = { governorate: 'الغربية', district: `مركز ${unique}` };
@@ -81,7 +81,7 @@ test.describe('قائمة عملاء الشركة', () => {
     await expect(ownerPicker(row)).toHaveValue('');
   });
 
-  test('the area workbench previews the move, then hands the area to the engineer', async ({ page }) => {
+  test('the area row calculates the move automatically and transfers in one press', async ({ page }) => {
     await openCustomers(page);
     await page.getByRole('button', { name: 'عميل جديد' }).click();
     const form = page.locator('form.panel');
@@ -92,13 +92,12 @@ test.describe('قائمة عملاء الشركة', () => {
 
     const row = areaRow(page, area.district);
     await expect(row).toBeVisible();
-    // Nobody typed this مركز under any engineer's name, so there is no suggestion to lean on: the
-    // manager picks the man himself, and only then asks what would move.
+    // Nobody typed this مركز under any engineer's name: the picker starts on the company's list, and
+    // choosing the man turns the button itself into the preview — «how many» is on it before it moves.
+    await expect(row.locator('select.rowpick option:checked')).toContainText('قائمة الشركة');
     await row.getByLabel('المهندس').selectOption({ label: 'مصطفى كامل' });
-    await row.getByRole('button', { name: 'معاينة الأول' }).click();
-    // The press that could move a whole area answers with words first, and nothing has been written yet.
-    await expect(row.getByText('هينقل')).toBeVisible();
-    await row.getByRole('button', { name: /تأكيد النقل/ }).click();
+    await expect(row.getByText(/هينقل/)).toBeVisible();
+    await row.getByRole('button', { name: /تأكيد النقل لـ مصطفى كامل/ }).click();
     await expect(row.getByText('اتنقلوا')).toBeVisible();
 
     await expect(ownerOf(rows(page).filter({ hasText: unique }))).toHaveText('مصطفى كامل');
@@ -113,8 +112,8 @@ test.describe('قائمة عملاء الشركة', () => {
     await engineer.locator('input').fill(area.governorate);
     await engineer.getByRole('button', { name: 'احفظ' }).click();
     await expect(engineer.getByText(`منطقته: ${area.governorate}`)).toBeVisible();
-    // The column that used to say «مفيش مهندس مسجّل عنده المنطقة دي» for this area now names him —
-    // writing the region is the only thing that ever produces a suggestion.
-    await expect(areaRow(page, area.district).locator('td').nth(5)).toContainText('مصطفى كامل');
+    // The suggestion is no longer a column to read before acting — it is the picker's own starting
+    // value. Writing the region is the only thing that ever produces it.
+    await expect(areaRow(page, area.district).locator('select.rowpick option:checked')).toHaveText('مصطفى كامل');
   });
 });

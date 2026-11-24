@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { Customer, DailyReportInput, GeoPoint, Product, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { Customer, DailyReportInput, GeoPoint, OrderInput, OrderView, Product, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -70,6 +70,14 @@ export const changeMyPassword = (currentPassword: string, newPassword: string) =
 
 export const deleteMyAccount = (email: string) =>
   request<{ ok: true }>('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: true, email }) });
+
+/**
+ * الطلبية بتتبعت من غير GPS ومن غير وردية: هي وعد بالكميات مش بحركة — والضغط نفسه معناه «ابعت»،
+ * فالطابور هنا بيستقبل نفس الجسم لو الشبكة قطعت، والسيرفر بيقبل إعادة الإرسال من غير ما يضاعف.
+ */
+export const createOrder = (order: OrderInput) =>
+  post<{ order: OrderView; duplicate: boolean }>('/api/orders', order, { queued: true });
+export const myOrders = () => get<{ orders: OrderView[] }>('/api/orders?limit=50');
 
 export async function login(email: string, password: string) {
   const res = await post<{ token: string; user: User }>('/api/auth/login', { email: email.trim().toLowerCase(), password });

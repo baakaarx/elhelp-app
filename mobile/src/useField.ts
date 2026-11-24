@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
-import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
+import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit, createOrder } from './api';
+import { enqueueOrder, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
-import type { Customer, Product, RepSummary, User, Visit, VisitInput } from './types';
+import type { Customer, OrderInput, Product, RepSummary, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
   outcome: string;
@@ -67,6 +67,8 @@ export interface FieldBundle {
   finishShift: () => Promise<void>;
   checkIn: (input: VisitInput) => Promise<void>;
   checkOut: (id: string, input: CheckOutInput) => Promise<void>;
+  /** ابعث الطلبية — أو احفظها على الهاتف تبعت لوحدها، بنفس طابور الزيارة بالظبط. */
+  submitOrder: (input: OrderInput) => Promise<void>;
 }
 
 /** Shown in the consent sheet when background tracking was asked for but cannot run. */
@@ -109,9 +111,10 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     productsRef.current = next;
     setProducts(next);
   }, []);
-  const pendingVisitNotice = (count: number) => count > 0
-    ? `هناك ${count} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.`
-    : '';
+  const pendingVisitNotice = (visits: number, orders: number) => [
+    visits > 0 ? `هناك ${visits} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.` : '',
+    orders > 0 ? `هناك ${orders} طلبية محفوظة على الهاتف ولم تصل إلى المكتب بعد.` : '',
+  ].filter(Boolean).join(' ');
   /**
    * True while one sync tick is still running.
    *
@@ -240,7 +243,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
           // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
           // leave a stale warning pinned to the screen all day.
           setSyncNotice(result.notice ?? '');
-          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
         }
         // If the OS killed the background service mid-shift, the engineer must know now —
         // not when the manager reports a stale signal.
@@ -255,7 +258,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (mounted.current) {
         setPending(result.pending);
         setSyncNotice(result.notice ?? '');
-        setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+        setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
       }
     }).catch(() => undefined);
     return () => clearInterval(timer);
@@ -400,7 +403,35 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         if (result && mounted.current) {
           setPending(result.pending);
           setSyncNotice(result.notice ?? '');
-          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
+        }
+        return;
+      }
+      await refresh();
+    } catch (e) { setError((e as Error).message); throw e; }
+    finally { setBusy(false); }
+  }, [refresh, user?.id]);
+
+  /**
+   * An order is a quantities-only record: no GPS, no shift, no open-visit lock — the office priced
+   * what the yard agreed, and the agreement does not care where the phone was standing. With no
+   * signal the same outbox that carries visits holds it, keyed by the phone's own uuid, so the
+   * office receives the order once even if the phone replays it five times.
+   */
+  const submitOrder = useCallback(async (input: OrderInput) => {
+    setBusy(true); setError('');
+    try {
+      try {
+        await createOrder(input);
+      } catch (e) {
+        if ((e as { status?: number }).status !== 0) throw e;
+        await enqueueOrder({ ...input, recordedAt: Date.now() }, user?.id);
+        setOfflineNotice('الطلبية اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        const result = await flushOutbox(user?.id).catch(() => null);
+        if (result && mounted.current) {
+          setPending(result.pending);
+          setSyncNotice(result.notice ?? '');
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
         }
         return;
       }
@@ -422,7 +453,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         if (result && mounted.current) {
           setPending(result.pending);
           setSyncNotice(result.notice ?? '');
-          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
         }
         return;
       }
@@ -436,6 +467,6 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     customers, customersLoading, customersNotice, loadCustomers,
     products, productsLoading, productsNotice, loadProducts,
     clearError: () => setError(''),
-    refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
+    refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut, submitOrder,
   };
 }

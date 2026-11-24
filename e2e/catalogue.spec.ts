@@ -58,7 +58,7 @@ test.describe('قائمة الأصناف والأسعار', () => {
     // And the buyer types are listed below with the counts the office works from: one item priced under
     // جملة, and one customer quoted at it.
     await expectNumber(tierRow(page, 'جملة').locator('td').nth(2), '1');
-    await expectNumber(tierRow(page, 'جملة').locator('td').nth(3), '1');
+    await expectNumber(tierRow(page, 'جملة').locator('td').nth(3), '2');
   });
 
   test('one cell is written without touching the rest of the row', async ({ page }) => {

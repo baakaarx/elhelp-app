@@ -124,3 +124,16 @@ test('two visits closed with no signal both survive the queue', async () => {
   await queue.add('report', { note: 'بدون id كذلك' });
   assert.equal(readRaw().length, 4, 'an id-less payload must not be de-duplicated away');
 });
+
+test('offline orders survive reading and reloading the web queue', async () => {
+  store.clear();
+  const queue = await createQueue();
+  const order = { id: 'order-offline', customerId: 'customer', notes: '', lines: [{ productId: 'item', qty: 4 }], recordedAt: 123 };
+  await queue.add('order', order);
+  assert.equal(await queue.count('order'), 1);
+  const reopened = await createQueue();
+  const items = await reopened.list();
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, 'order');
+  assert.deepEqual(JSON.parse(items[0].payload), order);
+});

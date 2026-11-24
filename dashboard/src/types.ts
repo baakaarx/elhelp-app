@@ -137,6 +137,8 @@ export interface Overview {
   timezone: string;
   retentionDays: number;
   newReports: number;
+  /** Sent orders waiting for the office to price them — the badge on the orders tab. */
+  sentOrders?: number;
   /** Server-side staleness threshold (STALE_GPS_MINUTES), so both sides agree. */
   staleGpsMinutes?: number;
 }

@@ -17,7 +17,7 @@
     "start": "npm run start -w @mandoub/server",
     "test": "npm run test -w @mandoub/server",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test:e2e": "node scripts/reset-e2e-db.mjs && playwright test",
+    "test:e2e": "npm run export:web -w @mandoub/mobile && node scripts/reset-e2e-db.mjs && playwright test",
     "smoke": "node scripts/smoke.mjs",
     "totp": "node --experimental-strip-types scripts/totp.mjs",
     "preview": "node scripts/preview.mjs",

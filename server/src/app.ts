@@ -189,6 +189,54 @@ const closeVisit = z.object({
 /** How far back a visit typed with no signal may still be accepted. */
 const OFFLINE_WINDOW_MS = 24 * 3600000;
 
+/**
+ * The order the field agrees, priced by the office.
+ *
+ * Two facts ride on one row of this table, and they have two different authors: which farm promised
+ * what quantities (the engineer, from the office's own customer book and the office's own catalogue —
+ * no hand-typed customer name anywhere, the same rule a visit obeys), and what that came to in money
+ * (the office, after the fact). The schemas keep the authors apart: the phone cannot send a price and
+ * the office cannot send a line.
+ */
+const orderLineInput = z.object({
+  productId: z.uuid('اختار الصنف من قائمة الأصناف.'),
+  // The same bounds the `qty` column enforces (server/src/db.ts): a schema looser than the database
+  // turns a typo into a 500 instead of the sentence that names the field.
+  qty: z.number().positive('الكمية لازم تكون رقم أكبر من صفر.').lte(100000, 'الكمية دي أكبر من طلبيتين — اقسمها.'),
+  notes: z.string().trim().max(300).default(''),
+}).strict();
+const newOrder = z.object({
+  id: z.uuid(),
+  customerId: z.uuid('الطلبية تتسجل على عميل من قائمتك — اختاره من القائمة.'),
+  visitId: z.uuid().optional(),
+  notes: z.string().trim().max(2000).default(''),
+  lines: z.array(orderLineInput).min(1, 'الطلبية محتاجة صنف واحد على الأقل.').max(100),
+  // A press in the field means «send this»: the draft state exists for a phone that saves its work
+  // to keep editing, and the office queue never sees an order that stayed one.
+  send: z.boolean().default(true),
+  /** The moment the order was actually written, sent by the offline queue like a check-in. */
+  recordedAt: z.number().int().nonnegative().optional(),
+}).strict();
+const patchOrder = z.object({
+  notes: z.string().trim().max(2000).optional(),
+  // A whole replacement, not a diff: the sheet holds the order, and «replace line 3 only» is a client
+  // that thinks it knows a line the server has never seen.
+  lines: z.array(orderLineInput).min(1, 'الطلبية محتاجة صنف واحد على الأقل.').max(100).optional(),
+}).strict();
+const priceOrder = z.object({
+  lines: z.array(z.object({
+    productId: z.uuid(),
+    price: z.number().nonnegative('السعر ما يقلش عن صفر.').lte(1_000_000_000, 'الرقم ده مش سعر وحدة.'),
+    // Which price-list column the office used, when they used one: stored, never trusted — the route
+    // re-reads the list and refuses a number that disagrees with the type it claims.
+    tierId: z.uuid().optional(),
+  }).strict()).min(1).max(100),
+}).strict();
+const sendOrder = z.object({
+  /** Same offline window as creating: a replayed send carries the minute the press happened. */
+  recordedAt: z.number().int().nonnegative().optional(),
+}).strict();
+
 export function createApp(overrides: Partial<Config> = {}) {
   const config = { ...readConfig(), ...overrides };
   const store = new Store(config.dbPath);
@@ -435,11 +483,13 @@ export function createApp(overrides: Partial<Config> = {}) {
   }
   function overview() {
     const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY created_at, name").map(repSnapshot);
+    // The orders tab's badge: what the field sent and the office has not opened yet.
+    const sentOrders = (store.get("SELECT COUNT(*) AS c FROM orders WHERE status='sent'")?.c as number) || 0;
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
     // The dashboard needs the same staleness threshold the alerts use, otherwise the map and
     // the alert list disagree about who lost their signal.
-    return { reps, serverTime: Date.now(), timezone: config.timezone, retentionDays: config.retentionDays, newReports, staleGpsMinutes: config.staleGpsMinutes };
+    return { reps, serverTime: Date.now(), timezone: config.timezone, retentionDays: config.retentionDays, newReports, sentOrders, staleGpsMinutes: config.staleGpsMinutes };
   }
   function reportRow(id: string) {
     return store.get(`SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
@@ -1268,6 +1318,14 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.status(409).json({ error: `العميل عليه ${visits} زيارة — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, code: 'CUSTOMER_HAS_VISITS' });
       return;
     }
+    // An order is the same kind of history as a visit: the office priced it, the total is in the book,
+    // and deleting the customer underneath would leave the row pointing at nobody. Stop the customer
+    // instead — the order keeps its name and its lines.
+    const orders = Number(store.get('SELECT COUNT(*) AS c FROM orders WHERE customer_id=?', current.id)?.c || 0);
+    if (orders) {
+      res.status(409).json({ error: `العميل عليه ${orders} طلبية — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, code: 'CUSTOMER_HAS_ORDERS' });
+      return;
+    }
     store.run('DELETE FROM customers WHERE id=?', current.id);
     store.audit(res.locals.user.id, 'customer.delete', { name: current.name, repId: current.rep_id ?? null });
     res.json({ ok: true });
@@ -1332,9 +1390,8 @@ export function createApp(overrides: Partial<Config> = {}) {
         COUNT(*) AS total,
         SUM(CASE WHEN c.rep_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
         SUM(CASE WHEN c.active=0 THEN 1 ELSE 0 END) AS inactive,
-        SUM(CASE WHEN v.id IS NOT NULL THEN 1 ELSE 0 END) AS visited
+        SUM(CASE WHEN EXISTS (SELECT 1 FROM visits v WHERE v.customer_id=c.id) THEN 1 ELSE 0 END) AS visited
       FROM customers c
-      LEFT JOIN visits v ON v.customer_id=c.id
       GROUP BY c.governorate, c.district
       ORDER BY unassigned DESC, total DESC`) as Array<Record<string, any>>;
     const ownerRows = store.all(`SELECT c.governorate AS governorate, c.district AS district, c.rep_id AS repId,
@@ -1343,8 +1400,8 @@ export function createApp(overrides: Partial<Config> = {}) {
       GROUP BY c.governorate, c.district, c.rep_id`) as Array<Record<string, any>>;
     const engineers = store.all("SELECT id, name, region, color, active FROM users WHERE role='rep' ORDER BY active DESC, name COLLATE NOCASE") as Array<Record<string, any>>;
     const sameArea = (row: Record<string, any>, area: { governorate: string; district: string }) =>
-      (!area.governorate || areaWord(row.governorate) === areaWord(area.governorate))
-      && (!area.district || areaWord(row.district) === areaWord(area.district));
+      areaWord(row.governorate) === areaWord(area.governorate)
+      && areaWord(row.district) === areaWord(area.district);
     res.setHeader('Cache-Control', 'private, no-store');
     res.json({
       areas: rows.map(row => {
@@ -1385,13 +1442,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     // unless the manager said otherwise on purpose.
     onlyUnassigned: z.boolean().default(true),
     dryRun: z.boolean().default(false),
+    exactArea: z.boolean().default(false),
   }).strict();
 
   /** Hand a whole area to an engineer — or take it back to the company's list. */
   app.post('/api/customers/assign-area', adminOnly, (req, res) => {
     const parsed = assignArea.safeParse(req.body ?? {});
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات المنطقة غير صحيحة.' }); return; }
-    const { governorate, district, repId, onlyUnassigned, dryRun } = parsed.data;
+    const { governorate, district, repId, onlyUnassigned, dryRun, exactArea } = parsed.data;
     if (!governorate && !district) {
       res.status(400).json({ error: 'اختار المنطقة الأول — نقل قائمة الشركة كلها مرة واحدة مش حاجة تتعمل بالغلط.', code: 'AREA_REQUIRED' });
       return;
@@ -1408,9 +1466,12 @@ export function createApp(overrides: Partial<Config> = {}) {
       return;
     }
     const where: string[] = []; const params: any[] = [];
-    if (governorate) { where.push('governorate=?'); params.push(governorate); }
-    if (district) { where.push('district=?'); params.push(district); }
+    if (governorate || exactArea) { where.push('governorate=?'); params.push(governorate); }
+    if (district || exactArea) { where.push('district=?'); params.push(district); }
     if (onlyUnassigned) where.push('rep_id IS NULL');
+    else if (repId) { where.push('(rep_id IS NULL OR rep_id<>?)'); params.push(repId); }
+    else where.push('rep_id IS NOT NULL');
+    // Rows already at the destination do not count as a move or consume the cap.
     // The cap is there so a stray empty filter cannot rewrite the whole customer table in one press,
     // and the answer says when it bit.
     const AREA_LIMIT = 1000;
@@ -2002,6 +2063,283 @@ export function createApp(overrides: Partial<Config> = {}) {
     invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
   });
+  /* ----------------------------------------------------------------- الطلبيات: الميدان يسجلها، المكتب يسعّرها
+   *
+   * The workflow is two moves and nothing else: the engineer writes «what the farm took» against one
+   * of his own customers and presses send, the office's queue lights up, and somebody at a desk puts
+   * the prices on it. Each side can only write its half — the phone has no price field to fill, and
+   * the office cannot move a line — and each side never sees the other's private part: no price
+   * travels back to a device that stands in front of the farmer.
+   */
+  const ORDER_SELECT = `SELECT o.id, o.customer_id AS customerId, o.visit_id AS visitId, o.user_id AS userId,
+      c.name AS customerName, c.phone AS customerPhone, c.price_tier_id AS customerTierId, t.name AS customerTierName,
+      u.name AS repName, u.color AS repColor,
+      o.status, o.notes, o.total, o.recorded_offline AS recordedOffline,
+      o.created_at AS createdAt, o.updated_at AS updatedAt, o.sent_at AS sentAt,
+      o.priced_at AS pricedAt, pb.name AS pricedByName
+    FROM orders o
+    JOIN customers c ON c.id=o.customer_id
+    LEFT JOIN price_tiers t ON t.id=c.price_tier_id
+    JOIN users u ON u.id=o.user_id
+    LEFT JOIN users pb ON pb.id=o.priced_by`;
+  function orderLineRows(orderId: string, withPrices: boolean) {
+    return store.all(`SELECT id, position, product_id AS productId, product_name AS productName,
+        unit, unit_size AS unitSize, qty, notes${withPrices ? ', tier_id AS tierId, price' : ''}
+      FROM order_lines WHERE order_id=? ORDER BY position`, orderId) as Array<Record<string, any>>;
+  }
+  function orderRow(id: string, audience: 'rep' | 'office') {
+    const row = store.get(`${ORDER_SELECT} WHERE o.id=?`, id) as Record<string, any> | undefined;
+    if (!row) return undefined;
+    const withPrices = audience === 'office';
+    const shaped: Record<string, any> = {
+      id: row.id, customerId: row.customerId, status: row.status, notes: row.notes,
+      customerName: row.customerName, recordedOffline: Boolean(row.recordedOffline),
+      createdAt: row.createdAt, sentAt: row.sentAt ?? null,
+      lines: orderLineRows(id, withPrices),
+    };
+    if (withPrices) {
+      shaped.visitId = row.visitId ?? null;
+      shaped.customerPhone = row.customerPhone;
+      shaped.customerTierId = row.customerTierId ?? null;
+      shaped.customerTierName = row.customerTierName ?? '';
+      shaped.repName = row.repName; shaped.repColor = row.repColor;
+      shaped.total = row.total ?? null;
+      shaped.pricedAt = row.pricedAt ?? null;
+      shaped.pricedByName = row.pricedByName ?? null;
+    }
+    return shaped;
+  }
+  /**
+   * Resolve every line against the catalogue and freeze what the office will read: a line is stored
+   * with the name and the pack as they were that day, so renaming «شيكارة» to «جوال» next month does
+   * not rewrite a promise the yard already heard. Returns the reason in words — the phone shows this
+   * sentence verbatim, and it is the difference between «حدّث القائمة» and a stack trace.
+   */
+  function resolveOrderLines(lines: Array<{ productId: string; qty: number; notes: string }>) {
+    const ids = lines.map(line => line.productId);
+    if (new Set(ids).size !== ids.length) return { error: 'في صنف متكرر في الطلبية — زوّد عدده بدل ما تضيف سطر تاني.' } as const;
+    const rows = store.all(`SELECT id, name, unit, unit_size AS unitSize, active FROM products WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids) as Array<Record<string, any>>;
+    const byId = new Map(rows.map(row => [String(row.id), row]));
+    if (ids.some(id => !byId.get(id))) return { error: 'في صنف مش موجود في قائمة الأصناف — حدّث القائمة من التطبيق وابعث تاني.' } as const;
+    const stopped = ids.filter(id => !byId.get(id)!.active);
+    if (stopped.length) {
+      const names = stopped.map(id => `«${byId.get(id)!.name}»`).join('، ');
+      return { error: `${names} موقوف من القائمة — ما يتسجلش في طلبية جديدة. لو لازم يترجعلها سطر، المكتب يفكّ إيقافه.` } as const;
+    }
+    return {
+      resolved: lines.map(line => {
+        const product = byId.get(line.productId)!;
+        return {
+          productId: String(product.id), name: String(product.name), unit: String(product.unit),
+          unitSize: String(product.unitSize ?? ''), qty: line.qty, notes: line.notes,
+        };
+      }),
+    } as const;
+  }
+  /** The customer gate a visit already obeys — an order is booked the same way and refuses the same three ways. */
+  function orderCustomerGate(repId: string, customerId: string) {
+    const customer = store.get('SELECT id, name, active, rep_id AS repId FROM customers WHERE id=?', customerId) as Record<string, any> | undefined;
+    if (!customer) return { error: 'العميل ده مش في قائمة الشركة. اختار واحد موجود، أو اطلب من المكتب يضيفه.', code: 'CUSTOMER_NOT_FOUND', status: 400 } as const;
+    if (customer.repId !== repId) return { error: 'العميل ده مش من قائمتك — المكتب هو اللي بيحدد مين يخدم كل عميل.', code: 'CUSTOMER_NOT_YOURS', status: 403 } as const;
+    if (!customer.active) return { error: 'العميل متوقف. لو الطلبية دي لازم تمشي، خلّي المكتب يرجّعه من شاشة العملاء.', code: 'CUSTOMER_INACTIVE', status: 409 } as const;
+    return { customer } as const;
+  }
+
+  app.post('/api/orders', repOnly, (req, res) => {
+    const parsed = newOrder.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الطلبية غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    const data = parsed.data;
+    // The phone generates the id and the offline queue replays the same body — so a replay answers
+    // with the row that already exists, it does not double an agreement the office has already priced.
+    const existing = store.get('SELECT id, user_id AS userId FROM orders WHERE id=?', data.id) as { id: string; userId: string } | undefined;
+    if (existing) {
+      if (existing.userId !== res.locals.user.id) { res.status(409).json({ error: 'معرّف الطلبية مستخدم بالفعل.' }); return; }
+      res.status(200).json({ order: orderRow(data.id, 'rep'), duplicate: true }); return;
+    }
+    const gate = orderCustomerGate(res.locals.user.id, data.customerId);
+    if ('error' in gate) { res.status(gate.status ?? 400).json({ error: gate.error, code: gate.code }); return; }
+    if (data.visitId !== undefined) {
+      const visit = store.get('SELECT id FROM visits WHERE id=? AND user_id=? AND customer_id=?', data.visitId, res.locals.user.id, data.customerId);
+      if (!visit) { res.status(400).json({ error: 'الزيارة المرتبطة مش لنفس العميل في سجلّك — اختار زيارته، أو ابعت الطلبية من غير ربط.', code: 'VISIT_NOT_YOURS' }); return; }
+    }
+    const lines = resolveOrderLines(data.lines);
+    if ('error' in lines) { res.status(400).json({ error: lines.error, code: 'ORDER_LINES' }); return; }
+    const now = Date.now();
+    let sentAt: number | null = null;
+    let offline = false;
+    if (data.send) {
+      if (data.recordedAt !== undefined) {
+        const at = Number(data.recordedAt);
+        // No shift check here, on purpose: an order agreed by phone from the road never opened a
+        // visit and must not need one — only the «he is inventing last week» guard applies.
+        const reason = at > now + 60000 ? 'الوقت المرسل في المستقبل.'
+          : at < now - OFFLINE_WINDOW_MS ? 'الطلبية أقدم من ٢٤ ساعة، مش ممكن تتبعت بأثر رجعي.' : '';
+        if (reason) { res.status(422).json({ error: `الطلبية المتأخرة مرفوضة: ${reason}`, code: 'OFFLINE_ORDER_REJECTED' }); return; }
+        sentAt = at; offline = true;
+      } else sentAt = now;
+    }
+    try {
+      store.transaction(() => {
+        store.run(`INSERT INTO orders(id,user_id,customer_id,visit_id,status,notes,recorded_offline,created_at,updated_at,sent_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerId, data.visitId ?? null,
+          data.send ? 'sent' : 'draft', data.notes, offline ? 1 : 0, now, now, sentAt);
+        lines.resolved.forEach((line, index) => store.run(`INSERT INTO order_lines(id,order_id,position,product_id,product_name,unit,unit_size,qty,notes,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?)`, randomUUID(), data.id, index, line.productId, line.name, line.unit, line.unitSize, line.qty, line.notes, now));
+      });
+    } catch (error) {
+      // The unique indexes have the last word (one line per item, one id per order); a race against
+      // itself arrives as a duplicate the office can price, not as a crash.
+      if (String((error as Error).message).includes('UNIQUE')) {
+        res.status(200).json({ order: orderRow(data.id, 'rep'), duplicate: true }); return;
+      }
+      throw error;
+    }
+    store.audit(res.locals.user.id, offline ? 'order.create_offline' : 'order.create',
+      { orderId: data.id, customerId: data.customerId, ...(data.visitId ? { visitId: data.visitId } : {}), lines: lines.resolved.length, send: data.send });
+    if (data.send) io.to('admins').emit('order', orderRow(data.id, 'office'));
+    invalidateKpis(); broadcast();
+    res.status(201).json({ order: orderRow(data.id, 'rep'), duplicate: false, ...(offline ? { recordedOffline: true } : {}) });
+  });
+
+  app.patch('/api/orders/:id', repOnly, (req, res) => {
+    const parsed = patchOrder.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات التعديل غير صحيحة.' }); return; }
+    if (parsed.data.notes === undefined && parsed.data.lines === undefined) { res.status(400).json({ error: 'مفيش حاجة تتعدّل — ابعث ملاحظات أو سطور.' }); return; }
+    const order = store.get('SELECT id, user_id AS userId, status FROM orders WHERE id=?', String(req.params.id)) as { id: string; userId: string; status: string } | undefined;
+    if (!order || order.userId !== res.locals.user.id) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
+    // Once it is in the office's queue the sheet cannot change it: a priced number standing under a
+    // rewritten line is worse than no pricing at all. Anything else that must change is a new order.
+    if (order.status !== 'draft') { res.status(409).json({ error: 'الطلبية اتبعتت بالفعل — اللي اتبعت ما بيتعدلش. لو فيها غلط اكتب طلبية جديدة، وبلّغ المكتب.', code: 'ORDER_SENT' }); return; }
+    const now = Date.now();
+    try {
+      store.transaction(() => {
+        if (parsed.data.notes !== undefined) store.run('UPDATE orders SET notes=?, updated_at=? WHERE id=?', parsed.data.notes, now, order.id);
+        else store.run('UPDATE orders SET updated_at=? WHERE id=?', now, order.id);
+        if (parsed.data.lines !== undefined) {
+          const lines = resolveOrderLines(parsed.data.lines);
+          if ('error' in lines) throw Object.assign(new Error(lines.error), { statusCode: 400, orderLines: true });
+          store.run('DELETE FROM order_lines WHERE order_id=?', order.id);
+          lines.resolved.forEach((line, index) => store.run(`INSERT INTO order_lines(id,order_id,position,product_id,product_name,unit,unit_size,qty,notes,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)`, randomUUID(), order.id, index, line.productId, line.name, line.unit, line.unitSize, line.qty, line.notes, now));
+        }
+      });
+    } catch (error) {
+      if ((error as any)?.orderLines) { res.status(400).json({ error: (error as Error).message, code: 'ORDER_LINES' }); return; }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'order.edit', { orderId: order.id, fields: Object.keys(parsed.data) });
+    res.json({ order: orderRow(order.id, 'rep') });
+  });
+
+  app.post('/api/orders/:id/send', repOnly, (req, res) => {
+    const parsed = sendOrder.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الإرسال غير صحيحة.' }); return; }
+    const order = store.get('SELECT id, user_id AS userId, status FROM orders WHERE id=?', String(req.params.id)) as { id: string; userId: string; status: string } | undefined;
+    if (!order || order.userId !== res.locals.user.id) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
+    // A replayed send of an order that is already in the queue did its job the first time.
+    if (order.status !== 'draft') { res.json({ order: orderRow(order.id, 'rep'), duplicate: true }); return; }
+    const now = Date.now();
+    let sentAt = now;
+    let offline = false;
+    if (parsed.data.recordedAt !== undefined) {
+      const at = Number(parsed.data.recordedAt);
+      const reason = at > now + 60000 ? 'الوقت المرسل في المستقبل.'
+        : at < now - OFFLINE_WINDOW_MS ? 'الطلبية أقدم من ٢٤ ساعة، مش ممكن تتبعت بأثر رجعي.' : '';
+      if (reason) { res.status(422).json({ error: `الطلبية المتأخرة مرفوضة: ${reason}`, code: 'OFFLINE_ORDER_REJECTED' }); return; }
+      sentAt = at; offline = true;
+    }
+    // The status rides in the WHERE: two devices pressing send at once produce one queue entry, not two.
+    const moved = store.run(`UPDATE orders SET status='sent', sent_at=?, recorded_offline=MAX(recorded_offline, ?), updated_at=? WHERE id=? AND status='draft'`,
+      sentAt, offline ? 1 : 0, now, order.id);
+    if (!Number(moved.changes || 0)) { res.json({ order: orderRow(order.id, 'rep'), duplicate: true }); return; }
+    store.audit(res.locals.user.id, offline ? 'order.send_offline' : 'order.send', { orderId: order.id });
+    io.to('admins').emit('order', orderRow(order.id, 'office'));
+    invalidateKpis(); broadcast();
+    res.json({ order: orderRow(order.id, 'rep'), duplicate: false });
+  });
+
+  app.get('/api/orders', auth, (req, res) => {
+    const isAdmin = res.locals.user.role === 'admin';
+    const where: string[] = []; const params: any[] = [];
+    if (!isAdmin) { where.push('o.user_id=?'); params.push(res.locals.user.id); }
+    const status = ['draft', 'sent', 'priced'].includes(String(req.query.status)) ? String(req.query.status) : '';
+    if (status) { where.push('o.status=?'); params.push(status); }
+    if (isAdmin && typeof req.query.repId === 'string' && req.query.repId) { where.push('o.user_id=?'); params.push(String(req.query.repId)); }
+    const limit = Math.min(300, Math.max(1, Number(req.query.limit) || 100));
+    const rows = store.all(`${ORDER_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY o.created_at DESC LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    const orders = rows.map(row => {
+      const shaped = orderRow(String(row.id), isAdmin ? 'office' : 'rep')!;
+      if (isAdmin) {
+        // The queue prefills itself: the office sees the list price for this customer's type next to
+        // an empty box, and typing over it is the deliberate «باليد» that leaves no tier behind.
+        const prices = shaped.lines.length && row.customerTierId
+          ? store.all('SELECT product_id AS productId, price FROM product_prices WHERE tier_id=?', String(row.customerTierId)) as Array<Record<string, any>>
+          : [];
+        const suggested = new Map(prices.map(price => [String(price.productId), Number(price.price)]));
+        for (const line of shaped.lines) line.suggestedPrice = suggested.get(String(line.productId)) ?? null;
+      }
+      return shaped;
+    });
+    res.json({ orders });
+  });
+
+  /**
+   * The office puts the numbers on an order. This is the only door to a price, it is closed twice on
+   * purpose (the order must be sent, and after it is priced nothing touches it again), and it prices
+   * the whole order in one press: half a priced order is how a total stops meaning anything.
+   */
+  app.post('/api/orders/:id/price', adminOnly, (req, res) => {
+    const parsed = priceOrder.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'أسعار الطلبية غير صحيحة.' }); return; }
+    const order = store.get(`SELECT o.id, o.status, o.customer_id AS customerId, c.price_tier_id AS customerTierId, c.name AS customerName
+      FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`, String(req.params.id)) as Record<string, any> | undefined;
+    if (!order) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
+    if (order.status === 'priced') { res.status(409).json({ error: 'الطلبية متسعّرة ومقفولة — الرقم اتكتب في الدفتر مرة واحدة. الغلط ده يتصلّح في الفاتورة، مش هنا.', code: 'ORDER_PRICED' }); return; }
+    if (order.status !== 'sent') { res.status(409).json({ error: 'الطلبية لسه ما اتبعتتش من الميدان.', code: 'ORDER_NOT_SENT' }); return; }
+    const stored = orderLineRows(order.id, false);
+    const byProduct = new Map(parsed.data.lines.map(line => [line.productId, line]));
+    if (byProduct.size !== parsed.data.lines.length) { res.status(400).json({ error: 'صنف متكرر في التسعير — صنف واحد = سطر واحد.' }); return; }
+    const unknown = [...byProduct.keys()].filter(id => !stored.some(line => String(line.productId) === id));
+    if (unknown.length) { res.status(400).json({ error: 'في صنف في التسعير مش موجود في الطلبية دي.', code: 'ORDER_LINE_MISMATCH' }); return; }
+    const missing = stored.filter(line => !byProduct.has(String(line.productId)));
+    if (missing.length) {
+      const names = missing.map(line => `«${line.productName}»`).join('، ');
+      res.status(400).json({ error: `لازم كل سطر ياخد سعره — ${names} لسه من غير سعر.`, code: 'PRICE_REQUIRED' }); return;
+    }
+    let total = 0;
+    for (const line of stored) {
+      const edit = byProduct.get(String(line.productId))!;
+      if (edit.tierId !== undefined) {
+        const tier = store.get('SELECT id, name FROM price_tiers WHERE id=?', edit.tierId) as { id: string; name: string } | undefined;
+        if (!tier) { res.status(404).json({ error: 'نوع السعر ده مش في القائمة.', code: 'TIER_NOT_FOUND' }); return; }
+        const listed = store.get('SELECT price FROM product_prices WHERE product_id=? AND tier_id=?', line.productId, edit.tierId) as { price: number } | undefined;
+        if (!listed) { res.status(400).json({ error: `«${line.productName}» من غير سعر مسجّل لـ «${tier.name}» — كمّل اللوحة، أو ختم السعر باليد من غير اختيار نوع.`, code: 'TIER_PRICE_MISSING' }); return; }
+        // A number that contradicts the type it claims is either a stale sheet or a re-typed price
+        // with the wrong label; both are answered by naming the list, not by guessing.
+        if (Number(listed.price) !== edit.price) { res.status(400).json({ error: `السعر في اللوحة لـ «${line.productName} / ${tier.name}» هو ${listed.price} — لو ده الفعلي، عدّل اللوحة الأول أو امسح اختيار النوع وخليه باليد.`, code: 'TIER_PRICE_MISMATCH' }); return; }
+      }
+      total += Number(line.qty) * edit.price;
+    }
+    total = Math.round(total * 100) / 100;
+    const now = Date.now();
+    store.transaction(() => {
+      for (const line of stored) {
+        const edit = byProduct.get(String(line.productId))!;
+        store.run('UPDATE order_lines SET price=?, tier_id=? WHERE id=?', edit.price, edit.tierId ?? null, line.id);
+      }
+      // The second status gate rides in the WHERE: the office opening the same order on two screens
+      // prices it once, and the losing press is told so instead of stamping a second total.
+      const closed = store.run(`UPDATE orders SET status='priced', total=?, priced_at=?, priced_by=?, updated_at=? WHERE id=? AND status='sent'`,
+        total, now, res.locals.user.id, now, order.id);
+      if (!Number(closed.changes || 0)) throw Object.assign(new Error('DOUBLE_CLOSE'), { alreadyPriced: true });
+    });
+    store.audit(res.locals.user.id, 'order.price', { orderId: order.id, customerName: order.customerName, lines: stored.length, total });
+    io.to('admins').emit('order', orderRow(order.id, 'office'));
+    invalidateKpis(); broadcast();
+    res.json({ order: orderRow(order.id, 'office') });
+  });
+
   /**
    * Remove one visit row.
    *
@@ -2257,6 +2595,13 @@ export function createApp(overrides: Partial<Config> = {}) {
       detail: 'الهاتف أبلغ أن مزوّد الموقع وضع علامة «محاكى» على إشارة GPS. تم تجاهل النقطة؛ تحقّق من الجهاز مع المهندس.',
       at: Number(event.at),
     });
+    // An order that waits is an agreement nobody wrote up: warn level, because a day of these is a
+    // week of invoices the accounting team will chase by phone.
+    const orderQueue = store.get("SELECT COUNT(*) AS c, MIN(sent_at) AS oldest FROM orders WHERE status='sent'") as { c: number; oldest: number | null } | undefined;
+    if (Number(orderQueue?.c || 0) > 0) {
+      alerts.push({ id: 'orders:queue', level: 'warn', code: 'orders_awaiting_pricing',
+        title: 'طلبيات مستنية التسعير', detail: `${Number(orderQueue!.c)} طلبية اتبعتت من الميدان ولسه ما فتحتش.`, at: Number(orderQueue!.oldest ?? now) });
+    }
     const staleReviews = store.get('SELECT COUNT(*) AS c FROM reports WHERE status=? AND created_at<?', 'new', now - 24 * 3600000)!;
     if (Number(staleReviews.c) > 0) {
       alerts.push({ id: 'reports:stale', level: 'info', code: 'stale_reviews', title: 'تقارير بانتظار المراجعة', detail: `${staleReviews.c} تقرير مضى عليه أكثر من ٢٤ ساعة.`, at: now });

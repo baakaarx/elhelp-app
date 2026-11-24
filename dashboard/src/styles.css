@@ -457,6 +457,16 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
  * bordered dropdowns reads like a settings page, and nobody learns anything from that.
  */
 .customers-table .kpi-table { min-width: 0; }
+.orders-table .kpi-table { min-width: 0; }
+.orders-panel .tabs { margin-block: 8px 12px; }
+.orders-table .row-open > td { background: #f6faf5; }
+.orders-table td > small { display: block; margin-top: 2px; }
+.order-line { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; background: var(--white); }
+.order-line strong { display: block; }
+.price-field { display: inline-flex; align-items: center; gap: 8px; }
+.price-field > span { color: var(--muted); font-size: .78rem; }
+.price-input { width: 110px; text-align: center; border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; background: var(--white); }
+.price-input:hover, .price-input:focus-visible { border-color: var(--gold-600, #b47a17); }
 .customers-table td > small { display: block; color: var(--muted); font-size: .76rem; line-height: 1.5; }
 /* Only the lines that explain the row. A nested `small` (the delete prompt) lives in a flex cluster and would be
  * pushed onto its own line by the rule above. */

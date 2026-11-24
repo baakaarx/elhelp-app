@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { agoText, parseNumberText } from './format';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { captureOnce, locationIssueMessage, type Fix } from './location';
+import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId } from './device';
 import { randomUUID } from './tracking';
 import { colors, fonts, radius, space } from './theme';
-import { Body, Button, Card, Empty, Field, Pill, Row, Sheet } from './ui';
+import { Body, Button, Card, Empty, Field, Row, Sheet } from './ui';
 import type { FieldBundle } from './useField';
-import { customerStageLabels, visitPurposeLabels, type User, type Visit, type VisitPurpose } from './types';
+import { customerStageLabels, visitPurposeLabels, type Customer, type User, type Visit, type VisitPurpose } from './types';
 
 const purposes: VisitPurpose[] = ['visit', 'order', 'collection', 'note', 'issue', 'other'];
 const haptic = () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined); };
@@ -16,44 +16,112 @@ const haptic = () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).ca
 /** How many rows the picker shows before it asks for a search instead of making him scroll. */
 const PICKER_LIMIT = 12;
 
-export function CheckInSheet({ visible, onClose, field, user }: { visible: boolean; onClose: () => void; field: FieldBundle; user: User }) {
-  const [customerId, setCustomerId] = useState('');
-  const [search, setSearch] = useState('');
-  const [purpose, setPurpose] = useState<VisitPurpose>('visit');
-  const [notes, setNotes] = useState('');
-  const [fix, setFix] = useState<Fix | null>(null);
-  const [locating, setLocating] = useState(false);
-  const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  // The office's list, scoped to this engineer by the server. Nothing here is typed as a name.
+/**
+ * اختيار العميل — the picker a visit and an order share, down to the sentence they must share:
+ * «ما تتسجلش على اسم مكتوب بإيدك» is the same rule for both, and two copies of it would drift.
+ *
+ * The list is the office's book as the server scoped it to this engineer, kept from the last good
+ * read when the field has no bars. Search matches name, phone, village and district; past
+ * PICKER_LIMIT rows the term has to narrow it — scrolling a farm list with gloves on is not a flow.
+ */
+export function CustomerPicker({ field, selected, search, onSearch, onSelect }: {
+  field: FieldBundle;
+  selected: Customer | null;
+  search: string;
+  onSearch: (value: string) => void;
+  onSelect: (customer: Customer | null) => void;
+}) {
   const customers = field.customers;
-  const selected = useMemo(() => customers.find(row => row.id === customerId) ?? null, [customers, customerId]);
   const matches = useMemo(() => {
     const term = search.trim().toLowerCase();
     if (!term) return customers;
     return customers.filter(row => `${row.name} ${row.phone} ${row.village} ${row.district}`.toLowerCase().includes(term));
   }, [customers, search]);
   const shown = matches.slice(0, PICKER_LIMIT);
+  if (selected) {
+    return (
+      <Card tone="mint" style={{ gap: 3 }}>
+        <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <Text style={styles.pickName}>{selected.name}</Text>
+          <Pressable onPress={() => { haptic(); onSelect(null); }} accessibilityRole="button">
+            <Text style={styles.retry}>اختار واحد تاني</Text>
+          </Pressable>
+        </Row>
+        <Text style={styles.pickSub}>
+          {[selected.governorate, selected.district, selected.village].filter(Boolean).join(' · ') || 'من غير عنوان في القائمة'}
+        </Text>
+        {selected.phone ? <Text style={styles.pickPhone}>{selected.phone}</Text> : null}
+        <Text style={styles.pickSub}>
+          {customerStageLabels[selected.stage] ?? 'عميل'} · {selected.visitCount ? `${selected.visitCount} زيارة` : 'ما اتزارش قبل كده'}
+          {selected.lastVisitAt ? ` · آخرها ${agoText(selected.lastVisitAt)}` : ''}
+        </Text>
+        {selected.notes ? <Text style={styles.pickNote}>ملاحظة المكتب: {selected.notes}</Text> : null}
+      </Card>
+    );
+  }
+  if (customers.length === 0) {
+    return (
+      <Empty
+        title={field.customersLoading ? 'جارٍ تحميل قائمتك…' : 'مفيش عملاء في قائمتك'}
+        hint={field.customersLoading
+          ? 'لو الشبكة ضعيفة، آخر قائمة اتحمّلت هتفضل محفوظة.'
+          : 'مدير المبيعات هو اللي بيضيف العملاء في قائمة الشركة وبيحدد مين يخدم كل عميل. اطلب منه يضيفك لهم، وبعدها ارجع هنا.'}
+      />
+    );
+  }
+  return (
+    <>
+      {field.customersNotice ? <Text style={styles.notice}>{field.customersNotice}</Text> : null}
+      <Field label="دوّر بالاسم أو التليفون" value={search} onChangeText={onSearch} placeholder="مثال: محمود أو 010" autoCapitalize="none" />
+      {matches.length === 0 ? (
+        <Text style={styles.error}>مفيش عميل في قائمتك بالاسم ده. لو ده عميل جديد، لازم المكتب يضيفه الأول — الطلبية والزيارة ما يتسجلوش على اسم مكتوب بإيدك.</Text>
+      ) : null}
+      {shown.map(row => (
+        <Pressable key={row.id} onPress={() => onSelect(row)} accessibilityRole="button" style={({ pressed }) => [styles.pickRow, pressed && styles.pickRowPressed]}>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={styles.pickName}>{row.name}</Text>
+            <Text style={styles.pickSub}>
+              {[row.district, row.village].filter(Boolean).join(' · ') || 'من غير منطقة'}
+              {row.visitCount ? ` · ${row.visitCount} زيارة` : ' · ما اتزارش'}{row.lastVisitAt ? ` · ${agoText(row.lastVisitAt)}` : ''}
+            </Text>
+          </View>
+          <Text style={styles.pickChev}>◂</Text>
+        </Pressable>
+      ))}
+      {matches.length > shown.length ? <Text style={styles.notice}>في {matches.length - shown.length} عميل تاني — كمّل كتابة في البحث.</Text> : null}
+    </>
+  );
+}
+
+export function CheckInSheet({ visible, onClose, field, user }: { visible: boolean; onClose: () => void; field: FieldBundle; user: User }) {
+  const [customerId, setCustomerId] = useState('');
+  const [search, setSearch] = useState('');
+  const [purpose, setPurpose] = useState<VisitPurpose>('visit');
+  const [notes, setNotes] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // The office's list, scoped to this engineer by the server. Nothing here is typed as a name.
+  const customers = field.customers;
+  const selected = useMemo(() => customers.find(row => row.id === customerId) ?? null, [customers, customerId]);
 
   useEffect(() => {
     if (!visible) return;
     setCustomerId(''); setSearch(''); setPurpose('visit'); setNotes(''); setError('');
     // Asked for on every open, so a customer the office handed over this morning is on the list before
     // the engineer walks in; if the network is down, loadCustomers keeps the last good copy.
+    // The position is read once, at the press that commits — a preview reading on open would make the
+    // engineer wait for the satellite twice for one visit, and the fix that matters is the one taken
+    // at the moment of the check-in (that is also when the mock-location bit is checked).
     void field.loadCustomers();
-    setLocating(true);
-    void captureOnce({ maxAgeMs: 0 }).then(next => {
-      setFix(next);
-      if (!next) setError(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.');
-    }).catch(() => setError('تعذر قراءة الموقع. تحقق من أذونات GPS ثم حاول مرة أخرى.')).finally(() => setLocating(false));
   }, [visible]);
 
   async function submit() {
     if (!selected) { setError('اختار العميل من قائمتك الأول — الزيارة بتتسجل على عميل من قائمة الشركة.'); return; }
     setSaving(true); setError('');
     try {
-      // Never reuse the preview fix for the actual check-in: the OS mock bit must be checked at commit time.
+      // The one and only GPS read of this sheet, taken at the press that commits: maxAgeMs 0 refuses
+      // any cached fix, so the mock-location bit is checked at commit time, not at some earlier moment.
       const location = await captureOnce({ maxAgeMs: 0 });
       if (!location) throw new Error(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع وانتظر حتى تثبت الإشارة قبل تسجيل الزيارة.');
       const deviceId = await getDeviceId();
@@ -74,53 +142,13 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
     <Sheet visible={visible} onClose={onClose} title="تسجيل زيارة جديدة">
       <View style={{ gap: 6 }}>
         <Text style={styles.label}>العميل من قائمتك *</Text>
-        {selected ? (
-          <Card tone="mint" style={{ gap: 3 }}>
-            <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <Text style={styles.pickName}>{selected.name}</Text>
-              <Pressable onPress={() => { haptic(); setCustomerId(''); setSearch(''); }} accessibilityRole="button">
-                <Text style={styles.retry}>اختار واحد تاني</Text>
-              </Pressable>
-            </Row>
-            <Text style={styles.pickSub}>
-              {[selected.governorate, selected.district, selected.village].filter(Boolean).join(' · ') || 'من غير عنوان في القائمة'}
-            </Text>
-            {selected.phone ? <Text style={styles.pickPhone}>{selected.phone}</Text> : null}
-            <Text style={styles.pickSub}>
-              {customerStageLabels[selected.stage] ?? 'عميل'} · {selected.visitCount ? `${selected.visitCount} زيارة` : 'ما اتزارش قبل كده'}
-              {selected.lastVisitAt ? ` · آخرها ${agoText(selected.lastVisitAt)}` : ''}
-            </Text>
-            {selected.notes ? <Text style={styles.pickNote}>ملاحظة المكتب: {selected.notes}</Text> : null}
-          </Card>
-        ) : customers.length === 0 ? (
-          <Empty
-            title={field.customersLoading ? 'جارٍ تحميل قائمتك…' : 'مفيش عملاء في قائمتك'}
-            hint={field.customersLoading
-              ? 'لو الشبكة ضعيفة، آخر قائمة اتحمّلت هتفضل محفوظة.'
-              : 'مدير المبيعات هو اللي بيضيف العملاء في قائمة الشركة وبيحدد مين يخدم كل عميل. اطلب منه يضيفك لهم، وبعدها ارجع هنا.'}
-          />
-        ) : (
-          <>
-            {field.customersNotice ? <Text style={styles.notice}>{field.customersNotice}</Text> : null}
-            <Field label="دوّر بالاسم أو التليفون" value={search} onChangeText={setSearch} placeholder="مثال: محمود أو 010" autoCapitalize="none" />
-            {matches.length === 0 ? (
-              <Text style={styles.error}>مفيش عميل في قائمتك بالاسم ده. لو ده عميل جديد، لازم المكتب يضيفه الأول — الزيارة ما تتسجلش على اسم مكتوب بإيدك.</Text>
-            ) : null}
-            {shown.map(row => (
-              <Pressable key={row.id} onPress={() => { haptic(); setCustomerId(row.id); }} accessibilityRole="button" style={({ pressed }) => [styles.pickRow, pressed && styles.pickRowPressed]}>
-                <View style={{ flex: 1, gap: 2 }}>
-                  <Text style={styles.pickName}>{row.name}</Text>
-                  <Text style={styles.pickSub}>
-                    {[row.district, row.village].filter(Boolean).join(' · ') || 'من غير منطقة'}
-                    {row.visitCount ? ` · ${row.visitCount} زيارة` : ' · ما اتزارش'}{row.lastVisitAt ? ` · ${agoText(row.lastVisitAt)}` : ''}
-                  </Text>
-                </View>
-                <Text style={styles.pickChev}>◂</Text>
-              </Pressable>
-            ))}
-            {matches.length > shown.length ? <Text style={styles.notice}>في {matches.length - shown.length} عميل تاني — كمّل كتابة في البحث.</Text> : null}
-          </>
-        )}
+        <CustomerPicker
+          field={field}
+          selected={selected}
+          search={search}
+          onSearch={setSearch}
+          onSelect={row => { if (!row) { setCustomerId(''); setSearch(''); return; } haptic(); setCustomerId(row.id); }}
+        />
       </View>
       <View style={{ gap: 6 }}>
         <Text style={styles.label}>نوع الزيارة</Text>
@@ -133,20 +161,6 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
         </View>
       </View>
       <Field label="ملاحظات" value={notes} onChangeText={setNotes} multiline placeholder="ملخص سريع قبل الدخول" style={{ minHeight: 70 }} />
-      <View style={styles.fixRow}>
-        <Pill label={locating ? 'جارٍ تحديد موقعك…' : fix ? `تم تثبيت الموقع ±${fix.accuracy ? Math.round(fix.accuracy) : '—'} م` : 'بدون موقع'} tone={fix ? 'mint' : 'warn'} />
-        <Pressable onPress={async () => {
-          setLocating(true); setError('');
-          try {
-            const next = await captureOnce({ maxAgeMs: 0 });
-            setFix(next);
-            if (!next) setError(locationIssueMessage() || 'GPS مطلوب — فعّل الموقع قبل تسجيل الزيارة.');
-          } catch { setError('تعذر قراءة الموقع. تحقق من أذونات GPS ثم حاول مرة أخرى.'); }
-          finally { setLocating(false); }
-        }}>
-          <Text style={styles.retry}>تحديث الموقع</Text>
-        </Pressable>
-      </View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Button label={saving ? 'جارٍ التسجيل…' : 'تسجيل الحضور في الزيارة'} onPress={submit} loading={saving} icon="✓" />
       <Body muted style={{ fontSize: 11.5 }}>الزيارة المفتوحة واحدة فقط؛ أنهِها قبل تسجيل زيارة جديدة. كل زيارة تُسجَّل بموافقة ضمن ورديتك المفتوحة.</Body>
@@ -210,7 +224,6 @@ const styles = StyleSheet.create({
   chipText: { fontFamily: fonts.medium, fontSize: 12.5, color: colors.green900 },
   chipTextActive: { color: '#fdf8ec' },
   ltr: { textAlign: 'left', writingDirection: 'ltr' },
-  fixRow: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between' },
   retry: { fontFamily: fonts.medium, fontSize: 12, color: colors.green700 },
   error: { fontFamily: fonts.regular, fontSize: 12.5, color: colors.danger, textAlign: 'right' },
   notice: { fontFamily: fonts.regular, fontSize: 12, color: colors.amber, textAlign: 'right' },

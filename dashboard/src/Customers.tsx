@@ -456,59 +456,81 @@ function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers,
 /**
  * التوزيع بالمناطق: the workbench that hands a whole area to one engineer.
  *
- * Nothing here moves on its own. Every row offers a suggested engineer, and the press that would move
- * thirty customers answers with a preview first — how many would move, and which names are refused
- * because the receiving engineer already carries them.
+ * The area row is its own control, the same rule the customer list learned: the list carries the
+ * engineer and the button next to it says who and how many before anything is pressed. Handing an
+ * area to a person moves only the customers nobody owns yet — stealing a colleague's rows by a stray
+ * press is the one thing this screen must not do — and the sweep that does touch assigned names,
+ * sending the whole area back to the company's list, arms itself like a delete does. Names the
+ * receiver already carries are skipped by the server and counted in the answer («اتخطّوا»), so the
+ * office learns about a collision the moment it happens instead of one round-trip earlier.
  */
-function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => void }) {
-  const [choice, setChoice] = useState<Record<string, { repId: string; onlyUnassigned: boolean }>>({});
-  const [preview, setPreview] = useState<Record<string, AreaPreview>>({});
-  const [moved, setMoved] = useState<Record<string, MoveResult>>({});
+function AreaTransfer({ row, engineers, onDone }: { row: AreaRow; engineers: AreaBook['engineers']; onDone: () => void }) {
+  const [choice, setChoice] = useState<string | null>(null);
+  const [onlyUnassigned, setOnlyUnassigned] = useState(true);
+  const [preview, setPreview] = useState<AreaPreview | null>(null);
+  const [result, setResult] = useState<MoveResult | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState('');
+  const [busy, setBusy] = useState(false);
+  const repId = choice ?? row.suggestedRepId ?? POOL;
+  const name = engineers.find(rep => rep.id === repId)?.name ?? 'قائمة الشركة';
+  const unassigned = repId !== POOL && onlyUnassigned;
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(null);
+    setError('');
+    // Never broaden an unnamed area into the whole customer book.
+    if (!row.bareGovernorate && !row.bareDistrict) return () => { cancelled = true; };
+    void post<AreaPreview>('/api/customers/assign-area', {
+      governorate: row.bareGovernorate, district: row.bareDistrict,
+      repId: repId || null, onlyUnassigned: unassigned, exactArea: true, dryRun: true,
+    }).then(value => { if (!cancelled) setPreview(value); })
+      .catch(e => { if (!cancelled) setError(messageOf(e, 'تعذر حساب النقل.')); });
+    return () => { cancelled = true; };
+  }, [row, repId, unassigned]);
+
+  async function move() {
+    if (!preview || !preview.wouldMove || busy) return;
+    setBusy(true); setError('');
+    try {
+      const done = await post<MoveResult>('/api/customers/assign-area', {
+        governorate: row.bareGovernorate, district: row.bareDistrict,
+        repId: repId || null, onlyUnassigned: unassigned, exactArea: true,
+      });
+      setResult(done);
+      onDone();
+    } catch (e) { setError(messageOf(e, 'تعذر تنفيذ النقل.')); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="stack">
+    <select className="rowpick" value={repId} aria-label="المهندس" onChange={event => { setPreview(null); setChoice(event.target.value); setResult(null); }}>
+      <option value={POOL}>قائمة الشركة (من غير مهندس)</option>
+      {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
+    </select>
+    {repId !== POOL && <label className="field inline"><span>اللي من غير مهندس بس</span>
+      <input type="checkbox" checked={onlyUnassigned} onChange={event => { setPreview(null); setOnlyUnassigned(event.target.checked); setResult(null); }} />
+    </label>}
+    {preview && <p className="small">هينقل {formatNumber(preview.wouldMove)} من {formatNumber(preview.matched)}
+      {preview.conflicts.length > 0 ? `، وهيتخطّى ${formatNumber(preview.conflicts.length)}: ${preview.conflicts.map(item => item.name).join('، ')}` : ''}
+      {preview.capped ? ' · أول ١٠٠٠ عميل بس' : ''}.</p>}
+    {error && <p className="error" role="alert">{error}</p>}
+    <button className="btn primary sm" disabled={busy || !preview?.wouldMove} onClick={() => void move()}>
+      {busy ? 'جارٍ النقل…' : `تأكيد النقل لـ ${name}`}
+    </button>
+    {result && <p className="small ok-text">{formatNumber(result.moved)} اتنقلوا{result.skipped ? `، و${formatNumber(result.skipped)} اتخطّوا` : ''}.
+      {result.capped ? ' النقل وقف عند أول ١٠٠٠ عميل.' : ''}</p>}
+  </div>;
+}
+
+function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => void }) {
+  const [error, setError] = useState('');
   const [regionFor, setRegionFor] = useState('');
   const [regionValue, setRegionValue] = useState('');
   const [savingRegion, setSavingRegion] = useState(false);
 
   const areas = book?.areas ?? [];
   const engineers = book?.engineers ?? [];
-  const pick = (row: AreaRow) => {
-    const raw = choice[areaKey(row)];
-    const repId = raw ? raw.repId : (row.suggestedRepId ?? POOL);
-    // Sending the area back to the company's list only makes sense for rows somebody else owns, so the
-    // safe switch is off there by default — the server refuses the combination otherwise.
-    const onlyUnassigned = raw ? raw.onlyUnassigned : repId !== POOL;
-    return { repId, onlyUnassigned };
-  };
-  const bodyOf = (row: AreaRow) => {
-    const { repId, onlyUnassigned } = pick(row);
-    return { governorate: row.bareGovernorate, district: row.bareDistrict, repId: repId || null, onlyUnassigned };
-  };
-  const nameOf = (id: string) => engineers.find(rep => rep.id === id)?.name ?? 'قائمة الشركة';
-
-  async function run(row: AreaRow, dryRun: boolean) {
-    const key = areaKey(row);
-    setBusy(key + (dryRun ? ':dry' : ':go'));
-    setError('');
-    try {
-      if (dryRun) {
-        // Asked outside the state updater: an updater must stay a pure function, and awaiting inside it
-        // is a syntax error the bundler catches but a reader would not.
-        const dry = await post<AreaPreview>('/api/customers/assign-area', { ...bodyOf(row), dryRun: true });
-        setPreview(values => ({ ...values, [key]: dry }));
-        return;
-      }
-      const result = await post<MoveResult>('/api/customers/assign-area', bodyOf(row));
-      setMoved(values => ({ ...values, [key]: result }));
-      setPreview(values => ({ ...values, [key]: undefined as unknown as AreaPreview }));
-      onDone();
-    } catch (e) {
-      setError(messageOf(e, 'تعذر تنفيذ النقل.'));
-    } finally {
-      setBusy('');
-    }
-  }
-
   async function saveRegion(repId: string) {
     setSavingRegion(true);
     setError('');
@@ -527,7 +549,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
     <div className="panel">
       <h3 className="panel-title">توزيع العملاء على المناطق</h3>
       <p className="muted small">
-        كل سطر = محافظة ومركز زي ما اتكتبوا في القائمة. الاقتراح من «منطقته» المسجلة عند المهندس — اضغط «معاينة الأول» قبل ما يتنقل حد.
+        اختار المهندس لكل منطقة؛ العدد والأسماء المتعارضة بيتحسبوا تلقائيًا قبل النقل. تقدر تنقل اللي من غير مهندس بس أو كل العملاء.
       </p>
       {error && <p className="error" role="alert">{error}</p>}
       {areas.length === 0 ? (
@@ -536,14 +558,11 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
         <div className="kpi-table-wrap area-table">
           <table className="kpi-table">
             <thead>
-              <tr><th>المنطقة</th><th>عملاء</th><th>من غير مهندس</th><th>عليه زيارات</th><th>مين شايلها</th><th>يترجّح</th><th>النقل</th></tr>
+              <tr><th>المنطقة</th><th>عملاء</th><th>من غير مهندس</th><th>عليه زيارات</th><th>مين شايلها</th><th>النقل</th></tr>
             </thead>
             <tbody>
               {areas.map(row => {
                 const key = areaKey(row);
-                const { repId, onlyUnassigned } = pick(row);
-                const shown = preview[key];
-                const done = moved[key];
                 return (
                   <tr key={key}>
                     <td>
@@ -564,55 +583,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
                         ))}
                       {row.settled ? <em className="ok-text small"> · خلاص</em> : null}
                     </td>
-                    <td>{row.suggestedRepName || <span className="muted small">مفيش مهندس مسجّل عنده المنطقة دي</span>}</td>
-                    <td>
-                      {shown ? (
-                        <div className="stack">
-                          <p className="small">
-                            {shown.wouldMove
-                              ? <>هينقل <strong>{formatNumber(shown.wouldMove)}</strong> من {formatNumber(shown.matched)}{shown.conflicts.length ? `، و${formatNumber(shown.conflicts.length)} هيتخطّوا لأن الاسم موجود عند ${nameOf(repId)}` : ''}.</>
-                              : <>مفيش حاجة تتنقل من هنا — {onlyUnassigned ? 'كل عملاء المنطقة دي ليهم مهندس بالفعل (شيل علامة «اللي من غير مهندس بس» لو عايز ترجّعهم قائمة الشركة).' : 'الأسماء كلها موجودة عند ' + nameOf(repId) + ' — ادمج العميلين المتعارضين الأول.'}</>}
-                            {shown.capped ? <em className="pill warn"> القائمة موقوفة عند ١٠٠٠ </em> : null}
-                          </p>
-                          {shown.conflicts.length > 0 && (
-                            <p className="muted small">اللي هيتخطّوا: {shown.conflicts.map(item => item.name).join('، ')}</p>
-                          )}
-                          <span className="confirm-pair">
-                            <button className="btn primary sm" disabled={shown.wouldMove === 0 || busy !== ''} onClick={() => void run(row, false)}>
-                              {busy === key + ':go' ? 'جارٍ النقل…' : `تأكيد النقل${repId ? ` لـ ${nameOf(repId)}` : ' قائمة الشركة'}`}
-                            </button>
-                            <button className="btn ghost sm" onClick={() => setPreview(values => ({ ...values, [key]: undefined as unknown as AreaPreview }))}>رجوع</button>
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="stack">
-                          <span className="confirm-pair">
-                            <select value={repId} aria-label="المهندس" onChange={event => {
-                              const next = event.target.value;
-                              setChoice(values => ({ ...values, [key]: { repId: next, onlyUnassigned: next !== POOL } }));
-                              setMoved(values => ({ ...values, [key]: undefined as unknown as MoveResult }));
-                            }}>
-                              <option value={POOL}>قائمة الشركة (من غير مهندس)</option>
-                              {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
-                            </select>
-                            <label className="field inline">
-                              <span>اللي من غير مهندس بس</span>
-                              <input type="checkbox" checked={onlyUnassigned} onChange={event => setChoice(values => ({ ...values, [key]: { repId, onlyUnassigned: event.target.checked } }))} />
-                            </label>
-                          </span>
-                          {done ? (
-                            <p className="small ok-text">
-                              {formatNumber(done.moved)} اتنقلوا{done.skipped ? `، و${formatNumber(done.skipped)} اتخطّوا` : ''}
-                              {done.repName ? ` لـ ${done.repName}` : ' لقائمة الشركة'}.
-                            </p>
-                          ) : (
-                            <button className="btn ghost sm" disabled={busy !== ''} onClick={() => void run(row, true)}>
-                              {busy === key + ':dry' ? 'جارٍ الحساب…' : 'معاينة الأول'}
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </td>
+                    <td><AreaTransfer row={row} engineers={engineers} onDone={onDone} /></td>
                   </tr>
                 );
               })}

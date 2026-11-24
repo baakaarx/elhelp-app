@@ -53,6 +53,9 @@ export default function App() {
    * submitted a daily report saw nothing until he switched tabs and came back.
    */
   const [reportsVersion, setReportsVersion] = useState(0);
+  /** Same idea for the orders queue: a send from the field must open the list, not wait for the tab to be re-entered. */
+  const [ordersVersion, setOrdersVersion] = useState(0);
+  const bumpOrders = useCallback(() => setOrdersVersion(value => value + 1), []);
   const bumpReports = useCallback(() => setReportsVersion(value => value + 1), []);
   const socketRef = useRef<Socket | null>(null);
   const liveRef = useRef(false);
@@ -89,13 +92,13 @@ export default function App() {
         api<{ reports: IdleReport[] }>('/api/idle-reports?limit=20').catch(() => ({ reports: [] })),
       ]);
       setOverview(nextOverview);
-      setAlerts(nextAlerts.alerts);
+      setAlerts(nextAlerts.alerts.filter(alert => alert.code !== 'missing_daily_report' && alert.code !== 'stale_reviews'));
       setIdleReports(nextIdle.reports);
       setSyncedAt(Date.now());
       setError('');
       // With no live socket the poll is the only thing that can notice a new report, so the
       // reports screen follows it; when the socket is up its events do that job instead.
-      if (!liveRef.current) bumpReports();
+      if (!liveRef.current) { bumpReports(); bumpOrders(); }
     } catch (e) {
       // api() removes an expired/invalid token on 401. Move back to login as well, rather than
       // leaving the manager-looking dashboard mounted with requests that can never succeed.
@@ -105,7 +108,7 @@ export default function App() {
       }
       setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.');
     }
-  }, [bumpReports, clearSession]);
+  }, [bumpReports, bumpOrders, clearSession]);
 
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
@@ -118,11 +121,12 @@ export default function App() {
     socket.on('overview', (data: Overview) => { setOverview(data); setSyncedAt(Date.now()); });
     socket.on('report', () => { bumpReports(); refresh(); });
     socket.on('daily-report', () => { bumpReports(); refresh(); });
-    socket.on('visit', () => refresh());
+    socket.on('visit', () => { bumpReports(); refresh(); });
+    socket.on('order', () => { bumpOrders(); refresh(); });
     return () => { liveRef.current = false; socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would
     // churn connections. The poll below has its own effect precisely so it can follow it.
-  }, [user, refresh, bumpReports]);
+  }, [user, refresh, bumpReports, bumpOrders]);
 
   // The polling rate depends on the live socket, and the value read when the socket effect ran
   // was always the initial `false` — so a connected dashboard kept asking three endpoints every
@@ -214,7 +218,7 @@ export default function App() {
           {tabs.map(item => (
             <button key={item.id} className={tab === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(item.id)}>
               <span aria-hidden="true">{item.icon}</span> {item.label}
-              {item.id === 'reports' && overview && overview.newReports > 0 && <em className="badge">{formatNumber(overview.newReports)}</em>}
+              {item.id === 'reports' && overview && (overview.sentOrders ?? 0) > 0 && <em className="badge warn">{formatNumber(overview.sentOrders ?? 0)}</em>}
               {item.id === 'live' && warnCount > 0 && <em className="badge warn">{formatNumber(warnCount)}</em>}
             </button>
           ))}
@@ -247,7 +251,7 @@ export default function App() {
               <Stat label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
               <Stat label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
               <Stat label="إجمالي مسافة اليوم" value={`${formatNumber(totalKm / 1000)} كم`} hint="تقديري بعد استبعاد النقاط الضعيفة" />
-              <Stat label="بانتظار المراجعة" value={formatNumber(overview?.newReports ?? 0)} hint="تقارير ميدان ويومية" />
+              <Stat label="طلبيات مستنية" value={formatNumber(overview?.sentOrders ?? 0)} hint="بانتظار التسعير" />
             </div>
             <div className="live-grid">
               <div className="panel map-panel">
@@ -359,7 +363,7 @@ export default function App() {
         )}
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
-        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} timezone={overview?.timezone} />}
+        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
         {tab === 'products' && <Products timezone={overview?.timezone} />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}

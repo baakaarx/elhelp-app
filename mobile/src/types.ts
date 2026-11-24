@@ -153,11 +153,43 @@ export const visitPurposeLabels: Record<VisitPurpose, string> = {
   visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
 /** `visit-checkin` / `visit-checkout` are the two halves of a visit typed without a signal. */
-export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout';
+export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout' | 'order';
 export interface OutboxItem {
   key: string; kind: OutboxKind; payload: string; createdAt: number; attempts: number;
   /** A permanent server rejection is retained but paused until the engineer manually retries. */
   rejected?: boolean;
+}
+
+/* ------------------------------------------------ الطلبيات: الكميات اللي الميدان اتفق عليها */
+
+export interface OrderLineInput {
+  productId: string;
+  /** مرقومة بوحدة الصنف نفسها (شيكارة/عبوة/جركن) — مش وزن ولا كرتونة. */
+  qty: number;
+  notes?: string;
+}
+export interface OrderInput {
+  id: string;
+  /** سطر من قائمة المكتب — الطلبية ما تتسجلش على اسم مكتوب بالإيد، زي الزيارة بالظبط. */
+  customerId: string;
+  visitId?: string;
+  notes: string;
+  lines: OrderLineInput[];
+  /** ضغطة الميدان معناها «ابعت»؛ المسودة للطلبية اللي عايز تكملها بعد شوية. */
+  send?: boolean;
+  /** بتبعتها الطابور اللي من غير شبكة، زي الزيارة المتأخرة. */
+  recordedAt?: number;
+}
+/** اللي بيرجع للتليفون: أصناف وكميات وحالة بس — مفيش سعر ولا إجمالي على شاشة المندوب. */
+export interface OrderView {
+  id: string;
+  status: 'draft' | 'sent' | 'priced';
+  notes: string;
+  customerName: string;
+  createdAt: number;
+  sentAt: number | null;
+  recordedOffline: boolean;
+  lines: Array<{ productId: string; productName: string; unit: string; unitSize: string; qty: number }>;
 }
 
 /* --------------------------------------------------------------- ما تبيعه الشركة: الأصناف وعبواتها */
