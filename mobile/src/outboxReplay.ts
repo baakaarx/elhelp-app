@@ -1,6 +1,6 @@
 import type { CheckOutBody } from './api';
 import type { Outbox } from './queue';
-import type { DailyReportInput, InvoiceInput, OutboxItem, ReportInput, VisitInput } from './types';
+import type { DailyReportInput, OutboxItem, ReportInput, VisitInput } from './types';
 
 type QueuedCheckIn = VisitInput & { recordedAt: number };
 type QueuedCheckOut = { id: string; visitId: string; body: CheckOutBody & { recordedAt: number } };
@@ -10,7 +10,6 @@ export interface OutboxSenders {
   checkOut(visitId: string, body: QueuedCheckOut['body']): Promise<unknown>;
   report(report: ReportInput): Promise<unknown>;
   dailyReport(report: DailyReportInput): Promise<unknown>;
-  invoice(invoice: InvoiceInput & { recordedAt?: number }): Promise<unknown>;
 }
 
 export interface OutboxReplayResult { sent: number; notice?: string }
@@ -54,7 +53,6 @@ export async function replayOutboxActions(
         const checkout = payload as QueuedCheckOut;
         await send.checkOut(checkout.visitId, checkout.body);
       } else if (item.kind === 'report') await send.report(payload as ReportInput);
-      else if (item.kind === 'invoice') await send.invoice(payload as InvoiceInput & { recordedAt: number });
       else await send.dailyReport(payload as DailyReportInput);
       await queue.remove(item.key);
       sent++;

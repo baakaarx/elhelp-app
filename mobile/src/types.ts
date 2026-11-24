@@ -43,57 +43,9 @@ export interface DailyReport {
   repName: string; repColor: string; visits: DailyVisit[];
 }
 export type VisitPurpose = 'visit' | 'order' | 'collection' | 'note' | 'issue' | 'other';
-/**
- * One customer on this engineer's own list. The server scopes every read and write to the signed-in
- * rep, so a phone can never see a colleague's customers.
- */
-export interface Customer {
-  id: string;
-  /**
-   * The server's column is nullable now — «the company's list, no engineer yet» is a real row there.
-   * It can never be null on this screen: every read is scoped to the signed-in rep, so a phone only
-   * ever gets rows that already point at it. The type says so, which is why the app never checks it.
-   */
-  repId: string;
-  name: string;
-  phone: string;
-  governorate: string;
-  district: string;
-  village: string;
-  notes: string;
-  lat: number | null;
-  lng: number | null;
-  stage: 'new' | 'following' | 'active' | 'dormant' | 'lost';
-  lostReason: string;
-  active: boolean;
-  createdAt: number;
-  updatedAt: number;
-  visitCount: number;
-  lastVisitAt: number | null;
-  openVisits: number;
-}
-export interface CustomerInput {
-  name: string;
-  phone: string;
-  governorate: string;
-  district: string;
-  village: string;
-  notes: string;
-  stage: Customer['stage'];
-  /** Required by the server when `stage` is `lost`. */
-  lostReason?: string;
-  /** Pinned from the visit that created him, so the route map can find him later. */
-  lat?: number | null;
-  lng?: number | null;
-}
-export const customerStageLabels: Record<Customer['stage'], string> = {
-  new: 'جديد', following: 'قيد المتابعة', active: 'عميل دائم', dormant: 'برّد', lost: 'مرفوض',
-};
 export interface VisitInput {
   id: string;
   customerName: string;
-  /** Present when the visit was booked from the engineer's own customer list. */
-  customerId?: string;
   governorate: string;
   district: string;
   village: string;
@@ -164,96 +116,9 @@ export const visitPurposeLabels: Record<VisitPurpose, string> = {
   visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
 /** `visit-checkin` / `visit-checkout` are the two halves of a visit typed without a signal. */
-/** `invoice` is a sale the engineer typed with no signal — the office's dashboard cannot show it yet. */
-export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout' | 'invoice';
+export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout';
 export interface OutboxItem {
   key: string; kind: OutboxKind; payload: string; createdAt: number; attempts: number;
   /** A permanent server rejection is retained but paused until the engineer manually retries. */
   rejected?: boolean;
 }
-
-/* ---- The engineer's own sales: what the office billed in his name, and what the shelf holds ---- */
-export interface MyInvoiceLine {
-  productName: string;
-  unit: string;
-  qty: number;
-  unitPrice: number;
-  lineTotal: number;
-}
-/** What the manager set for this month, and how far the engineer has got against it. Read-only. */
-export interface MyTarget {
-  month: string;
-  target: { revenue: number; invoices: number; note: string; updatedAt: number | null; revenueProgress: number | null; invoicesProgress: number | null } | null;
-  sold: { invoices: number; revenue: number; collected: number };
-  daysLeft: number;
-}
-export interface MyInvoice {
-  id: string;
-  number: string | null;
-  customerId: string | null;
-  customerName: string;
-  warehouseName: string;
-  date: string;
-  invoiceDate: number;
-  total: number;
-  paidAmount: number;
-  status: 'unpaid' | 'partial' | 'paid';
-  stockShort: boolean;
-  note: string;
-  createdBy?: string;
-  source?: 'field' | 'dashboard';
-  lines: MyInvoiceLine[];
-}
-export interface CatalogueProduct {
-  id: string;
-  name: string;
-  unit: string;
-  price: number;
-  onHand: number;
-  warehouses: { name: string; onHand: number }[];
-}
-export interface SalesTotals {
-  total: number;
-  paid: number;
-  outstanding: number;
-  count: number;
-}
-/**
- * What an engineer sends to book a sale. No price and no discount: the catalogue owns the first and
- * the office owns the second, so a phone cannot negotiate its own numbers into the books.
- */
-export interface InvoiceInput {
-  customerId: string;
-  warehouseId?: string;
-  lines: { productId: string; qty: number }[];
-  paidAmount?: number;
-  note?: string;
-}
-/** The engineer's own copy of the warehouse statement: quantities, no money columns. */
-export interface StockReportRow {
-  warehouseName: string;
-  productName: string;
-  unit: string;
-  opening: number;
-  inQty: number;
-  outQty: number;
-  adjustments: number;
-  closing: number;
-  movements: number;
-  onHand: number;
-}
-export interface StockReport {
-  from: number;
-  to: number;
-  valuesVisible: boolean;
-  rows: StockReportRow[];
-  totals: Record<string, number>;
-  ledger: {
-    createdAt: number; productName: string; unit: string; qty: number; kind: string;
-    note: string; by: string; invoiceNumber: string | null; warehouseName?: string;
-  }[];
-  truncated?: boolean;
-}
-export const invoiceStatusLabels: Record<MyInvoice['status'], string> = {
-  unpaid: 'غير محصّل', partial: 'نص تحصيل', paid: 'محصّل',
-};

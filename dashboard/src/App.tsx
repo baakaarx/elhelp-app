@@ -2,18 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { io, type Socket } from 'socket.io-client';
 import { API_AUTH_REQUIRED_EVENT, ApiError, api, del, getToken, patch, post, setToken } from './api';
 import { dateTimeText, localDay, localDateText, timeText } from './dates';
-import { ago, dashScope, durationText, formatNumber, isManager, logout, me, type DashScope } from './session';
+import { ago, durationText, formatNumber, isManager, logout, me } from './session';
 import Login from './Login';
 import MapView from './MapView';
 import LocationName from './LocationName';
 import { batteryText, batteryWarning, latestBattery, movementStatus, shiftText } from './locationStatus';
 import Reports from './Reports';
-import Customers from './Customers';
-import Sales from './Sales';
-import Collections from './Collections';
-import Targets from './Targets';
-import Stock from './Stock';
-import Staff from './Staff';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
 import Monthly from './Monthly';
@@ -21,35 +15,16 @@ import type { IdleReport, ManagerAlert, Overview, Rep, RepImpact, Report, RouteR
 import ConfirmAction from './ConfirmAction';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'sales' | 'collections' | 'targets' | 'stock' | 'team' | 'staff' | 'account' | 'agent';
+type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'team' | 'account' | 'agent';
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'مركز العمليات', icon: '◈' },
   { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
   { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
   { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
-  { id: 'customers', label: 'العملاء', icon: '☰' },
-  { id: 'sales', label: 'المبيعات', icon: '£' },
-  { id: 'collections', label: 'التحصيل', icon: '₵' },
-  { id: 'targets', label: 'الأهداف', icon: '◎' },
-  { id: 'stock', label: 'المخازن', icon: '⛃' },
   { id: 'team', label: 'فريق الميدان', icon: '◆' },
-  { id: 'staff', label: 'حسابات اللوحة', icon: '⚿' },
   { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
   { id: 'account', label: 'هويتي', icon: '◉' },
 ];
-
-/**
- * Which tabs each dashboard account is offered, and the reason the list is a deny-by-default
- * allowlist rather than «hide the team tab» is that the same account is stopped on the server too
- * (scopeGate in the API). The list exists so a warehouse clerk never sees a screen that can only
- * answer 403; it is not what keeps the field private.
- */
-const VISIBLE_TABS: Record<DashScope, Tab[]> = {
-  manager: ['live', 'monthly', 'performance', 'reports', 'customers', 'sales', 'collections', 'targets', 'stock', 'team', 'staff', 'agent', 'account'],
-  // The sales office runs the whole register — it just does not hand out logins.
-  sales: ['live', 'monthly', 'performance', 'reports', 'customers', 'sales', 'collections', 'targets', 'stock', 'team', 'agent', 'account'],
-  stock: ['stock', 'account'],
-};
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
@@ -59,9 +34,6 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('live');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [visits, setVisits] = useState<Visit[]>([]);
-  /** Bumped whenever stock or sales data may have changed, so those screens reload themselves. */
-  const [feedVersion, setFeedVersion] = useState(0);
-  const bumpFeed = useCallback(() => setFeedVersion(value => value + 1), []);
   // Bumped by a deletion on this screen so the list refetches now, not on the 30-second clock.
   const [visitsVersion, setVisitsVersion] = useState(0);
   const [route, setRoute] = useState<RouteResponse | null>(null);
@@ -131,22 +103,8 @@ export default function App() {
     }
   }, [bumpReports, clearSession]);
 
-  const scope = dashScope(user);
-  const allowedTabs = tabs.filter(item => VISIBLE_TABS[scope].includes(item.id));
-  // A warehouse account has no field feed to wait for; asking for one would only put a 403 banner
-  // over the one screen it is allowed to use.
-  const wantsFieldFeed = scope !== 'stock';
-  // A scope that cannot open the tab it was left on (a manager switching their own account to
-  // warehouses, say) lands on the first tab it can use. Depends on primitives only, so the effect
-  // runs when the scope or the tab changes and not on every render.
-  useEffect(() => {
-    const allowed = VISIBLE_TABS[scope];
-    if (!allowed.includes(tab)) setTab(allowed[0] ?? 'account');
-  }, [scope, tab]);
-
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
-    if (!wantsFieldFeed) { bumpFeed(); return; }
     refresh();
     const socket = io('/', { auth: { token: getToken() }, transports: ['websocket', 'polling'], reconnectionDelayMax: 5000 });
     socketRef.current = socket;
@@ -157,29 +115,19 @@ export default function App() {
     socket.on('report', () => { bumpReports(); refresh(); });
     socket.on('daily-report', () => { bumpReports(); refresh(); });
     socket.on('visit', () => refresh());
-    // Stock and invoices change under the sales office while it is looking at a total, so the same
-    // ping that updates the map refreshes those two screens.
-    socket.on('stock:changed', bumpFeed);
-    socket.on('invoice', bumpFeed);
     return () => { liveRef.current = false; socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would
     // churn connections. The poll below has its own effect precisely so it can follow it.
-  }, [user, refresh, bumpReports, bumpFeed, wantsFieldFeed]);
+  }, [user, refresh, bumpReports]);
 
   // The polling rate depends on the live socket, and the value read when the socket effect ran
   // was always the initial `false` — so a connected dashboard kept asking three endpoints every
   // two seconds instead of every thirty. Re-creating only the timer keeps the socket untouched.
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
-    // A warehouse account still needs its screen to move on its own while the clerk walks between
-    // the shelf and the desk; there is just nothing field-shaped for it to poll.
-    if (!wantsFieldFeed) {
-      const slow = setInterval(bumpFeed, 30000);
-      return () => clearInterval(slow);
-    }
     const poll = setInterval(refresh, connected ? 30000 : 2000);
     return () => clearInterval(poll);
-  }, [user, refresh, connected, wantsFieldFeed, bumpFeed]);
+  }, [user, refresh, connected]);
 
   const reps = overview?.reps ?? [];
   const selected = useMemo(() => reps.find(r => r.id === selectedId) ?? null, [reps, selectedId]);
@@ -259,7 +207,7 @@ export default function App() {
         </div>
 
         <nav>
-          {allowedTabs.map(item => (
+          {tabs.map(item => (
             <button key={item.id} className={tab === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(item.id)}>
               <span aria-hidden="true">{item.icon}</span> {item.label}
               {item.id === 'reports' && overview && overview.newReports > 0 && <em className="badge">{formatNumber(overview.newReports)}</em>}
@@ -279,7 +227,7 @@ export default function App() {
             <p className="muted small">{dateTimeText(clock, overview?.timezone)} · {user.name}</p>
           </div>
           <div className="topbar-actions">
-            <button className="btn ghost sm" onClick={() => (wantsFieldFeed ? void refresh() : bumpFeed())}>تحديث</button>
+            <button className="btn ghost sm" onClick={() => refresh()}>تحديث</button>
             <button className="btn ghost sm" onClick={async () => {
               try { await logout(); } catch { /* Local logout still wins if the API is unreachable. */ }
               clearSession();
@@ -408,17 +356,7 @@ export default function App() {
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} timezone={overview?.timezone} />}
-        {tab === 'customers' && <Customers />}
-        {tab === 'sales' && <Sales version={feedVersion} canManageStaff={scope === 'manager'} />}
-        {tab === 'collections' && <Collections reps={reps} version={feedVersion} canCollect={isManager(user)} />}
-        {/* Only the manager account sets a target — the server refuses the write for anyone else, so
-            the sales office gets the same table without a box to type in. */}
-        {tab === 'targets' && <Targets version={feedVersion} canManage={scope === 'manager'} />}
-        // The sales office reads the shelves; the price and movement forms belong to the warehouse
-        // account (and to the manager, who keeps the override).
-        {tab === 'stock' && <Stock version={feedVersion} readOnly={scope === 'sales'} canCorrect={scope === 'manager'} />}
         {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
-        {tab === 'staff' && scope === 'manager' && <Staff />}
         {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
@@ -551,24 +489,6 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
   const [passwordFor, setPasswordFor] = useState<{ id: string; name: string } | null>(null);
   const [passwordValue, setPasswordValue] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
-  // The area an engineer drives, corrected after the account exists. The customer book is grouped by
-  // place and handed out by place, so this one field is what makes «كل عملاء طنطا لمهندس طنطا» a
-  // proposal at all instead of a coincidence of names.
-  const [areaFor, setAreaFor] = useState<{ id: string; name: string; region: string } | null>(null);
-  const [areaValue, setAreaValue] = useState('');
-  const [savingArea, setSavingArea] = useState(false);
-  async function saveArea() {
-    if (!areaFor) return;
-    setSavingArea(true);
-    try {
-      await patch(`/api/reps/${areaFor.id}`, { region: areaValue.trim() });
-      setError('');
-      setAreaFor(null);
-      setAreaValue('');
-      onChange();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تغيير المنطقة.'); }
-    finally { setSavingArea(false); }
-  }
   async function savePassword() {
     if (!passwordFor) return;
     if (passwordValue.trim().length < 10) { setError('كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.'); return; }
@@ -613,11 +533,6 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
   );
   const passwordButton = (rep: Rep) => (
     <button className="btn ghost sm" onClick={() => { setError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); }}>كلمة المرور</button>
-  );
-  const areaButton = (rep: Rep) => (
-    <button className="btn ghost sm" onClick={() => { setError(''); setAreaValue(rep.region || ''); setAreaFor({ id: rep.id, name: rep.name, region: rep.region || '' }); }}>
-      منطقته
-    </button>
   );
   const deviceButton = (rep: Rep) => (rep as any).deviceId ? (
     <button className="btn ghost sm" onClick={() => void resetDevice(rep)}>فك ربط الجهاز</button>
@@ -711,7 +626,6 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {deviceButton(rep)}
                   {passwordButton(rep)}
-                  {areaButton(rep)}
                   <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                   {deleteButton(rep)}
                 </span>
@@ -728,32 +642,12 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                     <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}{rep.active ? '' : ' · الحساب متوقف'}</small></span>
                     {deviceButton(rep)}
                     {passwordButton(rep)}
-                    {areaButton(rep)}
                     <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                     {deleteButton(rep)}
                   </li>
                 ))}
               </ul>
             </>
-          )}
-          {areaFor && (
-            <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
-              <h4 className="panel-title">منطقة {areaFor.name}</h4>
-              <p className="muted small">
-                اكتب المحافظة أو المركز اللي بيسوق فيه — مثال: طنطا، أو الغربية. قايمعة العملاء بتتبني عليه:
-                العملاء اللي في نفس المنطقة هم اللي بيتعرضوا عليه، والربط نفسه ضغطتك أنت مش قرار السيرفر.
-              </p>
-              <div className="filters">
-                <label className="field inline">
-                  <span>المنطقة</span>
-                  <input maxLength={80} value={areaValue} placeholder="طنطا" onChange={event => setAreaValue(event.target.value)} />
-                </label>
-                <button className="btn primary sm" disabled={savingArea || areaValue.trim() === areaFor.region} onClick={() => void saveArea()}>
-                  {savingArea ? 'جارٍ الحفظ…' : 'حفظ'}
-                </button>
-                <button className="btn ghost sm" disabled={savingArea} onClick={() => { setAreaFor(null); setAreaValue(''); }}>إلغاء</button>
-              </div>
-            </div>
           )}
           {passwordFor && (
             <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>

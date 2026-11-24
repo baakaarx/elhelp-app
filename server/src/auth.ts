@@ -25,10 +25,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 export const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 export function publicUser(row: Row) {
-  return { id: row.id, name: row.name, email: row.email, role: row.role, phone: row.phone, region: row.region, color: row.color, active: !!row.active, approvalStatus: String(row.approval_status || 'approved'), deviceId: String(row.device_id || ''), oauthProvider: String(row.oauth_provider || ''),
-    // '' = manager, 'sales', 'stock'. The dashboard renders its tabs from this and the server
-    // enforces the same value, so the two can never disagree about what a warehouse account sees.
-    scope: String(row.scope || '') };
+  return { id: row.id, name: row.name, email: row.email, role: row.role, phone: row.phone, region: row.region, color: row.color, active: !!row.active, approvalStatus: String(row.approval_status || 'approved'), deviceId: String(row.device_id || ''), oauthProvider: String(row.oauth_provider || '') };
 }
 /**
  * Sessions are database rows.

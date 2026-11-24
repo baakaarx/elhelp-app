@@ -1,10 +1,10 @@
-import { checkInVisit, checkOutVisit, createMyInvoice, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
+import { checkInVisit, checkOutVisit, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
 import { createQueue, type Outbox } from './queue';
 import { sendLocationChunks } from './locationQueue';
 import { replayOutboxActions } from './outboxReplay';
 import { outboxOwnership } from './outboxOwnership';
 import { getActiveUserId, getOutboxOwner, setActiveUserId, setOutboxOwner } from './storage';
-import type { DailyReportInput, GeoPoint, InvoiceInput, OutboxItem, ReportInput, VisitInput } from './types';
+import type { DailyReportInput, GeoPoint, OutboxItem, ReportInput, VisitInput } from './types';
 
 /** Matches the server's window: nothing older than this can still belong to a shift. */
 const STALE_FIX_MS = 24 * 3600000;
@@ -57,9 +57,6 @@ export async function enqueueDailyReport(report: DailyReportInput, userId?: stri
  * A visit typed in a field with no signal. It is queued with the moment it happened, because by
  * the time the phone gets a bar the server's clock no longer says anything true about it.
  */
-export async function enqueueInvoice(invoice: InvoiceInput & { recordedAt: number }, userId?: string) {
-  await addOutboxItem('invoice', invoice, userId);
-}
 export async function enqueueVisitCheckIn(visit: VisitInput & { recordedAt: number }, userId?: string) { await addOutboxItem('visit-checkin', visit, userId); }
 export async function enqueueVisitCheckOut(visitId: string, body: CheckOutBody & { recordedAt: number }, userId?: string) {
   // The `id` is the queue key only; it is never part of the body the server sees.
@@ -87,8 +84,6 @@ export async function outboxOwnerStatus(userId: string | null): Promise<{ blocke
  */
 export interface FlushResult {
   sent: number; pending: number; pendingVisits: number; notice?: string;
-  /** Sales typed without signal. They are the office's ledger, so this number is not decoration. */
-  pendingInvoices?: number;
   /** A non-empty queue belongs to another account (or has no recoverable owner). */
   blockedByOwner?: boolean;
 }
@@ -123,9 +118,6 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
     checkOut: checkOutVisit,
     report: sendReport,
     dailyReport: sendDailyReport,
-    // A sale typed with no signal is replayed to the same endpoint, and `recordedAt` rides along
-    // unread: the server stamps the invoice with its own clock.
-    invoice: createMyInvoice,
   }, { retryRejected });
   let sent = replay.sent;
   let notice = replay.notice;
@@ -160,7 +152,6 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
   }
   const pending = await queue.count();
   const pendingVisits = await queue.count('visit-checkin') + await queue.count('visit-checkout');
-  const pendingInvoices = await queue.count('invoice');
   if (pending === 0) await setOutboxOwner(userId);
-  return notice ? { sent, pending, pendingVisits, pendingInvoices, notice } : { sent, pending, pendingVisits, pendingInvoices };
+  return notice ? { sent, pending, pendingVisits, notice } : { sent, pending, pendingVisits };
 }

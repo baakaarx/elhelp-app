@@ -7,8 +7,6 @@ import './src/trackingTask';
 import LoginScreen from './src/LoginScreen';
 import HomeScreen from './src/HomeScreen';
 import VisitsScreen from './src/VisitsScreen';
-import CustomersScreen from './src/CustomersScreen';
-import SalesScreen from './src/SalesScreen';
 import ReportScreen from './src/ReportScreen';
 import DailyReports from './src/DailyReports';
 import SettingsScreen from './src/SettingsScreen';
@@ -23,16 +21,10 @@ import { initializePushHandling } from './src/push';
 import { colors, fonts, radius, space } from './src/theme';
 import type { User } from './src/types';
 
-type Tab = 'home' | 'visits' | 'customers' | 'sales' | 'reports' | 'daily' | 'settings';
+type Tab = 'home' | 'visits' | 'reports' | 'daily' | 'settings';
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'home', label: 'الرئيسية', icon: '◉' },
   { id: 'visits', label: 'الزيارات', icon: '☷' },
-  // Customers sit next to visits on purpose: a visit is booked from the list, and the list is
-  // written where the visit happens. Five tabs was already the limit a 360dp screen can label.
-  { id: 'customers', label: 'عملائي', icon: '☰' },
-  // Sales sits with customers, not with reports: an engineer reads a balance to close the visit he
-  // is standing in, and the tab order follows that moment.
-  { id: 'sales', label: 'مبيعاتي', icon: '£' },
   { id: 'reports', label: 'التقارير', icon: '✎' },
   { id: 'daily', label: 'اليومي', icon: '▤' },
   { id: 'settings', label: 'حسابي', icon: '⚙' },
@@ -102,7 +94,7 @@ function Root() {
     setTab(next);
     // Visits and reports are the tabs engineers open most; refresh them on entry so a
     // stale poll never looks like a broken button.
-    if (next === 'visits' || next === 'customers' || next === 'reports') void field.refresh();
+    if (next === 'visits' || next === 'reports') void field.refresh();
   }, [field.refresh]);
 
   const completeLogout = useCallback(async () => {
@@ -220,8 +212,6 @@ function Root() {
               />
             )}
             {tab === 'visits' && <VisitsScreen user={user} field={field} />}
-            {tab === 'customers' && <CustomersScreen user={user} field={field} />}
-            {tab === 'sales' && <SalesScreen ownerId={user.id} />}
             {tab === 'reports' && <ReportScreen ownerId={user.id} onPending={() => void field.refresh()} refreshKey={pushRefresh} />}
             {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} timezone={field.summary?.timezone} />}
             {tab === 'settings' && (

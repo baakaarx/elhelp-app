@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { CatalogueProduct, Customer, CustomerInput, DailyReportInput, GeoPoint, InvoiceInput, MyInvoice, MyTarget, ReportInput, StockReport, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -115,63 +115,6 @@ export const disablePush = (deviceId: string) =>
   request<{ ok: true }>('/api/push/token', { method: 'DELETE', body: JSON.stringify({ deviceId }) });
 export const reportMockLocation = (shiftId: string, deviceId: string) =>
   post<{ ok: true; duplicate?: boolean }>('/api/security/mock-location', { shiftId, deviceId });
-
-/**
- * The engineer's own customer list, newest visit first. `q` is a server-side search so a list of a
- * few hundred names stays usable on a phone with a slow connection.
- */
-export const myCustomers = (q?: string) =>
-  get<{ customers: Customer[] }>(`/api/customers${q ? `?q=${encodeURIComponent(q)}` : ''}`);
-/**
- * Adding a customer is deliberately not queued: a name typed in a field with no signal can wait in
- * the outbox, but the visit that references it cannot be given a customer id the server has not
- * accepted yet. The sheet keeps the form open and says nothing was saved.
- */
-export const createCustomer = (data: CustomerInput) => post<{ customer: Customer }>('/api/customers', data);
-export const updateCustomer = (id: string, data: Partial<CustomerInput> & { stage?: Customer['stage'] }) =>
-  request<{ customer: Customer }>(`/api/customers/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
-
-/**
- * What the office billed in this engineer's name. Read-only by design: the numbers are typed at the
- * office desk, and the phone exists so a man in the field can say «your invoice is X, of which you
- * paid Y» without phoning the office. Nothing on this screen can change a sale.
- */
-export const myInvoices = (customerId?: string) =>
-  get<{ invoices: MyInvoice[]; outstanding: number }>(`/api/my/invoices${customerId ? `?customerId=${encodeURIComponent(customerId)}` : ''}`);
-/** Prices and what is on the shelf — so a promise made in a farm matches what the truck can carry. */
-export const myCatalogue = () => get<{ products: CatalogueProduct[] }>('/api/my/catalogue');
-/**
- * The engineer's own invoice, written where the goods were handed over. `recordedAt` is the moment he
- * typed it and is only sent after a trip through the outbox; the server stamps the invoice with its
- * own clock either way, so a sale that reached it two days late is still booked on the day it happened
- * in the only sense that matters — it is not the office's entry, it is his.
- */
-export const createMyInvoice = (invoice: InvoiceInput & { recordedAt?: number }) =>
-  post<{ invoice: MyInvoice; stockShort: boolean }>('/api/my/invoices', invoice);
-/** The stores he may name on an invoice: ids and names, no stock figures and no prices. */
-export const myWarehouses = () => get<{ warehouses: { id: string; name: string; governorate: string; district: string }[] }>('/api/my/warehouses');
-/** His own shelves: what is left, what came in and what went out in the period. Quantities only. */
-export const myStockReport = (params: { from?: number; to?: number; warehouseId?: string } = {}) => {
-  const query = new URLSearchParams();
-  if (params.from) query.set('from', String(params.from));
-  if (params.to) query.set('to', String(params.to));
-  if (params.warehouseId) query.set('warehouseId', params.warehouseId);
-  const text = query.toString();
-  return get<StockReport>(`/api/my/stock/report${text ? `?${text}` : ''}`);
-};
-/** His own unpaid rows only; anything with money on it is the office's to undo. */
-export const voidMyInvoice = (id: string, reason: string) =>
-  post<{ ok: true; restored: number }>(`/api/my/invoices/${id}/void`, { reason });
-
-/**
- * Cash he took at the door. Positive amounts only, and only against his own unpaid bills: a mistake is
- * corrected by the office, because an undo that can be queued and replayed twice is how a drawer stops
- * matching a ledger. Needs signal — there is deliberately no offline queue for money.
- */
-export const payMyInvoice = (id: string, amount: number, note?: string) =>
-  post<{ invoice: MyInvoice; collected: number }>(`/api/my/invoices/${id}/pay`, { amount, ...(note ? { note } : {}) });
-/** His month against the plan the manager set. `month` is 'YYYY-MM'; the server defaults to the current one. */
-export const myTargets = (month?: string) => get<MyTarget>(`/api/my/targets${month ? `?month=${encodeURIComponent(month)}` : ''}`);
 
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);

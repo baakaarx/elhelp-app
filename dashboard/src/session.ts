@@ -59,15 +59,4 @@ export function ago(ts: number | null, now = Date.now()) {
 }
 
 /** Representatives belong in the mobile app; the manager dashboard must never impersonate them. */
-/**
- * Which dashboard an account gets, and the only reason the tabs are filtered at all is that a
- * warehouse clerk should not see a field map. The server refuses the same requests independently —
- * see `scopeGate` in the API — so this is about not showing a screen that can only fail.
- *
- * Anything unknown is treated as the manager, so a stale or half-written scope never produces a
- * dashboard with nothing in it.
- */
-export type DashScope = 'manager' | 'sales' | 'stock';
-export const dashScope = (user: User | null | undefined): DashScope =>
-  user?.scope === 'stock' ? 'stock' : user?.scope === 'sales' ? 'sales' : 'manager';
 export const isManager = (user: User | null | undefined) => user?.role === 'admin';
