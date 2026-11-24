@@ -135,6 +135,11 @@ test('a stopped item leaves the list the phone reads, and stays for the records'
   assert.equal((await client.get('/api/products').set(rep.auth)).body.products.some((row: any) => row.id === id), true);
   await client.patch(`/api/products/${id}`).set(admin).send({ active: false });
   assert.equal((await client.get('/api/products').set(rep.auth)).body.products.some((row: any) => row.id === id), false, 'a stopped item is not something to order');
+  // And the phone has no way to ask for what the office put away: includeInactive is the dashboard's
+  // filter, not a privilege — a stopped item stays off the list a quantity gets agreed against.
+  const peek = await client.get('/api/products?includeInactive=1').set(rep.auth);
+  assert.equal(peek.status, 200);
+  assert.equal(peek.body.products.some((row: any) => row.id === id), false, 'the stopped row stays hidden from the phone');
   const withStopped = await client.get('/api/products?includeInactive=1').set(admin);
   assert.ok(withStopped.body.products.some((row: any) => row.id === id && row.active === false), 'the office still sees it to bring it back');
   // Deleting is allowed only while nothing points at the row (next test proves the refusal).
@@ -263,4 +268,23 @@ test('stopping an item does not reset its pack, its category or its notes', asyn
   const renamed = await client.patch(`/api/products/${id}`).set(admin).send({ name: 'سلفو ماغنسيوم ٩.٨٪' });
   assert.equal(renamed.body.product.unit, 'جركن', 'a rename does not lose the pack either');
   assert.equal(renamed.body.product.unitSize, '٥ لتر');
+});
+
+test('the phone is handed a name and a pack — and nothing else', async () => {
+  const rep = await makeRep('مهندس قايمعة');
+  const created = await addProduct({
+    name: 'موديو ٥٥٥', category: 'other', unit: 'جركن', unitSize: '٥ لتر',
+    notes: 'الجراكن الفاضية ترجع للمخزن', prices: [{ tierId: tierByName('جملة'), price: 900 }],
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const mine = await client.get('/api/products').set(rep.auth);
+  const row = mine.body.products.find((item: any) => item.id === created.body.product.id);
+  assert.ok(row, 'a live item is on the phone');
+  // An allow-list rather than «the row minus a few keys»: a price, the office's own note about storage,
+  // or a timestamp has no screen in the field, so it should not be sitting in the payload either.
+  assert.deepEqual(Object.keys(row).sort(), ['active', 'category', 'id', 'name', 'unit', 'unitSize']);
+  const office = await client.get('/api/products').set(admin);
+  const full = office.body.products.find((item: any) => item.id === created.body.product.id);
+  assert.equal(full.notes, 'الجراكن الفاضية ترجع للمخزن', 'the office still reads what it wrote');
+  assert.equal(full.prices.length, 1, '…with the rates');
 });

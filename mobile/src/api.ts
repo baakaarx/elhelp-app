@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { Customer, DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { Customer, DailyReportInput, GeoPoint, Product, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -125,6 +125,14 @@ export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits
  * job, on the dashboard.
  */
 export const myCustomers = () => get<{ customers: Customer[] }>('/api/customers');
+/**
+ * قايمعة الأصناف — للقراءة في الميدان.
+ *
+ * No prices arrive on a phone session, and that is the whole design: «بقدّم إيه» question is answered
+ * here, «بكام» is answered by the office. Cached the way the customer book is, because the question gets
+ * asked in a farm with two bars of signal.
+ */
+export const myProducts = () => get<{ products: Product[] }>('/api/products');
 export const myRoute = (userId: string, date?: string) => get<RouteResponse>(`/api/reps/${userId}/route${date ? `?date=${date}` : ''}`);
 /**
  * `recordedAt` is the instant the visit was recorded. It is only sent when the phone had no

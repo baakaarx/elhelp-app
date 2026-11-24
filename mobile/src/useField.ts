@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { myCustomers, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
+import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
-import type { Customer, RepSummary, User, Visit, VisitInput } from './types';
+import type { Customer, Product, RepSummary, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
   outcome: string;
@@ -51,6 +51,14 @@ export interface FieldBundle {
   customersNotice: string;
   /** Called when the check-in sheet opens, and once when a shift starts (the moment we know there is signal). */
   loadCustomers: () => Promise<void>;
+  /**
+   * قايمعة الأصناف، بنفس طريقة التحزين اللي فوق: آخر نسخة ناجحة في الذاكرة علشان «إحنا بنبيع العبوة دي
+   * ولا لأ» يتقال في الميدان من غير شبكة. الأسعار مش هنا أصلًا — السيرفر ما بيبعتش `prices` لجلسة مهندس.
+   */
+  products: Product[];
+  productsLoading: boolean;
+  productsNotice: string;
+  loadProducts: () => Promise<void>;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -85,11 +93,21 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [customersNotice, setCustomersNotice] = useState('');
   /** Kept beside the state so a failed refresh can ask «is there anything to fall back to?» without re-creating the callback. */
   const customersRef = useRef<Customer[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [productsNotice, setProductsNotice] = useState('');
+  const productsRef = useRef<Product[]>([]);
+  /** Same reason as the customer list: a second engineer on this phone must not inherit the first one's. */
+  const productsOwnerRef = useRef<string | null>(null);
   /** Whose list is currently in memory: a second engineer on this phone must never see the first one's. */
   const listOwnerRef = useRef<string | null>(null);
   const writeCustomers = useCallback((next: Customer[]) => {
     customersRef.current = next;
     setCustomers(next);
+  }, []);
+  const writeProducts = useCallback((next: Product[]) => {
+    productsRef.current = next;
+    setProducts(next);
   }, []);
   const pendingVisitNotice = (count: number) => count > 0
     ? `هناك ${count} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.`
@@ -175,8 +193,42 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     }
   }, [onSessionExpired, user, writeCustomers]);
 
+  /**
+   * The catalogue, read the same way as the customer book: last good copy stays on screen when the
+   * network is gone, and the notice says it is not fresh rather than pretending otherwise.
+   */
+  const loadProducts = useCallback(async () => {
+    if (!user) { writeProducts([]); setProductsNotice(''); productsOwnerRef.current = null; return; }
+    if (productsOwnerRef.current !== user.id) {
+      productsOwnerRef.current = user.id;
+      writeProducts([]);
+      setProductsNotice('');
+    }
+    setProductsLoading(true);
+    try {
+      const res = await myProducts();
+      if (!mounted.current) return;
+      writeProducts(Array.isArray(res.products) ? res.products : []);
+      setProductsNotice('');
+    } catch (e) {
+      if (!mounted.current) return;
+      const status = (e as { status?: number }).status ?? 0;
+      if (status === 401) { onSessionExpired(); return; }
+      setProductsNotice(productsRef.current.length
+        ? 'القايمعة المعروضة من آخر اتصال — أي صنف جديد يضيفه المكتب هيظهر أول ما الشبكة ترجع.'
+        : `تعذر تحميل قايمعة الأصناف. ${(e as Error).message || ''}`.trim());
+    } finally {
+      if (mounted.current) setProductsLoading(false);
+    }
+  }, [onSessionExpired, user, writeProducts]);
+
   useEffect(() => {
-    if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setError(''); writeCustomers([]); listOwnerRef.current = null; return; }
+    if (!user) {
+      setTrackingActive(false); setSummary(null); setVisits([]); setError('');
+      writeCustomers([]); listOwnerRef.current = null;
+      writeProducts([]); productsOwnerRef.current = null;
+      return;
+    }
     void refresh();
     const timer = setInterval(() => {
       if (syncing.current) return;
@@ -382,6 +434,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   return {
     summary, visits, pending, loading, busy, trackingActive, syncNotice, offlineNotice, backgroundNotice, error,
     customers, customersLoading, customersNotice, loadCustomers,
+    products, productsLoading, productsNotice, loadProducts,
     clearError: () => setError(''),
     refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };

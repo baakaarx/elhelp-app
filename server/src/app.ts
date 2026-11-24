@@ -1545,7 +1545,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.setHeader('Cache-Control', 'private, no-store');
     res.json({
       // Prices travel to the office only. A phone that never quotes a price cannot be blamed for one.
-      products: rows.map(row => asProduct(row, isAdmin ? byProduct.get(String(row.id)) ?? [] : undefined)),
+      // What the field gets is an allow-list, not «the row minus a few keys»: the day a cost or a margin
+      // column lands on `products`, it must not reach a phone just because somebody forgot to delete it.
+      // `notes` is dropped on purpose too — it is the office telling itself how to store the thing, and
+      // nothing on the rep's screen reads it, so nothing in his pocket should carry it.
+      products: rows.map(row => {
+        const shaped = asProduct(row, isAdmin ? byProduct.get(String(row.id)) ?? [] : undefined);
+        return isAdmin ? shaped : { id: shaped.id, name: shaped.name, category: shaped.category, unit: shaped.unit, unitSize: shaped.unitSize, active: shaped.active };
+      }),
     });
   });
 

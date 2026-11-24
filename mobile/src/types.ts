@@ -159,3 +159,28 @@ export interface OutboxItem {
   /** A permanent server rejection is retained but paused until the engineer manually retries. */
   rejected?: boolean;
 }
+
+/* --------------------------------------------------------------- ما تبيعه الشركة: الأصناف وعبواتها */
+
+/**
+ * The catalogue the office writes. The phone reads it and never prices from it.
+ *
+ * A rep's `GET /api/products` carries no `prices` key at all — the server attaches prices to an admin
+ * session only — so there is no number here for an engineer to misread in front of a farmer, and none to
+ * be held to later. `notes` is left off the same way on purpose: it is what the office tells itself about
+ * storage and shelf life, and a screen that shows it will be read as a promise to the customer.
+ */
+export type ProductCategory = 'pesticide' | 'fertilizer' | 'other';
+export const productCategoryLabels: Record<ProductCategory, string> = {
+  pesticide: 'مبيدات', fertilizer: 'أسمدة', other: 'أخرى',
+};
+export interface Product {
+  id: string;
+  name: string;
+  category: ProductCategory;
+  /** ما بيتباع بيه: «عبوة»، «شيكارة»، «جركن». أي كمية في أي طلبية بتُعدّ بالوحدة دي. */
+  unit: string;
+  /** «٥٠ كجم»، «٥٠٠ مل» — سطر يتقري، ما بيحسبش: الحجم الحقيقي هو اللي في `unit`. */
+  unitSize: string;
+  active: boolean;
+}
