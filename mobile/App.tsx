@@ -87,7 +87,7 @@ function Root() {
   const field = useField(user ?? null, onSessionExpired);
   const selectTab = useCallback((next: Tab) => {
     setTab(next);
-    // Visits and reports are the tabs engineers open most; refresh them on entry so a
+    // Refresh visits on entry so a
     // stale poll never looks like a broken button.
     if (next === 'visits') void field.refresh();
   }, [field.refresh]);

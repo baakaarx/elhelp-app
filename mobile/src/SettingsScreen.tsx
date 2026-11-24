@@ -43,7 +43,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
     try {
       await disablePushNotifications();
       setPushEnabled(false);
-      Alert.alert('الإشعارات', 'تم إيقاف إرسال إشعارات المراجعة لهذا الجهاز.');
+      Alert.alert('الإشعارات', 'تم إيقاف إرسال الإشعارات لهذا الجهاز.');
     } catch (error) {
       Alert.alert('تعذر إيقاف الإشعارات', error instanceof Error ? error.message : 'حاول مرة أخرى.');
     } finally { setPushBusy(false); }
@@ -55,14 +55,14 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       if (pushActive) {
         await disablePushNotifications();
         setPushEnabled(false);
-        Alert.alert('الإشعارات', 'تم إيقاف إرسال إشعارات المراجعة لهذا الجهاز.');
+        Alert.alert('الإشعارات', 'تم إيقاف إرسال الإشعارات لهذا الجهاز.');
         return;
       }
       const result = await enablePushNotifications();
       if (result === 'enabled') {
         setPushEnabled(true);
         setPushPermission('granted');
-        Alert.alert('الإشعارات', 'تم تفعيل إشعارات مراجعة تقاريرك وموافقة الإدارة.');
+        Alert.alert('الإشعارات', 'تم تفعيل إشعارات تحديث حالة الحساب.');
       } else if (result === 'denied') {
         setPushPermission('denied');
         Alert.alert('الإشعارات غير مفعلة', 'اسمح بالإشعارات من إعدادات الهاتف ثم جرّب مرة أخرى.');
@@ -146,7 +146,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         <SectionTitle title="المزامنة" action={<Pill label={field.pending ? `${field.pending} بالانتظار` : 'كل شيء مُرسل'} tone={field.pending ? 'warn' : 'mint'} />} />
         <Body muted>
           {field.pending
-            ? 'فيه بيانات محفوظة على جهازك (مواقع أو تقارير) وما اتبعتتش. هتتبعت تلقائيًا لما الشبكة ترجع.'
+            ? 'فيه بيانات محفوظة على جهازك (مواقع أو زيارات أو طلبيات) وما اتبعتتش. هتتبعت تلقائيًا لما الشبكة ترجع.'
             : 'كل بياناتك مُرسلة للسيرفر. المزامنة التلقائية كل ١٥ ثانية.'}
         </Body>
         <Row style={{ gap: space.sm }}>
@@ -166,12 +166,12 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       <Card>
         <SectionTitle title="الإشعارات" action={<Pill label={pushActive ? 'مفعلة' : pushEnabled ? 'تحتاج إذن الهاتف' : 'متوقفة'} tone={pushActive ? 'mint' : 'warn'} />} />
         <Body muted>
-          لو المدير راجع تقريرك أو غيّر حالة حسابك، هيوصلك تنبيه حتى لو التطبيق مقفول. لا تحتوي الإشعارات على موقعك أو تفاصيل التقرير. يتفعّل التسجيل بعد ربط الحساب بهذا الهاتف ببدء وردية مرة واحدة.
+          لو الإدارة غيّرت حالة حسابك، هيوصلك تنبيه حتى لو التطبيق مقفول. لا تحتوي الإشعارات على موقعك. يتفعّل التسجيل بعد ربط الحساب بهذا الهاتف ببدء وردية مرة واحدة.
           {pushPermission === 'denied' ? '\nإذن الإشعارات مرفوض من إعدادات الهاتف.' : ''}
         </Body>
         <Button
           variant={pushActive ? 'ghost' : 'soft'}
-          label={pushBusy ? 'جارٍ التحديث…' : pushActive ? 'إيقاف إشعارات هذا الجهاز' : pushEnabled ? 'إعادة تفعيل إشعارات المراجعة' : 'تفعيل إشعارات المراجعة'}
+          label={pushBusy ? 'جارٍ التحديث…' : pushActive ? 'إيقاف إشعارات هذا الجهاز' : pushEnabled ? 'إعادة تفعيل الإشعارات' : 'تفعيل الإشعارات'}
           loading={pushBusy}
           onPress={() => void togglePush()}
         />
