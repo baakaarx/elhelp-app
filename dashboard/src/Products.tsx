@@ -70,9 +70,16 @@ export default function Products({ timezone }: { timezone?: string }) {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Only working types become columns. A stopped heading is not something to price under today, and the
-  // prices it already holds stay on the row untouched — tick «الموقوفين» and the item still shows them.
-  const columns = useMemo(() => tiers.filter(tier => tier.active), [tiers]);
+  /**
+   * Every heading is a column, stopped ones included.
+   *
+   * Showing only the working types looked right until it met the server's own refusal: a type cannot be
+   * deleted while items still hold prices under it («عليه ٣ أصناف مسعّرة — وقّفه بدل الحذف»). If the
+   * stopped heading's prices were hidden, the office would be told to clear numbers it cannot see, and the
+   * screen would have no move left in it. So the column stays, marked, and its cells stay editable.
+   */
+  const columns = tiers;
+  const liveColumns = useMemo(() => tiers.filter(tier => tier.active), [tiers]);
   const priceOf = (product: Product, tierId: string) => product.prices?.find(entry => entry.tierId === tierId)?.price;
   const priceCount = products.reduce((total, product) => total + (product.prices?.length ?? 0), 0);
   const set = (next: Partial<typeof filters>) => setFilters(value => ({ ...value, ...next }));
@@ -199,7 +206,7 @@ export default function Products({ timezone }: { timezone?: string }) {
 
       <div className="stats">
         <div className="card stat"><span className="muted small">أصناف ظاهرة</span><strong>{formatNumber(products.length)}</strong><small className="muted">بعد الفلاتر{filters.includeInactive ? ' (الموقوفين داخلين)' : ''}</small></div>
-        <div className="card stat"><span className="muted small">أنواع شغالة</span><strong>{formatNumber(columns.length)}</strong><small className="muted">دول أعمدة قايمعة الأسعار</small></div>
+        <div className="card stat"><span className="muted small">أنواع شغالة</span><strong>{formatNumber(liveColumns.length)}</strong><small className="muted">الموقوف باين كعمود كمان عشان يتنضّف</small></div>
         <div className="card stat"><span className="muted small">أسعار مكتوبة</span><strong>{formatNumber(priceCount)}</strong><small className="muted">في الأصناف الظاهرة</small></div>
         <div className="card stat">
           <span className="muted small">بلا سعر في «{columns.find(tier => tier.id === filters.tierId)?.name ?? 'النوع المختار'}»</span>
@@ -287,9 +294,9 @@ export default function Products({ timezone }: { timezone?: string }) {
 
       <div className="panel">
         <h3 className="panel-title">الأصناف · {formatNumber(products.length)}</h3>
-        {columns.length === 0 && (
+        {tiers.length === 0 && (
           <p className="error banner" role="alert">
-            مفيش نوع مشترٍ شغال، فقايمعة الأسعار ملهاش عمود. الأصناف تقدر تضيفها دلوقتي، والسعر يتكتب أول ما تضيف نوع تحت («جملة» مثلًا).
+            مفيش نوع مشترٍ أصلًا، فقايمعة الأسعار ملهاش عمود. الأصناف تقدر تضيفها دلوقتي، والسعر يتكتب أول ما تضيف نوع تحت («جملة» مثلًا).
           </p>
         )}
         {products.length === 0 && !loading ? (
@@ -305,7 +312,13 @@ export default function Products({ timezone }: { timezone?: string }) {
                 <thead>
                   <tr>
                     <th>الصنف</th><th>العبوة</th><th>التصنيف</th>
-                    {columns.map(tier => <th key={tier.id}>{tier.name}<small className="muted"> سعر الوحدة</small></th>)}
+                    {columns.map(tier => (
+                      <th key={tier.id} style={tier.active ? undefined : { opacity: 0.7 }}>
+                        {tier.name}
+                        {tier.active ? null : <em className="muted small"> (موقوف)</em>}
+                        <small className="muted"> سعر الوحدة</small>
+                      </th>
+                    ))}
                     <th></th>
                   </tr>
                 </thead>
@@ -364,7 +377,7 @@ export default function Products({ timezone }: { timezone?: string }) {
               </table>
             </div>
             <p className="muted small" style={{ marginTop: 10 }}>
-              كل خانة سعر = ثمن <strong>الوحدة المكتوبة في عمود «العبوة»</strong> لصنف واحد — مش الكرتونة ولا الطرد · «امسح» = الصنف يفضل من غير سعر تحت النوع ده، وده مش صفر · التوقيت {timezone ?? 'Africa/Cairo'}.
+              كل خانة سعر = ثمن <strong>الوحدة المكتوبة في عمود «العبوة»</strong> لصنف واحد — مش الكرتونة ولا الطرد · «امسح» = الصنف يفضل من غير سعر تحت النوع ده، وده مش صفر · الأعمدة الموقوفة باينة عشان تقدر تنضّف اللي تحتها (بدون كده «نوع عليه أسعار ما يتحذفش» يبقى كلام ملوش مخرج) · التوقيت {timezone ?? 'Africa/Cairo'}.
             </p>
             {priceError && <p className="error" role="alert">{priceError}</p>}
           </>
@@ -526,7 +539,7 @@ function TiersPanel({ tiers, onDone }: { tiers: PriceTier[]; onDone: () => void 
         <button className="btn primary sm" type="submit" disabled={saving}>{saving ? 'جارٍ الحفظ…' : 'ضيف'}</button>
       </form>
       <p className="muted small">
-        نوع موقوف = مش في الأعمدة، وسعره القديم محفوظ ليرجع · نوع عليه أسعار ما يتحذفش (الحذف يمسح الأسعار) · آخر نوع شغال ما يتقفلش.
+        نوع موقوف = لسه عمود في القايمعة (عشان تعرف تمسح اللي تحته) بس ما بيتختارشش لعميل جديد، وسعره محفوظ ليرجع · نوع عليه أسعار ما يتحذفش (الحذف يمسح الأسعار) · آخر نوع شغال ما يتقفلش.
       </p>
     </div>
   );
