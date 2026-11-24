@@ -106,6 +106,24 @@ export default async function globalSetup() {
   });
   if (!daily.ok()) throw new Error(`e2e: daily report failed (${daily.status()}) ${await daily.text()}`);
 
+  // The price list the office typed: one item, priced at one buyer type only, so the screens have both
+  // states to show — a number, and «بلا سعر» next to it. Set through the same routes the dashboard uses.
+  const tiers = (await (await api.get('/api/price-tiers', { headers: admin })).json()).tiers as Array<{ id: string; name: string }>;
+  const wholesale = tiers.find(tier => tier.name === 'جملة')!;
+  const product = await api.post('/api/products', {
+    data: { name: 'يوريا ٤٦٪', category: 'fertilizer', unit: 'شيكارة', unitSize: '٥٠ كجم', notes: 'السعر للشيكارة نفسها' },
+    headers: admin,
+  });
+  if (!product.ok()) throw new Error(`e2e: seeding the catalogue failed (${product.status()}) ${await product.text()}`);
+  const productId = (await product.json()).product.id as string;
+  const priced = await api.put(`/api/products/${productId}/prices`, {
+    data: { prices: [{ tierId: wholesale.id, price: 1150 }] }, headers: admin,
+  });
+  if (!priced.ok()) throw new Error(`e2e: pricing the seeded item failed (${priced.status()}) ${await priced.text()}`);
+  // A customer the office has already handed a buyer type, and one it has not: the book has to read both.
+  const tiered = await api.patch(`/api/customers/${nourId}`, { data: { priceTierId: wholesale.id }, headers: admin });
+  if (!tiered.ok()) throw new Error(`e2e: quoting the seeded customer failed (${tiered.status()}) ${await tiered.text()}`);
+
   // Engineer 2: a visit left open for hours, so the manager sees the unclosed check-in.
   const second = E2E_REPS[1];
   const secondAuth = await repAuth(second.email);

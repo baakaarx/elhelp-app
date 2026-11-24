@@ -36,6 +36,9 @@ export interface Customer {
   stage: CustomerStage;
   lostReason: string;
   active: boolean;
+  /** النوع اللي بيتسعّر بيه. null = المكتب ما حددش، والطلبية يتسعّر باليد. */
+  priceTierId: string | null;
+  priceTierName: string;
   createdAt: number;
   updatedAt: number;
   repName: string;
@@ -316,4 +319,47 @@ export interface RepImpact {
   idleReports: number;
   /** True while he has an open shift on a phone — deleting closes it. */
   trackingNow: boolean;
+}
+
+/* --------------------------------------------------------------------------- الأصناف والأسعار */
+
+/** ما تبيعه الشركة: مبيدات وأسمدة، وحاجة تانية نادرة. غير ده مرفوض في الراوت نفسه. */
+export type ProductCategory = 'pesticide' | 'fertilizer' | 'other';
+export const productCategoryLabels: Record<ProductCategory, string> = {
+  pesticide: 'مبيدات', fertilizer: 'أسمدة', other: 'أخرى',
+};
+
+/** سعر صنف واحد تحت نوع مشترٍ واحد. الغياب حالة عادية: «لسه ما اتسعّرش». */
+export interface ProductPrice {
+  tierId: string;
+  price: number;
+}
+
+/**
+ * الصنف = اسم + عبوة. `unitSize` سطر يشرح جوّا العبوة إيه («٥٠٠ مل»، «٥٠ كجم») — بيتقرا ومش
+ * بيحسب: اللي بيحدد الرقم هو عمود «العبوة»، مش رقم مخفي في نص.
+ */
+export interface Product {
+  id: string;
+  name: string;
+  category: ProductCategory;
+  unit: string;
+  unitSize: string;
+  notes: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+  /** الأعمدة دي للمكتب وحده — قايمعة المهندس بتجي من غير `prices` أصلًا. */
+  prices?: ProductPrice[];
+}
+
+/** رأس قايمعة الأسعار: أنواع المشترى اللي المكتب يسمّيها. */
+export interface PriceTier {
+  id: string;
+  name: string;
+  position: number;
+  active: boolean;
+  /** كام صنف عليه سعر تحت النوع ده، وكام عميل بيتسعّر بيه. */
+  priced: number;
+  customers: number;
 }

@@ -3,7 +3,7 @@ import { ApiError, api, del, patch, post } from './api';
 import { ago, formatNumber } from './session';
 import ConfirmAction from './ConfirmAction';
 import { customerStageLabels } from './types';
-import type { AreaBook, AreaPreview, AreaRow, Customer, CustomerStage, MoveResult } from './types';
+import type { AreaBook, AreaPreview, AreaRow, Customer, CustomerStage, MoveResult, PriceTier } from './types';
 
 /**
  * The company's customer book: entered here, divided here, and read by the engineers' phones.
@@ -18,7 +18,7 @@ import type { AreaBook, AreaPreview, AreaRow, Customer, CustomerStage, MoveResul
 const POOL = '';
 const EMPTY_FORM = {
   name: '', phone: '', governorate: '', district: '', village: '', notes: '',
-  stage: 'new' as CustomerStage, lostReason: '', repId: POOL,
+  stage: 'new' as CustomerStage, lostReason: '', repId: POOL, priceTierId: POOL,
 };
 const STAGES = Object.keys(customerStageLabels) as CustomerStage[];
 /** An area is the pair as stored, not as printed: «من غير مركز» is not a value the server can filter on. */
@@ -28,6 +28,9 @@ const messageOf = (error: unknown, fallback: string) => (error instanceof ApiErr
 export default function Customers({ timezone }: { timezone?: string }) {
   const [book, setBook] = useState<AreaBook | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  // The price list's headings: which column of it each customer buys at. Read here, edited in the
+  // الأصناف screen — the book only records the choice.
+  const [tiers, setTiers] = useState<PriceTier[]>([]);
   const [filters, setFilters] = useState({ q: '', governorate: '', district: '', repId: POOL, unassigned: false, stage: '', includeInactive: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -55,12 +58,14 @@ export default function Customers({ timezone }: { timezone?: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [list, areas] = await Promise.all([
+      const [list, areas, kinds] = await Promise.all([
         api<{ customers: Customer[] }>(`/api/customers?${query}`),
         api<AreaBook>('/api/customers/areas'),
+        api<{ tiers: PriceTier[] }>('/api/price-tiers'),
       ]);
       setCustomers(list.customers);
       setBook(areas);
+      setTiers(kinds.tiers);
       setError('');
     } catch (e) {
       setError(messageOf(e, 'تعذر تحميل قايمعة العملاء.'));
@@ -93,7 +98,7 @@ export default function Customers({ timezone }: { timezone?: string }) {
     setForm({
       name: customer.name, phone: customer.phone, governorate: customer.governorate, district: customer.district,
       village: customer.village, notes: customer.notes, stage: customer.stage, lostReason: customer.lostReason,
-      repId: customer.repId ?? POOL,
+      repId: customer.repId ?? POOL, priceTierId: customer.priceTierId ?? POOL,
     });
     setFormError('');
     setEditing(customer);
@@ -114,11 +119,19 @@ export default function Customers({ timezone }: { timezone?: string }) {
       name, phone: form.phone.trim(), governorate: form.governorate.trim(), district: form.district.trim(),
       village: form.village.trim(), notes: form.notes.trim(), stage: form.stage, lostReason: form.lostReason.trim(),
     };
+    // Which column of the price list he buys at. Sent only when it moved: a customer already quoted at a
+    // type the office has since stopped must survive an edit of his phone number, and the server refuses a
+    // stopped type as a new choice.
+    const priceTier = { priceTierId: form.priceTierId || null };
+    const tierChanged = form.priceTierId !== (current && current !== 'new' ? current.priceTierId ?? POOL : POOL);
+    let fieldsSaved = false;
     try {
       if (current === 'new') {
-        await post('/api/customers', { ...fields, repId: form.repId || null });
+        await post('/api/customers', { ...fields, repId: form.repId || null, ...priceTier });
       } else if (current) {
-        await patch(`/api/customers/${current.id}`, fields);
+        // One PATCH for the row, and the type is only in it when it actually moved.
+        await patch(`/api/customers/${current.id}`, tierChanged ? { ...fields, ...priceTier } : fields);
+        fieldsSaved = true;
         // The link is its own call, with its own refusal («ادمج العميلين الأول») — so it is asked after
         // the fields are saved, and the message below says which half happened.
         const target = form.repId || null;
@@ -127,7 +140,9 @@ export default function Customers({ timezone }: { timezone?: string }) {
       closeForm();
       await load();
     } catch (e) {
-      setFormError(current && current !== 'new'
+      // «اتحفظت لكن النقل اترفض» is only true once the row itself went in; saying it after a refused
+      // first call would send the office to look for a half-saved record that was never written.
+      setFormError(fieldsSaved
         ? `البيانات اتحفظت، لكن النقل اترفض: ${messageOf(e, 'تعذر ربط العميل.')}`
         : messageOf(e, 'تعذر حفظ العميل.'));
       await load();
@@ -258,6 +273,7 @@ export default function Customers({ timezone }: { timezone?: string }) {
           setForm={setForm}
           error={formError}
           saving={saving}
+          tiers={tiers}
           engineers={engineers}
           onCancel={closeForm}
           onSave={save}
@@ -280,7 +296,7 @@ export default function Customers({ timezone }: { timezone?: string }) {
             <table className="kpi-table">
               <thead>
                 <tr>
-                  <th>العميل</th><th>التليفون</th><th>المنطقة</th><th>المهندس</th><th>المرحلة</th><th>الزيارات</th><th>آخر زيارة</th><th></th>
+                  <th>العميل</th><th>التليفون</th><th>المنطقة</th><th>المهندس</th><th>المرحلة</th><th>نوع السعر</th><th>الزيارات</th><th>آخر زيارة</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -299,6 +315,9 @@ export default function Customers({ timezone }: { timezone?: string }) {
                       <span className="dot" style={{ background: customer.repColor }} aria-hidden="true" /> {customer.repName}
                     </td>
                     <td><span className={customer.stage === 'lost' ? 'pill warn' : 'pill'}>{customerStageLabels[customer.stage]}</span></td>
+                    <td>
+                      {customer.priceTierName || <span className="pill warn" title="نوع السعر مش محدد له — أي طلبية عليه تتسعّر باليد">باليد</span>}
+                    </td>
                     <td className="mono">{formatNumber(customer.visitCount)}{customer.openVisits ? <em className="pill ok"> جارية</em> : null}</td>
                     <td>{customer.lastVisitAt ? ago(customer.lastVisitAt) : 'ما اتزارش'}</td>
                     <td>
@@ -353,12 +372,13 @@ export default function Customers({ timezone }: { timezone?: string }) {
 }
 
 /** One form for adding and editing. The engineer select is the assignment, and it travels alone. */
-function CustomerForm({ editing, form, setForm, error, saving, engineers, onCancel, onSave }: {
+function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers, onCancel, onSave }: {
   editing: Customer | 'new';
   form: typeof EMPTY_FORM;
   setForm: (value: typeof EMPTY_FORM) => void;
   error: string;
   saving: boolean;
+  tiers: PriceTier[];
   engineers: AreaBook['engineers'];
   onCancel: () => void;
   onSave: (event: FormEvent) => void;
@@ -399,6 +419,13 @@ function CustomerForm({ editing, form, setForm, error, saving, engineers, onCanc
           </select>
         </label>
         <label className="field inline">
+          <span>نوع السعر</span>
+          <select value={form.priceTierId} onChange={event => setForm({ ...form, priceTierId: event.target.value })}>
+            <option value={POOL}>من غير تحديد — يتسعّر باليد</option>
+            {tiers.map(tier => <option key={tier.id} value={tier.id}>{tier.name}{tier.active ? '' : ' (موقوف)'}</option>)}
+          </select>
+        </label>
+        <label className="field inline">
           <span>{isNew ? 'المهندس' : 'نقل إلى مهندس'}</span>
           <select value={form.repId} onChange={event => setForm({ ...form, repId: event.target.value })}>
             <option value={POOL}>من غير مهندس — يفضل في قايمعة الشركة</option>
@@ -423,6 +450,7 @@ function CustomerForm({ editing, form, setForm, error, saving, engineers, onCanc
         <button className="btn ghost sm" type="button" onClick={onCancel}>إلغاء</button>
       </div>
       <p className="muted small">
+        «نوع السعر» قرار المكتب: المنطقة ما بتقترحش حاجة — المنطقة تقول مين بيخدم العميل، مش بيدفع إيه.
         الاسم بيتسجّل زي ما هو (بيتم تشذيب المسافات بس) ومفيش تكرار لنفس المهندس — لو الاسم موجود، الهيكلك هيقولك تعدّل السطر الموجود بدل ما تضيف نسخة.
       </p>
       {error && <p className="error" role="alert">{error}</p>}
