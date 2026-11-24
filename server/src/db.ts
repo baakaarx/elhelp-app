@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -8,6 +9,14 @@ const STALE_SHIFT_MS = 18 * 3600000;
 /** The value `users.color` defaults to, shared by every account created before this migration. */
 const DEFAULT_REP_COLOR = '#28745b';
 /** Written into `visits.outcome` when the system closed a visit nobody ended. */
+/**
+ * The buyer types an installation starts with, in the order the office reads them.
+ *
+ * They are a starting point, not a fixed list: the office renames them and adds its own (a «موزع» rate
+ * is a real thing in this trade). A new installation and an old database gaining the price list both get
+ * these three; nobody who deleted one ever gets it back on a restart.
+ */
+export const DEFAULT_PRICE_TIERS = ['جملة', 'نصف جملة', 'تجزئة'];
 export const AUTO_CLOSED_OUTCOME = 'أُغلقت تلقائيًا: انتهت الوردية قبل تسجيل النتيجة';
 /**
  * The hourly sweep, and the reason it may fail.
@@ -103,6 +112,57 @@ export class Store {
       CREATE INDEX IF NOT EXISTS daily_reports_date ON daily_reports(report_date);
       CREATE INDEX IF NOT EXISTS daily_reports_time ON daily_reports(created_at);
       CREATE INDEX IF NOT EXISTS daily_report_visits_report ON daily_report_visits(report_id, position);
+      -- ---- What the company sells: the price list and the items -------------------------------
+      --
+      -- The types of buyer, named by the office. This is what «same farm, two prices» means in this
+      -- database: a customer carries one of these, and an item carries one price per type.
+      CREATE TABLE IF NOT EXISTS price_tiers (
+        id TEXT PRIMARY KEY,
+        -- A type is named or it is not a type: this name is what the price list header reads and what an
+        -- invoice explains itself with, and an empty one is a row no screen can label. The route asks for
+        -- the same thing; a CHECK is what keeps a hand-edited row from becoming the bug instead.
+        name TEXT NOT NULL CHECK(length(trim(name)) >= 2),
+        -- The order the columns are shown in. Prices are read left to right — from the man who buys the
+        -- most to the one who buys one bottle — so the office decides it, not the alphabet.
+        position INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      -- Two types with the same name would make «سعر الجملة» mean two different numbers. The indexes of
+      -- these three tables are created after the migrations (see ensureIndexes), not here.
+
+      -- Pesticides and fertilizers, sold by the pack. The unit column has no default on purpose: a «كرتونة»
+      -- guessed for an item that ships in bottles is a price read as twelve times its value, and the
+      -- invoice looks finished while the number is wrong. An item cannot be entered without saying what
+      -- one unit of it is.
+      CREATE TABLE IF NOT EXISTS products (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('pesticide','fertilizer','other')),
+        unit TEXT NOT NULL,
+        -- What is inside that pack — «٥٠٠ مل»، «٥٠ كجم». Text, and never used in arithmetic: it is what
+        -- a man reads on the screen to know he is pricing the bag he is standing next to.
+        unit_size TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      -- «يوريا ٥٠ كجم – شيكارة» and «يوريا ٢٥ كجم – شيكارة» are two items; the same item entered twice
+      -- under one pack is the duplicate that double-counts a sale. The route trims the text before it
+      -- gets here, because this index compares what it is given.
+
+      -- One price per item per buyer type. There is no single price column on the item on purpose: one
+      -- number there is what gets quoted from memory to a man who buys at another rate. An item with no
+      -- price for a type is a normal state — the office prices that order by hand.
+      CREATE TABLE IF NOT EXISTS product_prices (
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        tier_id TEXT NOT NULL REFERENCES price_tiers(id) ON DELETE CASCADE,
+        -- A negative line is either a mistake or a discount hiding where a discount needs a reason.
+        price REAL NOT NULL CHECK(price >= 0),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (product_id, tier_id)
+      );
+
       -- ---- The company's customer book ---------------------------------------------------------
       -- Master data of the sales office: the manager and his team enter it from the dashboard, and an
       -- engineer never adds a customer from his phone. rep_id is the man the office handed him to,
@@ -129,6 +189,10 @@ export class Store {
         -- nobody's mistake, so the reason is required by the route, not by a CHECK.
         stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','following','active','dormant','lost')),
         lost_reason TEXT NOT NULL DEFAULT '',
+        -- Which column of the price list this man buys at. Deliberately not the stage above: «جديد» or
+        -- «برّد» says where the relationship stands, «جملة» says what he pays. Null is normal — a
+        -- customer with no type is priced by hand, and the invoice keeps what was chosen.
+        price_tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL,
         active INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
@@ -262,12 +326,56 @@ export class Store {
       "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE visits ADD COLUMN recorded_offline INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE visits ADD COLUMN customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL",
+      // The buyer type a customer is quoted at. Nullable, and null means «nobody decided yet» rather
+      // than «جملة by default»: an order for such a customer is priced by hand.
+      "ALTER TABLE customers ADD COLUMN price_tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL",
     ]) { try { this.db.exec(sql); } catch {} }
-    // The index on that column is created here and not up in the schema block, and the order is the
-    // whole point: on a database that already has visits, the CREATE TABLE is skipped, so the column
-    // only exists after the ALTER above. Asking SQLite to index a column that is not there yet is not
-    // a warning — the server fails to start, on every install that existed before this table.
-    try { this.db.exec('CREATE INDEX IF NOT EXISTS visits_customer ON visits(customer_id)'); } catch {}
+    this.ensureIndexes();
+
+    // The check is made here, at seeding time, and not from a flag read before the schema block ran: an
+    // installation whose boot died between creating this table and filling it has to end up with a list
+    // the next time it comes up.
+    if (!this.get('SELECT 1 AS x FROM price_tiers LIMIT 1')) {
+      const now = Date.now();
+      for (const [position, name] of DEFAULT_PRICE_TIERS.entries()) {
+        this.run('INSERT INTO price_tiers(id,name,position,created_at,updated_at) VALUES (?,?,?,?,?)', randomUUID(), name, position, now, now);
+      }
+    }
+  }
+  /**
+   * Every index that touches a column a migration may still be adding, or a table an old installation
+   * can already own under the same name with a different shape.
+   *
+   * Two failures, one rule: the index is asked for after the migrations, and only when the columns it
+   * needs are actually there. On a database that already had the table, the CREATE above is skipped, so
+   * a column that arrives with an ALTER does not exist when the schema block runs — and an installation
+   * that once ran an abandoned version of this file owns a table with the right name and the wrong
+   * columns. In both cases SQLite refuses the index, and a refusal inside this constructor is not a
+   * warning somebody notices: it is a server that never starts. So the mismatch is logged with the
+   * column it is about, and the installation keeps serving.
+   */
+  private ensureIndexes() {
+    const defs: Array<{ table: string; index: string; stmt: string; needs: string[] }> = [
+      { table: 'visits', index: 'visits_customer', stmt: 'CREATE INDEX IF NOT EXISTS visits_customer ON visits(customer_id)', needs: ['customer_id'] },
+      { table: 'price_tiers', index: 'price_tiers_name', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS price_tiers_name ON price_tiers(name COLLATE NOCASE)', needs: ['name'] },
+      { table: 'price_tiers', index: 'price_tiers_active', stmt: 'CREATE INDEX IF NOT EXISTS price_tiers_active ON price_tiers(active, position)', needs: ['active', 'position'] },
+      { table: 'products', index: 'products_name_unit', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS products_name_unit ON products(name COLLATE NOCASE, unit COLLATE NOCASE)', needs: ['name', 'unit'] },
+      { table: 'products', index: 'products_active_category', stmt: 'CREATE INDEX IF NOT EXISTS products_active_category ON products(active, category, name COLLATE NOCASE)', needs: ['active', 'category', 'name'] },
+      { table: 'product_prices', index: 'product_prices_tier', stmt: 'CREATE INDEX IF NOT EXISTS product_prices_tier ON product_prices(tier_id, price)', needs: ['tier_id', 'price'] },
+    ];
+    for (const def of defs) {
+      const shape = new Set((this.all(`PRAGMA table_info(${def.table})`) as Array<Record<string, any>>).map(col => String(col.name)));
+      const missing = def.needs.filter(column => !shape.has(column));
+      if (missing.length) {
+        // Loud on purpose: a missing index is a slow lookup, but a table whose columns are not the ones
+        // this file expects means the data below is being read with the wrong assumptions.
+        console.error(`[db] skipped index ${def.index}: table ${def.table} does not have ${missing.join(', ')} — this database holds an older shape of that table.`);
+        continue;
+      }
+      try { this.db.exec(def.stmt); } catch (error) {
+        console.error(`[db] could not create index ${def.index}:`, error);
+      }
+    }
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
   all(sql: string, ...params: any[]): Row[] { return this.db.prepare(sql).all(...params) as Row[]; }

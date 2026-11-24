@@ -33,7 +33,7 @@ function addCustomer(store: Store, id: string, repId: string | null, name: strin
 
 test('a fresh install gets the book, the one-name rule, and the visit link', () => {
   const { dir, store } = tempStore();
-  assert.deepEqual(['id', 'rep_id', 'name', 'phone', 'governorate', 'district', 'village', 'notes', 'stage', 'lost_reason', 'active', 'created_at', 'updated_at'],
+  assert.deepEqual(['id', 'rep_id', 'name', 'phone', 'governorate', 'district', 'village', 'notes', 'stage', 'lost_reason', 'price_tier_id', 'active', 'created_at', 'updated_at'],
     columns(store, 'customers'), 'the columns the office edits, and nothing it has to guess');
   assert.ok(columns(store, 'visits').includes('customer_id'), 'a visit can point at a customer');
   seedRep(store, 'rep-1');
