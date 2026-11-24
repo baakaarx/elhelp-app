@@ -2,6 +2,10 @@
 // Credentials come from the environment/.env exactly like a real deployment: there is no
 // built-in account to fall back on.
 import { spawn, spawnSync } from 'node:child_process';
+import { loadServerEnv } from './lib/local-env.mjs';
+// The message below promises server/.env, so this loads it — otherwise the promise is a step that fails
+// for the one person who followed the instruction.
+loadServerEnv();
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 function run(args, env = {}) {
   const result = spawnSync(npm, args, { stdio: 'inherit', env: { ...process.env, ...env } });

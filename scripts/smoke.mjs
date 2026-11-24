@@ -13,10 +13,19 @@
  *     NODE_ENV=production node server/dist/index.js &
  *   BASE=http://127.0.0.1:3114 ADMIN_EMAIL=admin@smoke.test ADMIN_PASSWORD='AdminPassword123!' npm run smoke
  *
+ * On a box that owns a `server/.env`, the credentials are read from there (the same file the server loads),
+ * so the lines above shrink to:
+ *
+ *   DB_PATH=/tmp/smoke.db PORT=3114 NODE_ENV=production node server/dist/index.js &
+ *   BASE=http://127.0.0.1:3114 npm run smoke
+ *
  * It creates its own engineer (a fresh address each run) and never deletes anything else, so it is
  * safe against a copy of a production database — but read that sentence twice before pointing it
  * at the live one.
  */
+import { loadServerEnv } from './lib/local-env.mjs';
+loadServerEnv();
+
 const BASE = (process.env.BASE || process.env.SMOKE_BASE || 'http://127.0.0.1:3000').replace(/\/$/, '');
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@smoke.test';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'AdminPassword123!';
