@@ -56,6 +56,7 @@ const get = (path, token, client) => call('GET', path, token, undefined, client)
 const post = (path, token, body, client) => call('POST', path, token, body, client);
 const patch = (path, token, body, client) => call('PATCH', path, token, body, client);
 const del = (path, token, body, client) => call('DELETE', path, token, body, client);
+const put = (path, token, body, client) => call('PUT', path, token, body, client);
 
 const fix = (lat = 31.2, lng = 29.9, accuracy = 8) => ({ lat, lng, accuracy });
 /** The login route is limited per address (15 per quarter of an hour) on purpose. A smoke run
@@ -129,13 +130,65 @@ const beforeShift = await post('/api/locations', rep, { points: [{ ...points[0],
 check('a fix from before the shift is refused as a batch', beforeShift.status === 422, JSON.stringify(beforeShift.body).slice(0, 80));
 check('and from the future too', (await post('/api/locations', rep, { points: [{ ...points[0], id: crypto.randomUUID(), recordedAt: recent + 3600000 }] }, 'rep')).status === 422);
 
+section('a visit is booked on the customer book, not on a typed name');
+/*
+ * The office owns the customer list, so a visit points at a row of it. The check-in route refuses a
+ * hand-typed name for that reason, and this file is the only place the box that serves the phones is
+ * asked whether the rule still holds: a phone able to invent a name would file a visit next to a man
+ * who does not exist, and the manager's map would draw a stop nobody can call.
+ */
+const bookName = `smoke عميل ${Date.now()}`;
+const bookCustomer = await post('/api/customers', admin, { name: bookName, phone: '01000000000', repId, governorate: 'الإسكندرية', district: 'المنتزه' });
+check('so the run enters its customer the way the office does', bookCustomer.status === 201, JSON.stringify(bookCustomer.body).slice(0, 90));
+const bookCustomerId = String(bookCustomer.body?.customer?.id || '');
+const handTyped = await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: bookName, location: fix() }, 'rep');
+check('a visit typed by hand is refused', handTyped.status === 400, JSON.stringify(handTyped.body).slice(0, 90));
+check('and the refusal names the fix, not the missing field', handTyped.body?.code === 'CUSTOMER_REQUIRED' && String(handTyped.body?.error).includes('قايمعتك'), String(handTyped.body?.error).slice(0, 90));
+const ghostId = crypto.randomUUID();
+const ghost = await post('/api/visits/check-in', rep, { id: ghostId, customerId: ghostId, location: fix() }, 'rep');
+check('an id that is not in his book is answered with a 4xx, never a crash', ghost.status >= 400 && ghost.status < 500, `${ghost.status} ${JSON.stringify(ghost.body).slice(0, 70)}`);
+const book = (await get('/api/customers', rep, 'rep')).body?.customers || [];
+check('the engineer finds his customer in his own book', book.some(row => row.id === bookCustomerId));
+check('and every row he is handed is his', book.every(row => row.repId === repId), JSON.stringify([...new Set(book.map(row => row.repId))]));
+check('he cannot move a customer to a colleague', (await patch(`/api/customers/${bookCustomerId}`, rep, { repId: 'someone-else' }, 'rep')).status === 403);
+
+section('the price list: the office writes it, the field only reads it');
+/*
+ * These are the two rules a deploy must not quietly break, so they are checked on the box that serves the
+ * phones rather than only in a test file. A dashboard that looks wrong is fixed by reloading it; a number
+ * an engineer read off his phone in front of a customer, and promised, is not. So: a phone session is not
+ * handed a price at all, and «stopped» leaves the list without asking the client's permission.
+ */
+const tiers = (await get('/api/price-tiers', admin)).body?.tiers || [];
+check('the buyer types are the office\'s to read', Array.isArray(tiers) && tiers.length > 0, JSON.stringify(tiers.map(tier => tier.name)));
+check('and not the field\'s', (await get('/api/price-tiers', rep, 'rep')).status === 403);
+const smokeName = `smoke صنف ${Date.now()}`;
+const createdProduct = await post('/api/products', admin, { name: smokeName, category: 'other', unit: 'عبوة', unitSize: '١ لتر', notes: 'ملاحظة مكتب' });
+check('an item is entered with its unit', createdProduct.status === 201, JSON.stringify(createdProduct.body).slice(0, 90));
+const productId = String(createdProduct.body?.product?.id || '');
+check('an item without a unit is refused with the sentence the office needs', (await post('/api/products', admin, { name: `smoke بلا وحدة ${Date.now()}`, category: 'other' })).status === 400);
+check('and the field cannot write the list at all', (await post('/api/products', rep, { name: 'صنف من الحقل', unit: 'عبوة' }, 'rep')).status === 403);
+check('the office puts a price on it per buyer type', (await put(`/api/products/${productId}/prices`, admin, { prices: [{ tierId: String(tiers[0]?.id || ''), price: 750 }] })).status === 200);
+const phoneRows = (await get('/api/products', rep, 'rep')).body?.products || [];
+const phoneRow = phoneRows.find(row => row.id === productId);
+check('the phone reads the item and its pack', phoneRow?.name === smokeName && phoneRow?.unit === 'عبوة', JSON.stringify(phoneRow ?? { missing: { productId, rows: phoneRows.length } }).slice(0, 140));
+// Not «an empty prices array» — the key is absent, so no screen can render a zero and no one can screenshot
+// a number that was never agreed. Same for notes: the office's storage remark is not a promise to a buyer.
+check('and is handed no price and no office note — absent, not blank', Boolean(phoneRow) && !('prices' in phoneRow) && !('notes' in phoneRow), Object.keys(phoneRow ?? {}).join(','));
+await patch(`/api/products/${productId}`, admin, { active: false });
+const peeked = (await get('/api/products?includeInactive=1', rep, 'rep')).body?.products || [];
+check('a stopped item leaves the phone, even when the client asks for stopped ones', !peeked.some(row => row.id === productId));
+check('while the office still sees it', (await get('/api/products?includeInactive=1', admin)).body?.products.some(row => row.id === productId) === true);
+
+check('and the smoke item is taken away again', (await del(`/api/products/${productId}`, admin)).status === 200);
+
 section('a visit is a check-in, a result and a duration');
 const visitId = crypto.randomUUID();
-const checkedIn = await post('/api/visits/check-in', rep, { id: visitId, customerName: 'مزرعة الدخان', purpose: 'collection', location: fix(31.2, 29.9, 7) }, 'rep');
+const checkedIn = await post('/api/visits/check-in', rep, { id: visitId, customerId: bookCustomerId, purpose: 'collection', location: fix(31.2, 29.9, 7) }, 'rep');
 check('the check-in is recorded with its GPS proof', checkedIn.status === 201 && checkedIn.body?.visit?.inAccuracy === 7, JSON.stringify(checkedIn.body).slice(0, 120));
 check('the two system flags are booleans, not 0/1', checkedIn.body?.visit?.autoClosed === false && checkedIn.body?.visit?.pendingResult === false);
-check('a second open visit is refused, and the message names the fix', (await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: 'زيارة تانية', location: fix() }, 'rep')).status === 409);
-check('a visit without a location is refused', (await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: 'بدون موقع' }, 'rep')).status === 422);
+check('a second open visit is refused, and the message names the fix', (await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, location: fix() }, 'rep')).status === 409);
+check('a visit without a location is refused', (await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerId: bookCustomerId }, 'rep')).status === 422);
 check('a check-out without a result is refused', (await post(`/api/visits/${visitId}/check-out`, rep, { outcome: '', notes: '', amount: null, location: null }, 'rep')).status === 400);
 const closed = await post(`/api/visits/${visitId}/check-out`, rep, { outcome: 'اتحصّل ١٥٠٠ ج.م', notes: '', amount: 1500, location: fix() }, 'rep');
 check('the check-out closes the visit and keeps the result', closed.status === 200 && closed.body?.visit?.status === 'closed' && closed.body?.visit?.outcome === 'اتحصّل ١٥٠٠ ج.م', JSON.stringify(closed.body).slice(0, 120));
@@ -147,24 +200,24 @@ check('a collection reaches the manager feed exactly once', collections.length =
 section('a visit typed where there is no signal');
 const offlineId = crypto.randomUUID();
 const offline = await post('/api/visits/check-in', rep, {
-  id: offlineId, customerName: 'مزرعة بدون شبكة', purpose: 'visit', location: fix(31.2, 29.9, 9), recordedAt: Date.now(),
+  id: offlineId, customerId: bookCustomerId, purpose: 'visit', location: fix(31.2, 29.9, 9), recordedAt: Date.now(),
 }, 'rep');
 check('the replayed check-in is accepted', offline.status === 201 && offline.body?.recordedOffline === true, JSON.stringify(offline.body).slice(0, 120));
 const offlineClosed = await post(`/api/visits/${offlineId}/check-out`, rep, { outcome: 'اتقفلت من غير شبكة', notes: '', amount: null, location: null, recordedAt: Date.now() }, 'rep');
 check('and its check-out too, with a measured duration', offlineClosed.status === 200 && Number(offlineClosed.body?.visit?.durationSeconds) >= 0, JSON.stringify(offlineClosed.body).slice(0, 100));
 const staleReplay = await post('/api/visits/check-in', rep, {
-  id: crypto.randomUUID(), customerName: 'مزرعة قديمة', location: fix(), recordedAt: Date.now() - 30 * 3600000,
+  id: crypto.randomUUID(), customerId: bookCustomerId, location: fix(), recordedAt: Date.now() - 30 * 3600000,
 }, 'rep');
 check('a replay older than a day is refused', staleReplay.status === 422 && staleReplay.body?.code === 'OFFLINE_VISIT_REJECTED', JSON.stringify(staleReplay.body).slice(0, 100));
 
 section('the shift ends, and no visit is left without a result');
-const shifted = await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: 'مزرعة الإقفال', location: fix() }, 'rep');
+const shifted = await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, location: fix() }, 'rep');
 check('a new visit opens after the first one is finished', shifted.status === 201, JSON.stringify(shifted.body).slice(0, 90));
 const secondVisit = String(shifted.body?.visit?.id);
 check('the shift ends', (await post('/api/shifts/stop', rep, {}, 'rep')).status === 200);
 const listed = await get('/api/visits', rep, 'rep');
 const stranded = (listed.body?.visits || []).find(visit => visit.id === secondVisit);
-check('the visit the shift left open is closed', stranded?.status === 'closed', JSON.stringify(stranded).slice(0, 120));
+check('the visit the shift left open is closed', stranded?.status === 'closed', JSON.stringify(stranded ?? {}).slice(0, 120));
 check('and it is flagged as missing its result', stranded?.pendingResult === true);
 const late = await post(`/api/visits/${secondVisit}/check-out`, rep, { outcome: 'اتقفلت بعد الوردية', notes: '', amount: 0, location: null }, 'rep');
 check('the result can still be typed after the shift', late.status === 200 && late.body?.recordedLate === true, JSON.stringify(late.body).slice(0, 100));
@@ -172,7 +225,17 @@ check('and the row stops asking for it', late.body?.visit?.pendingResult === fal
 check('replaying the late result cannot rewrite it', (await post(`/api/visits/${secondVisit}/check-out`, rep, { outcome: 'كلام تاني', notes: '', amount: 0, location: null }, 'rep')).body?.duplicate === true);
 const reopened = await post('/api/shifts/start', rep, { consentVersion: '1.0', deviceId: 'smoke-device-1', location: fix() }, 'rep');
 check('a new shift opens', reopened.status === 200);
-check('and a new visit is accepted (the dead end is gone)', (await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: 'مزرعة تالتة', location: fix() }, 'rep')).status === 201);
+check('and a new visit is accepted (the dead end is gone)', (await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, location: fix() }, 'rep')).status === 201);
+
+/*
+ * The smoke customer now has visits on him, so deleting him would take a man's history with him. Stopping
+ * is the designed answer, and the guard is worth a check: it is the reason «deleted» is never the verb for
+ * a row something points at. Stopping also leaves nothing visible behind on a real box.
+ */
+const inUse = await del(`/api/customers/${bookCustomerId}`, admin);
+check('the book refuses to delete a customer with visits and says why', inUse.status === 409 && inUse.body?.code === 'CUSTOMER_HAS_VISITS', JSON.stringify(inUse.body).slice(0, 100));
+check('so the office stops him instead, and the history stays attached', (await patch(`/api/customers/${bookCustomerId}`, admin, { active: false })).status === 200);
+check('a stopped customer leaves the phone, even if it asks for stopped ones', (await get('/api/customers?includeInactive=1', rep, 'rep')).body?.customers?.some(row => row.id === bookCustomerId) !== true);
 
 section('an idle stop needs a reason');
 const idle = await post('/api/shifts/idle', rep, { reason: 'مستني رد العميل على التليفون', location: fix(), deviceId: 'smoke-device-1' }, 'rep');
@@ -220,7 +283,7 @@ check('two years at once is refused', (await get('/api/kpis?from=2020-01-01&to=2
 
 section('the registers the owner asks for on paper');
 const visitsCsv = await get(`/api/visits.csv?from=${today}&to=${today}`, admin);
-check('the visits register exports', visitsCsv.status === 200 && visitsCsv.text.includes('مزرعة بدون شبكة'), String(visitsCsv.status));
+check('the visits register exports the customer from the book', visitsCsv.status === 200 && visitsCsv.text.includes(bookName), String(visitsCsv.status));
 const visitsXlsx = await get(`/api/visits.xlsx?from=${today}&to=${today}`, admin);
 check('and as a workbook', visitsXlsx.status === 200 && visitsXlsx.text.startsWith('PK'), visitsXlsx.text.slice(0, 4));
 const idleCsv = await get('/api/idle-reports.csv', admin);
@@ -363,15 +426,24 @@ const junk = [
 const junkRoutes = [
   ['POST', '/api/locations'], ['POST', '/api/reports'], ['POST', '/api/daily-reports'],
   ['POST', '/api/shifts/idle'], ['POST', '/api/presence'], ['POST', '/api/visits/check-in'],
+  ['POST', '/api/products'], ['POST', '/api/customers'], ['PUT', '/api/products/nope/prices'],
+  ['PATCH', '/api/products/nope'], ['GET', '/api/products?category=%'], ['GET', '/api/customers?q=%25'],
   ['POST', `/api/visits/${crypto.randomUUID()}/check-out`], ['POST', '/api/reps'], ['POST', '/api/me/password'],
   ['GET', '/api/visits?date=9999-99-99'], ['GET', '/api/me/summary?date=nonsense'],
   ['GET', '/api/kpis?from=x&to=y'], ['GET', '/api/monthly?month=x'], ['GET', '/api/idle-reports?limit=Infinity'],
 ];
 let crashes = 0;
 let answered = 0;
+/*
+ * `rep` is dead by now on purpose — the sections above revoked it when testing the password change and the
+ * device reset. Sending the junk with a 401 token would have "passed" every check without asking the server
+ * anything, so the loop uses the live token instead. This is the same mistake in a smaller hat: a check that
+ * cannot fail is not a check.
+ */
+const liveRep = replacementToken || rep;
 for (const [method, path] of junkRoutes) {
   for (const payload of junk) {
-    const res = method === 'POST' ? await post(path, rep, payload, 'rep') : await get(path, rep, 'rep');
+    const res = method === 'POST' ? await post(path, liveRep, payload, 'rep') : await get(path, liveRep, 'rep');
     answered += 1;
     if (res.status >= 500) { crashes += 1; console.log(`    ${res.status} ${path} <- ${JSON.stringify(payload).slice(0, 60)}`); }
   }
