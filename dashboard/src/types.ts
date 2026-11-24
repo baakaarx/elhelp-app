@@ -12,6 +12,77 @@ export interface User {
   deviceId?: string;
   oauthProvider?: string;
 }
+/**
+ * The company's customer book, as the office screen reads it.
+ *
+ * `repId` is null for a customer the manager entered and has not handed to anybody yet — that is a
+ * state of the list, not a missing value, and the screen shows him as «من غير مهندس» rather than
+ * hiding him. The visit counters come from the server because the row the manager is looking at has
+ * to agree with the numbers the reports screen shows.
+ */
+export type CustomerStage = 'new' | 'following' | 'active' | 'dormant' | 'lost';
+export const customerStageLabels: Record<CustomerStage, string> = {
+  new: 'جديد', following: 'تحت المتابعة', active: 'دائم', dormant: 'برّد', lost: 'مرفوض',
+};
+export interface Customer {
+  id: string;
+  repId: string | null;
+  name: string;
+  phone: string;
+  governorate: string;
+  district: string;
+  village: string;
+  notes: string;
+  stage: CustomerStage;
+  lostReason: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+  repName: string;
+  repColor: string;
+  visitCount: number;
+  lastVisitAt: number | null;
+  openVisits: number;
+}
+/** One area (محافظة / مركز) as the workbench groups the list by place instead of by person. */
+export interface AreaRow {
+  governorate: string;
+  district: string;
+  /** What the table really holds. The labels above are for the screen, these are what gets sent. */
+  bareGovernorate: string;
+  bareDistrict: string;
+  total: number;
+  unassigned: number;
+  inactive: number;
+  visited: number;
+  settled: boolean;
+  owners: Array<{ repId: string; repName: string; repActive: boolean; customers: number }>;
+  suggestedRepId: string | null;
+  suggestedRepName: string;
+}
+export interface AreaBook {
+  areas: AreaRow[];
+  engineers: Array<{ id: string; name: string; region: string; color: string; active: boolean }>;
+  totals: { customers: number; unassigned: number; areas: number };
+}
+/** What a bulk move is about to do, answered before any of it is written. */
+export interface AreaPreview {
+  dryRun: boolean;
+  matched: number;
+  wouldMove: number;
+  capped: boolean;
+  customers: Array<{ id: string; name: string }>;
+  conflicts: Array<{ id: string; name: string }>;
+}
+export interface MoveResult {
+  ok: boolean;
+  repName: string;
+  matched: number;
+  moved: number;
+  skipped: number;
+  capped: boolean;
+  conflicts: Array<{ id: string; name: string }>;
+}
 export interface LocationPoint {
   lat: number;
   lng: number;

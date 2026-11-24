@@ -1,0 +1,628 @@
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { ApiError, api, del, patch, post } from './api';
+import { ago, formatNumber } from './session';
+import ConfirmAction from './ConfirmAction';
+import { customerStageLabels } from './types';
+import type { AreaBook, AreaPreview, AreaRow, Customer, CustomerStage, MoveResult } from './types';
+
+/**
+ * The company's customer book: entered here, divided here, and read by the engineers' phones.
+ *
+ * The rule the whole screen is built around is that this list is not a by-product of field work. The
+ * office types it, and the office decides who serves whom. That is why the add/edit form lives on this
+ * screen rather than on the phone, and why the area workbench below never moves a customer on its own:
+ * `users.region` matching an area is a text comparison, so it produces a proposal next to a button.
+ */
+
+/** Choosing «nobody» is an answer, so it needs its own value rather than an empty selection. */
+const POOL = '';
+const EMPTY_FORM = {
+  name: '', phone: '', governorate: '', district: '', village: '', notes: '',
+  stage: 'new' as CustomerStage, lostReason: '', repId: POOL,
+};
+const STAGES = Object.keys(customerStageLabels) as CustomerStage[];
+/** An area is the pair as stored, not as printed: «من غير مركز» is not a value the server can filter on. */
+const areaKey = (row: Pick<AreaRow, 'bareGovernorate' | 'bareDistrict'>) => `${row.bareGovernorate}|${row.bareDistrict}`;
+const messageOf = (error: unknown, fallback: string) => (error instanceof ApiError && error.message ? error.message : fallback);
+
+export default function Customers({ timezone }: { timezone?: string }) {
+  const [book, setBook] = useState<AreaBook | null>(null);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [filters, setFilters] = useState({ q: '', governorate: '', district: '', repId: POOL, unassigned: false, stage: '', includeInactive: false });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [editing, setEditing] = useState<Customer | 'new' | null>(null);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [formError, setFormError] = useState('');
+  const [saving, setSaving] = useState(false);
+  // The row whose engineer picker is open, and the id being written to (so one spinner per action).
+  const [linkFor, setLinkFor] = useState('');
+  const [linkRep, setLinkRep] = useState(POOL);
+  const [busyRow, setBusyRow] = useState('');
+
+  const query = useMemo(() => {
+    const params = new URLSearchParams();
+    if (filters.q.trim()) params.set('q', filters.q.trim());
+    if (filters.governorate) params.set('governorate', filters.governorate);
+    if (filters.district) params.set('district', filters.district);
+    if (filters.unassigned) params.set('unassigned', '1');
+    else if (filters.repId) params.set('repId', filters.repId);
+    if (filters.stage) params.set('stage', filters.stage);
+    if (filters.includeInactive) params.set('includeInactive', '1');
+    return params.toString();
+  }, [filters]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [list, areas] = await Promise.all([
+        api<{ customers: Customer[] }>(`/api/customers?${query}`),
+        api<AreaBook>('/api/customers/areas'),
+      ]);
+      setCustomers(list.customers);
+      setBook(areas);
+      setError('');
+    } catch (e) {
+      setError(messageOf(e, 'تعذر تحميل قايمعة العملاء.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [query]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const engineers = book?.engineers ?? [];
+  const nameOf = (id: string | null) => (id ? engineers.find(rep => rep.id === id)?.name ?? 'مهندس محذوف' : 'من غير مهندس');
+  // District options follow the chosen governorate, because «طنطا» is a مركز in الغربية and a حى in
+  // المنوفية — one list of both would be a lottery.
+  const districts = useMemo(() => {
+    const seen = new Set<string>();
+    for (const row of book?.areas ?? []) {
+      if (filters.governorate && row.bareGovernorate !== filters.governorate) continue;
+      if (row.bareDistrict) seen.add(row.bareDistrict);
+    }
+    return [...seen].sort((a, b) => a.localeCompare(b, 'ar'));
+  }, [book, filters.governorate]);
+
+  function openCreate() {
+    setForm({ ...EMPTY_FORM, governorate: filters.governorate, district: filters.district, repId: filters.repId || POOL });
+    setFormError('');
+    setEditing('new');
+  }
+  function openEdit(customer: Customer) {
+    setForm({
+      name: customer.name, phone: customer.phone, governorate: customer.governorate, district: customer.district,
+      village: customer.village, notes: customer.notes, stage: customer.stage, lostReason: customer.lostReason,
+      repId: customer.repId ?? POOL,
+    });
+    setFormError('');
+    setEditing(customer);
+  }
+  const closeForm = () => { setEditing(null); setFormError(''); };
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    // Narrowed once, here: `editing` is state, so nothing inside this function can prove to the
+    // compiler that the form is open on an existing row rather than on `null`.
+    const current = editing;
+    const name = form.name.trim();
+    if (name.length < 2) { setFormError('اكتب اسم العميل أو المزرعة — حرفين على الأقل.'); return; }
+    if (form.stage === 'lost' && !form.lostReason.trim()) { setFormError('اكتب سبب رفض العميل قبل ما تقفله.'); return; }
+    setSaving(true);
+    setFormError('');
+    const fields = {
+      name, phone: form.phone.trim(), governorate: form.governorate.trim(), district: form.district.trim(),
+      village: form.village.trim(), notes: form.notes.trim(), stage: form.stage, lostReason: form.lostReason.trim(),
+    };
+    try {
+      if (current === 'new') {
+        await post('/api/customers', { ...fields, repId: form.repId || null });
+      } else if (current) {
+        await patch(`/api/customers/${current.id}`, fields);
+        // The link is its own call, with its own refusal («ادمج العميلين الأول») — so it is asked after
+        // the fields are saved, and the message below says which half happened.
+        const target = form.repId || null;
+        if (target !== (current.repId ?? null)) await post(`/api/customers/${current.id}/assign`, { repId: target });
+      }
+      closeForm();
+      await load();
+    } catch (e) {
+      setFormError(current && current !== 'new'
+        ? `البيانات اتحفظت، لكن النقل اترفض: ${messageOf(e, 'تعذر ربط العميل.')}`
+        : messageOf(e, 'تعذر حفظ العميل.'));
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function assign(customer: Customer, repId: string | null) {
+    setBusyRow(customer.id);
+    try {
+      await post(`/api/customers/${customer.id}/assign`, { repId });
+      setLinkFor('');
+      await load();
+    } catch (e) {
+      setError(messageOf(e, 'تعذر نقل العميل.'));
+      await load();
+    } finally {
+      setBusyRow('');
+    }
+  }
+
+  async function setActive(customer: Customer, active: boolean) {
+    setBusyRow(customer.id);
+    try {
+      await patch(`/api/customers/${customer.id}`, { active });
+      await load();
+    } catch (e) {
+      setError(messageOf(e, 'تعذر تغيير حالة العميل.'));
+    } finally {
+      setBusyRow('');
+    }
+  }
+
+  /**
+   * Deleting is the one action here that cannot be undone, so the button asks twice and the failure is
+   * reported instead of thrown: a server that refuses («عليه زيارات») is a normal answer, and
+   * ConfirmAction has no catch of its own — an escaping rejection would sit in the console.
+   */
+  async function remove(customer: Customer) {
+    setBusyRow(customer.id);
+    try {
+      await del(`/api/customers/${customer.id}`);
+      await load();
+    } catch (e) {
+      setError(messageOf(e, 'تعذر حذف العميل.'));
+      await load();
+    } finally {
+      setBusyRow('');
+    }
+  }
+
+  const totals = book?.totals ?? { customers: 0, unassigned: 0, areas: 0 };
+  const set = (patch_: Partial<typeof filters>) => setFilters(value => ({ ...value, ...patch_ }));
+
+  return (
+    <section className="page">
+      <header className="page-head">
+        <div>
+          <h2>قايمعة العملاء</h2>
+          <p className="muted">
+            عملاء الشركة كلهوم هنا — المكتب بيضيفهم وبيحدد مين يخدم كل عميل. التليفون بيشوف قايمعته هو وبس.
+          </p>
+        </div>
+        <button className="btn primary" onClick={openCreate}>عميل جديد</button>
+      </header>
+
+      <div className="stats">
+        <div className="card stat"><span className="muted small">عملاء الشركة</span><strong>{formatNumber(totals.customers)}</strong><small className="muted">القايمة كلها، الموقوف عليها</small></div>
+        <div className="card stat"><span className="muted small">لسه موزعينش</span><strong>{formatNumber(totals.unassigned)}</strong><small className="muted">من غير مهندس — حالة عادية</small></div>
+        <div className="card stat"><span className="muted small">مناطق فيها عملاء</span><strong>{formatNumber(totals.areas)}</strong><small className="muted">محافظة / مركز</small></div>
+        <div className="card stat"><span className="muted small">الظاهر دلوقتي</span><strong>{formatNumber(customers.length)}</strong><small className="muted">بعد الفلاتر</small></div>
+      </div>
+
+      <div className="panel filters">
+        <label className="field inline">
+          <span>بحث</span>
+          <input value={filters.q} onChange={event => set({ q: event.target.value })} placeholder="اسم أو تليفون أو قرية" />
+        </label>
+        <label className="field inline">
+          <span>المحافظة</span>
+          <select value={filters.governorate} onChange={event => set({ governorate: event.target.value, district: '' })}>
+            <option value="">الكل</option>
+            {[...new Set((book?.areas ?? []).map(row => row.bareGovernorate).filter(Boolean))].map(gov => <option key={gov} value={gov}>{gov}</option>)}
+          </select>
+        </label>
+        <label className="field inline">
+          <span>المركز</span>
+          <select value={filters.district} onChange={event => set({ district: event.target.value })}>
+            <option value="">الكل</option>
+            {districts.map(district => <option key={district} value={district}>{district}</option>)}
+          </select>
+        </label>
+        <label className="field inline">
+          <span>المهندس</span>
+          <select value={filters.unassigned ? 'unassigned' : filters.repId} onChange={event => {
+            const value = event.target.value;
+            set({ unassigned: value === 'unassigned', repId: value === 'unassigned' ? POOL : value });
+          }}>
+            <option value="">الكل</option>
+            <option value="unassigned">من غير مهندس</option>
+            {engineers.map(rep => <option key={rep.id} value={rep.id}>{rep.name}{rep.active ? '' : ' (موقوف)'}{rep.region ? ` — ${rep.region}` : ''}</option>)}
+          </select>
+        </label>
+        <label className="field inline">
+          <span>المرحلة</span>
+          <select value={filters.stage} onChange={event => set({ stage: event.target.value })}>
+            <option value="">الكل</option>
+            {STAGES.map(stage => <option key={stage} value={stage}>{customerStageLabels[stage]}</option>)}
+          </select>
+        </label>
+        <label className="field inline">
+          <span>الموقوفين</span>
+          <input type="checkbox" checked={filters.includeInactive} onChange={event => set({ includeInactive: event.target.checked })} />
+        </label>
+        <button className="btn ghost sm" onClick={() => void load()} disabled={loading}>{loading ? 'جارٍ التحميل…' : 'تحديث'}</button>
+        {(filters.q || filters.governorate || filters.district || filters.repId || filters.unassigned || filters.stage || filters.includeInactive) && (
+          <button className="btn ghost sm" onClick={() => setFilters({ q: '', governorate: '', district: '', repId: POOL, unassigned: false, stage: '', includeInactive: false })}>مسح الفلاتر</button>
+        )}
+      </div>
+
+      {error && <p className="error banner" role="alert">{error}</p>}
+
+      {editing && (
+        <CustomerForm
+          editing={editing}
+          form={form}
+          setForm={setForm}
+          error={formError}
+          saving={saving}
+          engineers={engineers}
+          onCancel={closeForm}
+          onSave={save}
+        />
+      )}
+
+      <div className="panel">
+        <h3 className="panel-title">
+          {filters.unassigned ? 'من غير مهندس' : filters.repId ? `قايمعة ${nameOf(filters.repId)}` : 'قايمعة الشركة'}
+          {' '}· {formatNumber(customers.length)}
+        </h3>
+        {customers.length === 0 && !loading ? (
+          <p className="empty">
+            {totals.customers
+              ? 'مفيش عملاء بالفلاتر دي — امسح الفلاتر أو ضيف عميل جديد.'
+              : 'قايمعة العملاء فاضية. أول عميل يتضاف من زرار «عميل جديد» فوق، وبعدين يتربط بالمهندس.'}
+          </p>
+        ) : (
+          <div className="kpi-table-wrap customers-table">
+            <table className="kpi-table">
+              <thead>
+                <tr>
+                  <th>العميل</th><th>التليفون</th><th>المنطقة</th><th>المهندس</th><th>المرحلة</th><th>الزيارات</th><th>آخر زيارة</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {customers.map(customer => (
+                  <tr key={customer.id} style={customer.active ? undefined : { opacity: 0.6 }}>
+                    <td>
+                      <strong>{customer.name}</strong>
+                      {customer.active ? null : <em className="muted small"> · موقوف</em>}
+                      {customer.village ? <small className="muted">{customer.village}</small> : null}
+                      {customer.notes ? <small className="muted">{customer.notes}</small> : null}
+                      {customer.stage === 'lost' && customer.lostReason ? <small className="muted">سبب الرفض: {customer.lostReason}</small> : null}
+                    </td>
+                    <td className="mono" dir="ltr">{customer.phone || '—'}</td>
+                    <td>{[customer.governorate, customer.district].filter(Boolean).join(' / ') || '—'}</td>
+                    <td>
+                      <span className="dot" style={{ background: customer.repColor }} aria-hidden="true" /> {customer.repName}
+                    </td>
+                    <td><span className={customer.stage === 'lost' ? 'pill warn' : 'pill'}>{customerStageLabels[customer.stage]}</span></td>
+                    <td className="mono">{formatNumber(customer.visitCount)}{customer.openVisits ? <em className="pill ok"> جارية</em> : null}</td>
+                    <td>{customer.lastVisitAt ? ago(customer.lastVisitAt) : 'ما اتزارش'}</td>
+                    <td>
+                      {busyRow === customer.id ? <span className="muted small">جارٍ الحفظ…</span> : (
+                        <>
+                          {linkFor === customer.id ? (
+                            <span className="confirm-pair">
+                              <select value={linkRep} onChange={event => setLinkRep(event.target.value)} aria-label="اربط بمهندس">
+                                <option value={POOL}>من غير مهندس — يفضل في قايمعة الشركة</option>
+                                {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
+                              </select>
+                              <button className="btn primary sm" disabled={busyRow !== ''} onClick={() => void assign(customer, linkRep || null)}>
+                                {customer.repId ? 'نقل' : 'اربط'}
+                              </button>
+                              <button className="btn ghost sm" onClick={() => setLinkFor('')}>إلغاء</button>
+                            </span>
+                          ) : (
+                            <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              <button className="btn ghost sm" onClick={() => openEdit(customer)}>تعديل</button>
+                              <button className="btn ghost sm" onClick={() => { setLinkFor(customer.id); setLinkRep(customer.repId ?? POOL); }}>
+                                {customer.repId ? 'نقل لمهندس تاني' : 'اربطه بمهندس'}
+                              </button>
+                              {customer.repId ? <button className="btn ghost sm" disabled={busyRow === customer.id} onClick={() => void assign(customer, null)}>قايمعة الشركة</button> : null}
+                              <button className="btn ghost sm" onClick={() => void setActive(customer, !customer.active)}>{customer.active ? 'وقف' : 'رجّع للشغل'}</button>
+                              <ConfirmAction
+                                label="حذف"
+                                confirmLabel="امسحه نهائيًا"
+                                detail={customer.visitCount
+                                  ? `عليه ${formatNumber(customer.visitCount)} زيارة — الحذف هيمحي تاريخه. الأحسن توقّفه.`
+                                  : 'مفيش عليه أي زيارة، الحذف آمن.'}
+                                onConfirm={() => remove(customer)}
+                              />
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="muted small" style={{ marginTop: 10 }}>
+          عميل من غير مهندس = لسه ما اتوزّعش، مش عميل منسيّ · {timezone ? '' : ''}التوقيت {timezone ?? 'Africa/Cairo'}.
+        </p>
+      </div>
+
+      <AreaWorkbench book={book} onDone={() => void load()} />
+    </section>
+  );
+}
+
+/** One form for adding and editing. The engineer select is the assignment, and it travels alone. */
+function CustomerForm({ editing, form, setForm, error, saving, engineers, onCancel, onSave }: {
+  editing: Customer | 'new';
+  form: typeof EMPTY_FORM;
+  setForm: (value: typeof EMPTY_FORM) => void;
+  error: string;
+  saving: boolean;
+  engineers: AreaBook['engineers'];
+  onCancel: () => void;
+  onSave: (event: FormEvent) => void;
+}) {
+  const field = (key: keyof typeof EMPTY_FORM) => ({
+    value: String(form[key] ?? ''),
+    onChange: (event: { target: { value: string } }) => setForm({ ...form, [key]: event.target.value }),
+  });
+  const isNew = editing === 'new';
+  return (
+    <form className="panel" onSubmit={onSave}>
+      <h3 className="panel-title">{isNew ? 'عميل جديد في قايمعة الشركة' : `تعديل: ${editing.name}`}</h3>
+      <div className="filters">
+        <label className="field inline">
+          <span>اسم العميل / المزرعة</span>
+          <input required minLength={2} maxLength={120} autoFocus {...field('name')} placeholder="زي ما العميل بيقول على نفسه" />
+        </label>
+        <label className="field inline">
+          <span>التليفون</span>
+          <input dir="ltr" maxLength={30} {...field('phone')} placeholder="01xxxxxxxxx" />
+        </label>
+        <label className="field inline">
+          <span>المحافظة</span>
+          <input maxLength={80} {...field('governorate')} placeholder="الغربية" />
+        </label>
+        <label className="field inline">
+          <span>المركز</span>
+          <input maxLength={80} {...field('district')} placeholder="طنطا" />
+        </label>
+        <label className="field inline">
+          <span>القرية</span>
+          <input maxLength={120} {...field('village')} />
+        </label>
+        <label className="field inline">
+          <span>المرحلة</span>
+          <select {...field('stage')} onChange={event => setForm({ ...form, stage: event.target.value as CustomerStage })}>
+            {STAGES.map(stage => <option key={stage} value={stage}>{customerStageLabels[stage]}</option>)}
+          </select>
+        </label>
+        <label className="field inline">
+          <span>{isNew ? 'المهندس' : 'نقل إلى مهندس'}</span>
+          <select value={form.repId} onChange={event => setForm({ ...form, repId: event.target.value })}>
+            <option value={POOL}>من غير مهندس — يفضل في قايمعة الشركة</option>
+            {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active && rep.id !== form.repId}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
+          </select>
+        </label>
+      </div>
+      {form.stage === 'lost' && (
+        <div className="filters">
+          <label className="field inline">
+            <span>سبب الرفض</span>
+            <input required maxLength={300} {...field('lostReason')} placeholder="السعر أعلى من السوق / بيشتری من تاني" />
+          </label>
+        </div>
+      )}
+      <div className="filters">
+        <label className="field inline" style={{ flex: '1 1 320px' }}>
+          <span>ملاحظات</span>
+          <input maxLength={1000} {...field('notes')} placeholder="محصوله، مساحته، أي حاجة لازم المهندس يعرفها" />
+        </label>
+        <button className="btn primary sm" type="submit" disabled={saving}>{saving ? 'جارٍ الحفظ…' : 'حفظ'}</button>
+        <button className="btn ghost sm" type="button" onClick={onCancel}>إلغاء</button>
+      </div>
+      <p className="muted small">
+        الاسم بيتسجّل زي ما هو (بيتم تشذيب المسافات بس) ومفيش تكرار لنفس المهندس — لو الاسم موجود، الهيكلك هيقولك تعدّل السطر الموجود بدل ما تضيف نسخة.
+      </p>
+      {error && <p className="error" role="alert">{error}</p>}
+    </form>
+  );
+}
+
+/**
+ * التوزيع بالمناطق: the workbench that hands a whole area to one engineer.
+ *
+ * Nothing here moves on its own. Every row offers a suggested engineer, and the press that would move
+ * thirty customers answers with a preview first — how many would move, and which names are refused
+ * because the receiving engineer already carries them.
+ */
+function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => void }) {
+  const [choice, setChoice] = useState<Record<string, { repId: string; onlyUnassigned: boolean }>>({});
+  const [preview, setPreview] = useState<Record<string, AreaPreview>>({});
+  const [moved, setMoved] = useState<Record<string, MoveResult>>({});
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const [regionFor, setRegionFor] = useState('');
+  const [regionValue, setRegionValue] = useState('');
+  const [savingRegion, setSavingRegion] = useState(false);
+
+  const areas = book?.areas ?? [];
+  const engineers = book?.engineers ?? [];
+  const pick = (row: AreaRow) => {
+    const raw = choice[areaKey(row)];
+    const repId = raw ? raw.repId : (row.suggestedRepId ?? POOL);
+    // Sending the area back to the company's list only makes sense for rows somebody else owns, so the
+    // safe switch is off there by default — the server refuses the combination otherwise.
+    const onlyUnassigned = raw ? raw.onlyUnassigned : repId !== POOL;
+    return { repId, onlyUnassigned };
+  };
+  const bodyOf = (row: AreaRow) => {
+    const { repId, onlyUnassigned } = pick(row);
+    return { governorate: row.bareGovernorate, district: row.bareDistrict, repId: repId || null, onlyUnassigned };
+  };
+  const nameOf = (id: string) => engineers.find(rep => rep.id === id)?.name ?? 'قايمعة الشركة';
+
+  async function run(row: AreaRow, dryRun: boolean) {
+    const key = areaKey(row);
+    setBusy(key + (dryRun ? ':dry' : ':go'));
+    setError('');
+    try {
+      if (dryRun) {
+        // Asked outside the state updater: an updater must stay a pure function, and awaiting inside it
+        // is a syntax error the bundler catches but a reader would not.
+        const dry = await post<AreaPreview>('/api/customers/assign-area', { ...bodyOf(row), dryRun: true });
+        setPreview(values => ({ ...values, [key]: dry }));
+        return;
+      }
+      const result = await post<MoveResult>('/api/customers/assign-area', bodyOf(row));
+      setMoved(values => ({ ...values, [key]: result }));
+      setPreview(values => ({ ...values, [key]: undefined as unknown as AreaPreview }));
+      onDone();
+    } catch (e) {
+      setError(messageOf(e, 'تعذر تنفيذ النقل.'));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function saveRegion(repId: string) {
+    setSavingRegion(true);
+    setError('');
+    try {
+      await patch(`/api/reps/${repId}`, { region: regionValue.trim() });
+      setRegionFor('');
+      onDone();
+    } catch (e) {
+      setError(messageOf(e, 'تعذر حفظ المنطقة.'));
+    } finally {
+      setSavingRegion(false);
+    }
+  }
+
+  return (
+    <div className="panel">
+      <h3 className="panel-title">توزيع العملاء على المناطق</h3>
+      <p className="muted small">
+        كل سطر = محافظة ومركز زي ما اتكتبوا في القايمعة. الاقتراح من «منطقته» المسجلة عند المهندس — اضغط «معاينة الأول» قبل ما يتنقل حد.
+      </p>
+      {error && <p className="error" role="alert">{error}</p>}
+      {areas.length === 0 ? (
+        <p className="empty">مفيش مناطق مسجلة لحد دلوقتي — ضيف محافظة ومركز لأي عميل وهيظهروا هنا.</p>
+      ) : (
+        <div className="kpi-table-wrap area-table">
+          <table className="kpi-table">
+            <thead>
+              <tr><th>المنطقة</th><th>عملاء</th><th>من غير مهندس</th><th>عليه زيارات</th><th>مين شايلها</th><th>يترجّح</th><th>النقل</th></tr>
+            </thead>
+            <tbody>
+              {areas.map(row => {
+                const key = areaKey(row);
+                const { repId, onlyUnassigned } = pick(row);
+                const shown = preview[key];
+                const done = moved[key];
+                return (
+                  <tr key={key}>
+                    <td>
+                      <strong>{row.district}</strong>
+                      <small className="muted">{row.governorate}</small>
+                      {row.inactive ? <small className="muted">{formatNumber(row.inactive)} موقوف</small> : null}
+                    </td>
+                    <td className="mono">{formatNumber(row.total)}</td>
+                    <td className="mono">{row.unassigned ? <span className="pill warn">{formatNumber(row.unassigned)}</span> : '—'}</td>
+                    <td className="mono">{formatNumber(row.visited)}</td>
+                    <td>
+                      {row.owners.length === 0
+                        ? <span className="muted">حد لسه</span>
+                        : row.owners.map(owner => (
+                          <span key={owner.repId} className="pill" style={{ opacity: owner.repActive ? 1 : 0.6 }}>
+                            {owner.repName} · {formatNumber(owner.customers)}
+                          </span>
+                        ))}
+                      {row.settled ? <em className="ok-text small"> · خلاص</em> : null}
+                    </td>
+                    <td>{row.suggestedRepName || <span className="muted small">مفيش مهندس مسجّل عنده المنطقة دي</span>}</td>
+                    <td>
+                      {shown ? (
+                        <div className="stack">
+                          <p className="small">
+                            {shown.wouldMove
+                              ? <>هينقل <strong>{formatNumber(shown.wouldMove)}</strong> من {formatNumber(shown.matched)}{shown.conflicts.length ? `، و${formatNumber(shown.conflicts.length)} هيتخطّوا لأن الاسم موجود عند ${nameOf(repId)}` : ''}.</>
+                              : <>مفيش حاجة تتنقل من هنا — {onlyUnassigned ? 'كل عملاء المنطقة دي ليهم مهندس بالفعل (شيل علامة «اللي من غير مهندس بس» لو عايز ترجّعهم قايمعة الشركة).' : 'الأسماء كلها موجودة عند ' + nameOf(repId) + ' — ادمج العميلين المتعارضين الأول.'}</>}
+                            {shown.capped ? <em className="pill warn"> القايممة موقوفة عند ١٠٠٠ </em> : null}
+                          </p>
+                          {shown.conflicts.length > 0 && (
+                            <p className="muted small">اللي هيتخطّوا: {shown.conflicts.map(item => item.name).join('، ')}</p>
+                          )}
+                          <span className="confirm-pair">
+                            <button className="btn primary sm" disabled={shown.wouldMove === 0 || busy !== ''} onClick={() => void run(row, false)}>
+                              {busy === key + ':go' ? 'جارٍ النقل…' : `تأكيد النقل${repId ? ` لـ ${nameOf(repId)}` : ' قايمعة الشركة'}`}
+                            </button>
+                            <button className="btn ghost sm" onClick={() => setPreview(values => ({ ...values, [key]: undefined as unknown as AreaPreview }))}>رجوع</button>
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="stack">
+                          <span className="confirm-pair">
+                            <select value={repId} aria-label="المهندس" onChange={event => {
+                              const next = event.target.value;
+                              setChoice(values => ({ ...values, [key]: { repId: next, onlyUnassigned: next !== POOL } }));
+                              setMoved(values => ({ ...values, [key]: undefined as unknown as MoveResult }));
+                            }}>
+                              <option value={POOL}>قايمعة الشركة (من غير مهندس)</option>
+                              {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
+                            </select>
+                            <label className="field inline">
+                              <span>اللي من غير مهندس بس</span>
+                              <input type="checkbox" checked={onlyUnassigned} onChange={event => setChoice(values => ({ ...values, [key]: { repId, onlyUnassigned: event.target.checked } }))} />
+                            </label>
+                          </span>
+                          {done ? (
+                            <p className="small ok-text">
+                              {formatNumber(done.moved)} اتنقلوا{done.skipped ? `، و${formatNumber(done.skipped)} اتخطّوا` : ''}
+                              {done.repName ? ` لـ ${done.repName}` : ' لقايمعة الشركة'}.
+                            </p>
+                          ) : (
+                            <button className="btn ghost sm" disabled={busy !== ''} onClick={() => void run(row, true)}>
+                              {busy === key + ':dry' ? 'جارٍ الحساب…' : 'معاينة الأول'}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h4 className="panel-title" style={{ marginTop: 14 }}>مناطق المهندسين</h4>
+      <p className="muted small">
+        «منطقته» هي اللي بتحدد الاقتراح في الجدول فوق — اكتبها زي ما العميل بيكتبها (طنطا، المحلة…).
+      </p>
+      <ul className="rep-list">
+        {engineers.length === 0 && <li className="empty">مفيش مهندسين لحد دلوقتي.</li>}
+        {engineers.map(rep => (
+          <li key={rep.id} className="team-row" style={{ opacity: rep.active ? 1 : 0.7 }}>
+            <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
+            <span className="grow">
+              <strong>{rep.name}</strong>
+              <small>{rep.region ? `منطقته: ${rep.region}` : 'من غير منطقة — مفيش اقتراح هيتعمل له'}{rep.active ? '' : ' · الحساب متوقف'}</small>
+            </span>
+            {regionFor === rep.id ? (
+              <span className="confirm-pair">
+                <input value={regionValue} autoFocus maxLength={80} placeholder="طنطا" onChange={event => setRegionValue(event.target.value)} />
+                <button className="btn primary sm" disabled={savingRegion} onClick={() => void saveRegion(rep.id)}>{savingRegion ? 'جارٍ الحفظ…' : 'احفظ'}</button>
+                <button className="btn ghost sm" onClick={() => setRegionFor('')}>إلغاء</button>
+              </span>
+            ) : (
+              <button className="btn ghost sm" onClick={() => { setRegionFor(rep.id); setRegionValue(rep.region || ''); }}>اربط المنطقة</button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}

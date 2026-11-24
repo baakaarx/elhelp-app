@@ -11,16 +11,18 @@ import Reports from './Reports';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
 import Monthly from './Monthly';
+import Customers from './Customers';
 import type { IdleReport, ManagerAlert, Overview, Rep, RepImpact, Report, RouteResponse, User, Visit } from './types';
 import ConfirmAction from './ConfirmAction';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'team' | 'account' | 'agent';
+type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'team' | 'account' | 'agent';
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'مركز العمليات', icon: '◈' },
   { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
   { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
   { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
+  { id: 'customers', label: 'العملاء', icon: '☰' },
   { id: 'team', label: 'فريق الميدان', icon: '◆' },
   { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
   { id: 'account', label: 'هويتي', icon: '◉' },
@@ -356,7 +358,8 @@ export default function App() {
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} timezone={overview?.timezone} />}
-        {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
+        {tab === 'customers' && <Customers timezone={overview?.timezone} />}
+  {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
         {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
