@@ -280,6 +280,13 @@ test('a visit is booked on a row of the book, and only on the office’s copy of
   // The visit that was stored is not rewritten by what happens to the customer after it: the row is
   // history, and it reads with the name the office had on the day.
   assert.equal(store.get('SELECT customer_name AS name FROM visits WHERE id=?', visit.body.visit.id)?.name, 'مزرعة النخيل');
+  // A phone still running a build from before the book sends a typed name and no id. This is also
+  // exactly what a queued offline visit looks like when it is replayed after an upgrade: it is refused
+  // with a code the outbox can show, rather than being filed under a customer nobody picked.
+  const legacy = await checkIn(aly, { customerName: 'اسم من بيلد قديم' });
+  assert.equal(legacy.status, 400);
+  assert.equal(legacy.body.code, 'CUSTOMER_REQUIRED');
+  assert.match(legacy.body.error, /قايمعتك/);
   const ghost = await checkIn(aly, { customerId: randomUUID() });
   assert.equal(ghost.status, 400);
   assert.equal(ghost.body.code, 'CUSTOMER_NOT_FOUND');

@@ -4,7 +4,7 @@ import { colors, fonts, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle } from './ui';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
 import { dayText, hhmmss, isToday, timeText } from './format';
-import { visitPurposeLabels, type User, type Visit } from './types';
+import { customerStageLabels, visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
 
 export default function VisitsScreen({ user, field }: { user: User; field: FieldBundle }) {
@@ -17,6 +17,10 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   // visit screen: a full re-render of the whole list every second, all day, on a phone that is
   // already tracking GPS — for a number that does not change when nothing is open.
   const openVisitId = field.summary?.openVisit?.id ?? null;
+  // The book is asked for here as well as inside the sheet: this tab is where an engineer lands when
+  // he is still in range of a network, and the list has to be in memory before he walks into a farm
+  // with no signal.
+  useEffect(() => { void field.loadCustomers(); }, [field.loadCustomers]);
   useEffect(() => {
     if (!openVisitId) return;
     // Start from the current second: the clock on this screen may be older than the visit.
@@ -48,7 +52,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>زيارات اليوم</Text>
-            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{measuredClosed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
+            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'} · قايمعتك {field.customers.length} عميل{measuredClosed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
           </View>
           <View style={styles.count}><Text style={styles.countText}>{todayCount}</Text></View>
         </View>
@@ -58,6 +62,20 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
             <Body>لازم تبدأ الوردية الأول عشان تقدر تسجّل زيارة — التسجيل مربوط بورديتك وموقعك.</Body>
           </Card>
         )}
+
+        {shift && !field.customersLoading && field.customers.length === 0 && (
+          <Card tone="mint">
+            <Body>
+              قايمعتك فاضية من العملاء. مدير المبيعات هو اللي بيضيف عملاء الشركة وبيحدد مين يخدم كل
+              عميل — من غير كده مفيش زيارة تتسجّل، لأن الزيارة بتتربط بعميل من القايمعة مش باسم مكتوب.
+            </Body>
+            <Row style={{ marginTop: space.sm }}>
+              <Button size="sm" variant="soft" label="أعد تحميل القايمعة" onPress={() => { void field.loadCustomers(); }} />
+            </Row>
+          </Card>
+        )}
+
+        {field.customersNotice ? <Body muted style={{ fontSize: 12 }}>{field.customersNotice}</Body> : null}
 
         {open ? (
           <Card tone="mint" style={styles.openCard}>

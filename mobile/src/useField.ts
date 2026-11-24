@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
+import { myCustomers, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
 import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
-import type { RepSummary, User, Visit, VisitInput } from './types';
+import type { Customer, RepSummary, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
   outcome: string;
@@ -35,6 +35,22 @@ export interface FieldBundle {
    * only found out from a stale signal.
    */
   backgroundNotice: string;
+  /**
+   * The engineer's own slice of the company's customer book, plus the note that explains when it is
+   * not fresh.
+   *
+   * A visit is booked on one of these rows, so the sheet cannot simply refuse to open with no
+   * network: an engineer who loaded his list at the office must still be able to record a visit in a
+   * farm with two bars. The list is kept in memory from the last successful read for exactly that,
+   * and `customersNotice` says it is a cached copy rather than pretending it is current. It is not
+   * written to storage on purpose — a visit needs an open shift, and opening one needs the network,
+   * so there is no offline session this cache would serve.
+   */
+  customers: Customer[];
+  customersLoading: boolean;
+  customersNotice: string;
+  /** Called when the check-in sheet opens, and once when a shift starts (the moment we know there is signal). */
+  loadCustomers: () => Promise<void>;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -64,6 +80,17 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [backgroundNotice, setBackgroundNotice] = useState('');
   const trackingActiveRef = useRef(false);
   const mounted = useRef(true);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
+  const [customersNotice, setCustomersNotice] = useState('');
+  /** Kept beside the state so a failed refresh can ask «is there anything to fall back to?» without re-creating the callback. */
+  const customersRef = useRef<Customer[]>([]);
+  /** Whose list is currently in memory: a second engineer on this phone must never see the first one's. */
+  const listOwnerRef = useRef<string | null>(null);
+  const writeCustomers = useCallback((next: Customer[]) => {
+    customersRef.current = next;
+    setCustomers(next);
+  }, []);
   const pendingVisitNotice = (count: number) => count > 0
     ? `هناك ${count} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.`
     : '';
@@ -114,8 +141,42 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     }
   }, [user, onSessionExpired]);
 
+  /**
+   * The engineer's slice of the company's customer book — the list a visit is booked from.
+   *
+   * Asked for when the check-in sheet opens and when a shift starts, never on the 15-second tick: the
+   * book changes when the office edits it, not while a man is driving, and a field connection should
+   * not pay for it every quarter-minute.
+   */
+  const loadCustomers = useCallback(async () => {
+    if (!user) { writeCustomers([]); setCustomersNotice(''); listOwnerRef.current = null; return; }
+    if (listOwnerRef.current !== user.id) {
+      listOwnerRef.current = user.id;
+      writeCustomers([]);
+      setCustomersNotice('');
+    }
+    setCustomersLoading(true);
+    try {
+      const res = await myCustomers();
+      if (!mounted.current) return;
+      writeCustomers(Array.isArray(res.customers) ? res.customers : []);
+      setCustomersNotice('');
+    } catch (e) {
+      if (!mounted.current) return;
+      const status = (e as { status?: number }).status ?? 0;
+      if (status === 401) { onSessionExpired(); return; }
+      // Answering an unreachable server with an empty list would tell the engineer he has no
+      // customers, when the office gave him twenty. Keep the last good copy and say it is not fresh.
+      setCustomersNotice(customersRef.current.length
+        ? 'القايمة المعروضة من آخر اتصال — لو المكتب ضاف عميل أو نقل واحد، هتظهر أول ما الشبكة ترجع.'
+        : `تعذر تحميل قايمعة العملاء. ${(e as Error).message || ''}`.trim());
+    } finally {
+      if (mounted.current) setCustomersLoading(false);
+    }
+  }, [onSessionExpired, user, writeCustomers]);
+
   useEffect(() => {
-    if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setError(''); return; }
+    if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setError(''); writeCustomers([]); listOwnerRef.current = null; return; }
     void refresh();
     const timer = setInterval(() => {
       if (syncing.current) return;
@@ -235,9 +296,12 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         throw e instanceof Error && e.message === BACKGROUND_START_FAILED ? e : new Error('تم بدء الوردية، لكن تعذر تشغيل تتبع الموقع. تأكد من صلاحية الموقع ثم حاول مجددًا.');
       }
       await refresh();
+      // The shift just proved this phone can reach the server, so this is the moment to take the
+      // customer list with him into the field — the check-in sheet falls back to it when the bars die.
+      void loadCustomers();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, user?.id]);
+  }, [loadCustomers, refresh, user?.id]);
 
   const finishShift = useCallback(async () => {
     // Ending the shift with a customer visit still open left the server to close it without a
@@ -317,6 +381,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
 
   return {
     summary, visits, pending, loading, busy, trackingActive, syncNotice, offlineNotice, backgroundNotice, error,
+    customers, customersLoading, customersNotice, loadCustomers,
     clearError: () => setError(''),
     refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
   };
