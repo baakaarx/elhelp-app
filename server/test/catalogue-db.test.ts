@@ -139,6 +139,35 @@ test('a table left behind with another shape does not stop the server from start
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('a price table left pointing at the renamed copy is said at boot, not at the first write', () => {
+  // What my own repair left behind on the dev database once: the legacy products table was renamed, and
+  // SQLite quietly moved product_prices' foreign key onto the renamed copy. The list read fine, and the
+  // first price anybody saved failed with a constraint error that named nothing useful.
+  const { dir, file, store } = tempStore();
+  store.run('PRAGMA foreign_keys=OFF');
+  store.run('ALTER TABLE products RENAME TO products_legacy_rejected_batch');
+  store.run(`CREATE TABLE products (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'other',
+      unit TEXT NOT NULL, unit_size TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+  store.close();
+
+  const errors: string[] = [];
+  const realError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+  let again: Store | undefined;
+  try { again = new Store(file); } finally { console.error = realError; }
+  const messages = errors.join('\n');
+  assert.match(messages, /product_prices\.product_id references products_legacy_rejected_batch instead of products/, 'it says which link is wrong');
+  assert.match(messages, /repair-legacy-catalogue\.mjs/, 'and names the script that fixes it');
+  // The server still comes up: a broken link is a write that fails, not a boot that fails, and the
+  // dashboard still reads the list while the office finds the terminal.
+  assert.ok(again, 'the installation came up anyway');
+  assert.deepEqual(again!.all('SELECT name FROM price_tiers ORDER BY position').map((row: any) => row.name), DEFAULT_PRICE_TIERS, 'and the rest of the boot ran');
+  assert.equal((again!.all('PRAGMA foreign_key_list(product_prices)') as Array<Record<string, any>>).find(fk => fk.from === 'product_id')!.table, 'products_legacy_rejected_batch', 'the bad link is left as it is — the office runs the repair, the server does not rewrite a table under them');
+  again!.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('an empty price list is refilled, a partial one is left alone', () => {
   const { dir, store } = tempStore();
   // The half-boot case: the table exists, nothing in it. An office that deleted ONE type keeps that

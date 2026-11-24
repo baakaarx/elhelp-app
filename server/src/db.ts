@@ -331,6 +331,7 @@ export class Store {
       "ALTER TABLE customers ADD COLUMN price_tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL",
     ]) { try { this.db.exec(sql); } catch {} }
     this.ensureIndexes();
+    this.checkCatalogueLinks();
 
     // The check is made here, at seeding time, and not from a flag read before the schema block ran: an
     // installation whose boot died between creating this table and filling it has to end up with a list
@@ -374,6 +375,33 @@ export class Store {
       }
       try { this.db.exec(def.stmt); } catch (error) {
         console.error(`[db] could not create index ${def.index}:`, error);
+      }
+    }
+  }
+  /**
+   * The one catalogue fault that no data shows and no boot fails on: a price table whose parent moved.
+   *
+   * Renaming a table drags every child's REFERENCES clause with it, which is how an installation that was
+   * put back by hand ends up with product_prices pointing at products_legacy_rejected_batch. Every read
+   * of the list works, so nothing looks wrong — until the first price is saved, and the office is told
+   * «FOREIGN KEY constraint failed» about a table nobody has seen in months. Saying it here, once, in the
+   * sentence that names the script that fixes it, is the difference between a boot log and a support call.
+   */
+  private checkCatalogueLinks() {
+    const links: Array<[table: string, column: string, parent: string]> = [
+      ['product_prices', 'product_id', 'products'],
+      ['product_prices', 'tier_id', 'price_tiers'],
+    ];
+    for (const [table, column, parent] of links) {
+      const columns = new Set((this.all(`PRAGMA table_info(${table})`) as Array<Record<string, any>>).map(col => String(col.name)));
+      // No such column means the table itself is an older shape, which ensureIndexes has already reported
+      // by name; two warnings for one fact teach the operator to ignore both.
+      if (!columns.has(column)) continue;
+      const link = (this.all(`PRAGMA foreign_key_list(${table})`) as Array<Record<string, any>>)
+        .find(fk => String(fk.from) === column);
+      const target = link ? String(link.table).replace(/^["`]/, '').replace(/["`]$/, '') : '';
+      if (target !== parent) {
+        console.error(`[db] ${table}.${column} references ${target || 'nothing'} instead of ${parent} — الأصناف ما تتسعّرش على القاعدة دي. شغّل: node scripts/repair-legacy-catalogue.mjs`);
       }
     }
   }

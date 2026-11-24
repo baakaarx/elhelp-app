@@ -119,8 +119,16 @@ const customerFields = z.object({
 });
 // repId is only meaningful on create. Null is a real answer — «the company's customer, not handed to
 // anybody yet» — and a wrong id is refused rather than quietly read as «nobody».
-const newCustomer = customerFields.extend({ repId: z.uuid('اختار المهندس من القايمعة، أو سيبه من غير مهندس يفضل عميل شركة.').nullable().optional() }).strict();
-const patchCustomer = customerFields.partial().extend({ active: z.boolean().optional() }).strict();
+const newCustomer = customerFields.extend({
+  repId: z.uuid('اختار المهندس من القايمعة، أو سيبه من غير مهندس يفضل عميل شركة.').nullable().optional(),
+  // Which column of the price list he buys at. Null is «nobody decided», which is not the same as a
+  // default rate: an order for such a customer is priced by hand, and the invoice keeps what was chosen.
+  priceTierId: z.uuid('اختار نوع السعر من القايمعة، أو سيبه من غير تحديد يتسعّر باليد.').nullable().optional(),
+}).strict();
+const patchCustomer = customerFields.partial().extend({
+  active: z.boolean().optional(),
+  priceTierId: z.uuid('اختار نوع السعر من القايمعة، أو «من غير تحديد» يتسعّر باليد.').nullable().optional(),
+}).strict();
 /**
  * A visit is booked against a row of the book, not a string. customerName stays accepted and is
  * ignored: a phone that cached an old payload must not be refused for a cosmetic key, and the name on
@@ -1081,21 +1089,25 @@ export function createApp(overrides: Partial<Config> = {}) {
    * text is not a map, so it produces a proposal sitting next to a button, and a bulk move answers
    * with a preview before it writes anything.
    */
-  const CUSTOMER_SELECT = `SELECT c.*, u.name AS repName, u.color AS repColor,
+  const CUSTOMER_SELECT = `SELECT c.*, u.name AS repName, u.color AS repColor, t.name AS priceTierName,
       (SELECT COUNT(*) FROM visits v WHERE v.customer_id=c.id) AS visitCount,
       (SELECT MAX(v.checked_in_at) FROM visits v WHERE v.customer_id=c.id) AS lastVisitAt,
       (SELECT COUNT(*) FROM visits v WHERE v.customer_id=c.id AND v.status='open') AS openVisits
-    FROM customers c LEFT JOIN users u ON u.id=c.rep_id`;
+    FROM customers c LEFT JOIN users u ON u.id=c.rep_id
+    LEFT JOIN price_tiers t ON t.id=c.price_tier_id`;
   /** A row with no engineer is kept, not dropped: «من غير مهندس» is a state of the list, not an error. */
   const asCustomer = (row: Record<string, any> | undefined) => (row ? {
     id: row.id, repId: row.rep_id ?? null, name: row.name, phone: row.phone,
     governorate: row.governorate, district: row.district, village: row.village, notes: row.notes,
     stage: row.stage, lostReason: row.lost_reason, active: !!row.active,
+    priceTierId: row.price_tier_id ?? null, priceTierName: row.priceTierName ?? '',
     createdAt: row.created_at, updatedAt: row.updated_at,
     repName: row.repName ?? 'من غير مهندس', repColor: row.repColor ?? '#94a3b8',
     visitCount: Number(row.visitCount || 0), lastVisitAt: row.lastVisitAt ?? null, openVisits: Number(row.openVisits || 0),
   } : undefined);
   const loadCustomer = (id: unknown) => store.get('SELECT * FROM customers WHERE id=?', String(id)) as Record<string, any> | undefined;
+  /** A stopped type cannot be chosen for a new customer — it is a heading the office put away on purpose. */
+  const loadActiveTier = (id: unknown) => store.get('SELECT id, name FROM price_tiers WHERE id=? AND active=1', String(id)) as { id: string; name: string } | undefined;
   const findActiveRep = (id: unknown) => store.get("SELECT id, name FROM users WHERE id=? AND role='rep' AND active=1", String(id)) as { id: string; name: string } | undefined;
 
   app.get('/api/customers', auth, (req, res) => {
@@ -1132,6 +1144,11 @@ export function createApp(overrides: Partial<Config> = {}) {
       owner = findActiveRep(parsed.data.repId);
       if (!owner) { res.status(404).json({ error: 'المهندس غير موجود أو حسابه متوقف.' }); return; }
     }
+    let tier: { id: string; name: string } | undefined;
+    if (parsed.data.priceTierId) {
+      tier = loadActiveTier(parsed.data.priceTierId);
+      if (!tier) { res.status(404).json({ error: 'نوع السعر ده مش موجود أو موقوف.', code: 'TIER_NOT_FOUND' }); return; }
+    }
     const name = String(parsed.data.name).trim();
     // The office list has no UNIQUE index behind it on purpose (see customers_unassigned_name in
     // db.ts: a unique one would make deleting an engineer fail), so its no-duplicate rule is asked
@@ -1142,10 +1159,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     const now = Date.now();
     const id = randomUUID();
     try {
-      store.run(`INSERT INTO customers(id,rep_id,name,phone,governorate,district,village,notes,stage,lost_reason,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      store.run(`INSERT INTO customers(id,rep_id,name,phone,governorate,district,village,notes,stage,lost_reason,price_tier_id,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       id, owner?.id ?? null, name, parsed.data.phone, parsed.data.governorate, parsed.data.district, parsed.data.village,
-        parsed.data.notes, parsed.data.stage, parsed.data.lostReason, now, now);
+        parsed.data.notes, parsed.data.stage, parsed.data.lostReason, tier?.id ?? null, now, now);
     } catch (error) {
       // The index is the last word for a row that does have an owner, and a duplicated customer is a
       // duplicated sales figure — so the answer says which list the name is already in.
@@ -1155,7 +1172,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
       throw error;
     }
-    store.audit(res.locals.user.id, 'customer.create', { customerId: id, repId: owner?.id ?? null, name });
+    store.audit(res.locals.user.id, 'customer.create', { customerId: id, repId: owner?.id ?? null, name, priceTierId: tier?.id ?? null });
     res.status(201).json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, id)) });
   });
 
@@ -1178,11 +1195,22 @@ export function createApp(overrides: Partial<Config> = {}) {
       && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', name, current.id)) {
       res.status(409).json({ error: `«${name}» موجود في قايمعة الشركة بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
     }
+    // Sending the same type back is not a change, and clearing it (null) is: «من غير تحديد» is an answer
+    // the office gives on purpose when a man's rate is being argued about.
+    let tierId = current.price_tier_id ?? null;
+    if (parsed.data.priceTierId !== undefined) {
+      if (parsed.data.priceTierId === null) tierId = null;
+      else {
+        const chosen = loadActiveTier(parsed.data.priceTierId);
+        if (!chosen) { res.status(404).json({ error: 'نوع السعر ده مش موجود أو موقوف.', code: 'TIER_NOT_FOUND' }); return; }
+        tierId = chosen.id;
+      }
+    }
     try {
-      store.run(`UPDATE customers SET name=?, phone=?, governorate=?, district=?, village=?, notes=?, stage=?, lost_reason=?, active=?, updated_at=?
+      store.run(`UPDATE customers SET name=?, phone=?, governorate=?, district=?, village=?, notes=?, stage=?, lost_reason=?, price_tier_id=?, active=?, updated_at=?
         WHERE id=?`,
       name, merged.phone ?? '', merged.governorate ?? '', merged.district ?? '', merged.village ?? '', merged.notes ?? '',
-        merged.stage, merged.lostReason ?? '', parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
+        merged.stage, merged.lostReason ?? '', tierId, parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
         Date.now(), current.id);
     } catch (error) {
       if (String((error as Error).message).includes('UNIQUE')) {
@@ -1410,6 +1438,319 @@ export function createApp(overrides: Partial<Config> = {}) {
       matched: targets.length, moved: moving.length, skipped: conflicts.length, capped: targets.length === AREA_LIMIT,
       conflicts, customers: moving,
     });
+  });
+
+  /* ------------------------------------------------------------------ الأصناف: قايمعة المكتب
+   *
+   * The office names the items, the pack they are sold in, and the price per buyer type. The
+   * engineer's phone reads the list to build an order and never edits it — and it is not shown the
+   * prices at all, because an order is items and quantities, and a number the man in the field quotes
+   * from a screen becomes a promise the warehouse did not make.
+   *
+   * Two rules carry the rest of the design. A unit is never guessed (an item cannot be entered without
+   * saying what one pack of it is), and nothing here is deleted once another record points at it:
+   * stopping an item keeps every order line that named it readable.
+   */
+  const asProduct = (row: Record<string, any>, prices?: Array<{ tierId: string; price: number }>) => ({
+    id: row.id, name: row.name, category: row.category, unit: row.unit, unitSize: row.unit_size,
+    notes: row.notes, active: !!row.active, createdAt: row.created_at, updatedAt: row.updated_at,
+    // Prices are added by the caller, and only for the office: an absent key is what a phone gets.
+    ...(prices ? { prices } : {}),
+  });
+
+  /**
+   * Every table whose schema points at `parent`, read from the schema itself.
+   *
+   * This is how «stop it instead of deleting it» stays true without anyone remembering to update a
+   * list: the day an order line or an invoice references `products`, the guard covers it on its own, and
+   * the names come from SQLite rather than from a request.
+   */
+  const referencingTables = (parent: string) => {
+    const tables = store.all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'") as Array<{ name: string }>;
+    const found: Array<{ table: string; column: string }> = [];
+    for (const row of tables) {
+      if (row.name === parent) continue;
+      for (const fk of store.all(`PRAGMA foreign_key_list(${row.name})`) as Array<Record<string, any>>) {
+        if (String(fk.table) === parent) found.push({ table: row.name, column: String(fk.from) });
+      }
+    }
+    return found;
+  };
+  /** Which records hold this row: `[{ table: 'product_prices', rows: 3 }]`. Non-empty means: do not delete. */
+  const rowsHolding = (parent: string, id: string) => referencingTables(parent)
+    .map(entry => ({ table: entry.table, rows: Number(store.get(`SELECT COUNT(*) AS c FROM ${entry.table} WHERE ${entry.column}=?`, id)?.c || 0) }))
+    .filter(entry => entry.rows > 0);
+
+  app.get('/api/products', auth, (req, res) => {
+    const isAdmin = res.locals.user.role === 'admin';
+    const where: string[] = []; const params: any[] = [];
+    if (!isAdmin || req.query.includeInactive !== '1') where.push('p.active=1');
+    const category = ['pesticide', 'fertilizer', 'other'].includes(String(req.query.category)) ? String(req.query.category) : '';
+    if (category) { where.push('p.category=?'); params.push(category); }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
+    if (q) { where.push('(p.name LIKE ? OR p.unit LIKE ? OR p.unit_size LIKE ? OR p.notes LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
+    // «every item that has no price for this buyer type» is the list the office still has to finish,
+    // so it is a filter and not a scroll.
+    const unpricedFor = typeof req.query.unpricedFor === 'string' && req.query.unpricedFor ? req.query.unpricedFor : '';
+    if (isAdmin && unpricedFor) {
+      where.push('p.id NOT IN (SELECT product_id FROM product_prices WHERE tier_id=?)');
+      params.push(unpricedFor);
+    }
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 300));
+    const rows = store.all(`SELECT p.* FROM products p
+      WHERE ${where.length ? where.join(' AND ') : '1=1'} ORDER BY p.name COLLATE NOCASE LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+    const ids = rows.map(row => String(row.id));
+    const prices = isAdmin && ids.length
+      ? store.all(`SELECT pp.product_id AS productId, pp.tier_id AS tierId, pp.price AS price
+          FROM product_prices pp WHERE pp.product_id IN (${ids.map(() => '?').join(',')})`, ...ids) as Array<Record<string, any>>
+      : [];
+    const byProduct = new Map<string, Array<{ tierId: string; price: number }>>();
+    for (const price of prices) {
+      const list = byProduct.get(String(price.productId)) || [];
+      list.push({ tierId: String(price.tierId), price: Number(price.price) });
+      byProduct.set(String(price.productId), list);
+    }
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      // Prices travel to the office only. A phone that never quotes a price cannot be blamed for one.
+      products: rows.map(row => asProduct(row, isAdmin ? byProduct.get(String(row.id)) ?? [] : undefined)),
+    });
+  });
+
+  const UNIT_HINT = 'قولي الصنف ده بيتبيع إيه: عبوة / شيكارة / جركن — السعر ده للوحدة دي.';
+  const productFields = z.object({
+    name: z.string().trim().min(2, 'اسم الصنف مطلوب.').max(120),
+    category: z.enum(['pesticide', 'fertilizer', 'other']).default('other'),
+    // No default, and a required field: «كرتونة» guessed for a bottle is a price read as twelve times
+    // its value, and the invoice looks finished while the number is wrong. The emptiness is checked in
+    // the route rather than only by zod, because a *missing* key reports «expected string» and this is
+    // the one field whose name is the whole point of the field.
+    unit: z.string().trim().min(1, UNIT_HINT).max(40).optional(),
+    unitSize: z.string().trim().max(60).default(''),
+    notes: z.string().trim().max(500).default(''),
+  });
+  const priceEdits = z.array(z.object({
+    tierId: z.uuid(),
+    // null clears the price: «no price for this type yet» stays true rather than becoming zero, and a
+    // zero price is a free item in every report that adds up later.
+    price: z.number().nonnegative('السعر ما يقلش عن صفر.').nullable(),
+  }).strict()).max(40).default([]);
+  const newProduct = productFields.extend({ prices: priceEdits }).strict();
+  const patchProduct = productFields.partial().extend({ active: z.boolean().optional() }).strict();
+
+  app.post('/api/products', adminOnly, (req, res) => {
+    const parsed = newProduct.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الصنف غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    const { prices, ...fields } = parsed.data;
+    const tiers = store.all('SELECT id FROM price_tiers') as Array<{ id: string }>;
+    const known = new Set(tiers.map(tier => String(tier.id)));
+    for (const price of prices) {
+      if (!known.has(price.tierId)) { res.status(404).json({ error: 'نوع السعر ده مش في القايمعة.', code: 'TIER_NOT_FOUND' }); return; }
+    }
+    if (new Set(prices.map(price => price.tierId)).size !== prices.length) {
+      res.status(400).json({ error: 'نوع سعر متكرر في الطلب — نوع واحد = سعر واحد.' }); return;
+    }
+    const name = fields.name.trim();
+    const unit = (fields.unit ?? '').trim();
+    if (!unit) { res.status(400).json({ error: UNIT_HINT, issues: [{ path: ['unit'], message: UNIT_HINT }] }); return; }
+    // Same name, same pack = the same item twice, and two rows for one item is two prices for one
+    // customer. A different pack is a different item and is allowed.
+    if (store.get('SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=?', name, unit)) {
+      res.status(409).json({ error: `«${name} — ${unit}» موجود في قايمعة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
+    }
+    const now = Date.now();
+    const id = randomUUID();
+    try {
+      store.transaction(() => {
+        store.run(`INSERT INTO products(id,name,category,unit,unit_size,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+          id, name, fields.category, unit, fields.unitSize, fields.notes, now, now);
+        for (const price of prices) {
+          if (price.price === null) continue;
+          store.run('INSERT INTO product_prices(product_id,tier_id,price,updated_at) VALUES (?,?,?,?)', id, price.tierId, price.price, now);
+        }
+      });
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE')) {
+        res.status(409).json({ error: `«${name} — ${unit}» موجود في قايمعة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
+      }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'product.create', { productId: id, name, unit, priced: prices.filter((p: { price: number | null }) => p.price !== null).length });
+    res.status(201).json({
+      product: asProduct(store.get('SELECT * FROM products WHERE id=?', id)!,
+        store.all('SELECT tier_id AS tierId, price FROM product_prices WHERE product_id=?', id) as Array<{ tierId: string; price: number }>),
+    });
+  });
+
+  app.patch('/api/products/:id', adminOnly, (req, res) => {
+    const current = store.get('SELECT * FROM products WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
+    if (!current) { res.status(404).json({ error: 'الصنف غير موجود.' }); return; }
+    const parsed = patchProduct.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الصنف غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    const merged = { ...current, ...parsed.data };
+    const name = String(merged.name).trim();
+    // An edit that sends no unit keeps the one on the row; one that sends an empty string is refused by
+    // min(1) above, because «we never said what this is sold in» is not a thing a price can survive.
+    const unit = String(merged.unit ?? '').trim();
+    if (!unit) { res.status(400).json({ error: UNIT_HINT, issues: [{ path: ['unit'], message: UNIT_HINT }] }); return; }
+    // Renaming into another item's slot is the same duplicate, so it is refused the same way — and the
+    // message says which one is in the way.
+    const clash = store.get('SELECT id, name FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND id<>?', name, unit, current.id) as { id: string; name: string } | undefined;
+    if (clash) {
+      res.status(409).json({ error: `«${name} — ${unit}» هو «${clash.name}» الموجود بالفعل. عدّل السطر اللي موجود بدل ما تعمل صنفين.`, code: 'PRODUCT_EXISTS' });
+      return;
+    }
+    store.run(`UPDATE products SET name=?, category=?, unit=?, unit_size=?, notes=?, active=?, updated_at=? WHERE id=?`,
+      name, merged.category, unit, merged.unitSize ?? '', merged.notes ?? '',
+      parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0), Date.now(), current.id);
+    store.audit(res.locals.user.id, 'product.update', { productId: current.id, fields: Object.keys(parsed.data) });
+    res.json({
+      product: asProduct(store.get('SELECT * FROM products WHERE id=?', current.id)!,
+        store.all('SELECT tier_id AS tierId, price FROM product_prices WHERE product_id=?', current.id) as Array<{ tierId: string; price: number }>),
+    });
+  });
+
+  /**
+   * Every price of one item, in one call — that is how a price list actually gets edited: the whole
+   * row is written at once, so «جملة اتزودت ونصف جملة لأ» cannot arrive as two half-finished requests.
+   */
+  app.put('/api/products/:id/prices', adminOnly, (req, res) => {
+    const current = store.get('SELECT * FROM products WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
+    if (!current) { res.status(404).json({ error: 'الصنف غير موجود.' }); return; }
+    const parsed = z.object({ prices: priceEdits }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'الأسعار غير صحيحة.' }); return; }
+    const { prices } = parsed.data;
+    const known = new Set((store.all('SELECT id FROM price_tiers') as Array<{ id: string }>).map(tier => String(tier.id)));
+    const missing = prices.filter(price => !known.has(price.tierId)).map(price => price.tierId);
+    if (missing.length) { res.status(404).json({ error: 'في نوع سعر مش موجود في القايمعة.', code: 'TIER_NOT_FOUND', missing }); return; }
+    if (new Set(prices.map(price => price.tierId)).size !== prices.length) {
+      res.status(400).json({ error: 'نوع سعر متكرر في الطلب — نوع واحد = سعر واحد.' }); return;
+    }
+    const now = Date.now();
+    // Types not mentioned in the call are left alone: the screen that edits «جملة» only must not wipe the
+    // rest of the row by omission.
+    store.transaction(() => {
+      for (const price of prices) {
+        if (price.price === null) store.run('DELETE FROM product_prices WHERE product_id=? AND tier_id=?', current.id, price.tierId);
+        else store.run(`INSERT INTO product_prices(product_id,tier_id,price,updated_at) VALUES (?,?,?,?)
+          ON CONFLICT(product_id,tier_id) DO UPDATE SET price=excluded.price, updated_at=excluded.updated_at`,
+        current.id, price.tierId, price.price, now);
+      }
+    });
+    store.audit(res.locals.user.id, 'product.prices', {
+      productId: current.id,
+      set: prices.filter(price => price.price !== null).map(price => ({ tierId: price.tierId, price: price.price })),
+      cleared: prices.filter(price => price.price === null).map(price => price.tierId),
+    });
+    res.json({
+      product: asProduct(current,
+        store.all('SELECT tier_id AS tierId, price FROM product_prices WHERE product_id=?', current.id) as Array<{ tierId: string; price: number }>),
+    });
+  });
+
+  /** Deleting is only possible while nothing points at the item; otherwise it is stopped. */
+  app.delete('/api/products/:id', adminOnly, (req, res) => {
+    const current = store.get('SELECT * FROM products WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
+    if (!current) { res.status(404).json({ error: 'الصنف غير موجود.' }); return; }
+    const holders = rowsHolding('products', current.id).filter(entry => entry.table !== 'product_prices');
+    if (holders.length) {
+      const summary = holders.map(entry => `${entry.rows} سطر في ${entry.table}`).join('، ');
+      res.status(409).json({ error: `الصنف ده مستخدم: ${summary}. وقّفه بدل الحذف عشان السجلات اللي اسمه فيها تفضل مقروءة.`, code: 'PRODUCT_IN_USE' });
+      return;
+    }
+    store.run('DELETE FROM products WHERE id=?', current.id);
+    store.audit(res.locals.user.id, 'product.delete', { name: current.name, unit: current.unit });
+    // Its own prices go with it — a price for an item nobody sells is noise, which is the opposite of
+    // the customer case above, where the history is the point.
+    res.json({ ok: true });
+  });
+
+  /* -------------------------------------------------------- أنواع المشترى: راس قايمعة الأسعار
+   *
+   * The office names these; the columns of the price list are exactly this list. Deleting a type that
+   * still holds prices is refused, because cascade would take twenty prices with it to remove one
+   * heading — stopping it keeps the numbers for the day the type comes back.
+   */
+  const tierSelect = `SELECT t.*,
+      (SELECT COUNT(*) FROM product_prices pp WHERE pp.tier_id=t.id) AS priced,
+      (SELECT COUNT(*) FROM customers c WHERE c.price_tier_id=t.id) AS customers
+    FROM price_tiers t`;
+  const asTier = (row: Record<string, any>) => ({
+    id: row.id, name: row.name, position: Number(row.position), active: !!row.active,
+    priced: Number(row.priced || 0), customers: Number(row.customers || 0),
+  });
+  const tierFields = z.object({
+    name: z.string().trim().min(2, 'اكتب اسم نوع السعر — «جملة»، «نصف جملة»، «تجزئة»…').max(60),
+    position: z.number().int().min(0).max(99).optional(),
+  });
+
+  app.get('/api/price-tiers', adminOnly, (_req, res) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ tiers: (store.all(`${tierSelect} ORDER BY t.active DESC, t.position, t.name COLLATE NOCASE`) as Array<Record<string, any>>).map(row => asTier(row)) });
+  });
+
+  app.post('/api/price-tiers', adminOnly, (req, res) => {
+    const parsed = tierFields.extend({ position: z.number().int().min(0).max(99).optional() }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'اسم نوع السعر مطلوب.' }); return; }
+    const name = parsed.data.name.trim();
+    if (store.get('SELECT id, active FROM price_tiers WHERE name COLLATE NOCASE=?', name)) {
+      res.status(409).json({ error: `«${name}» موجود في قايمعة الأنواع بالفعل.`, code: 'TIER_EXISTS' }); return;
+    }
+    const top = Number(store.get('SELECT COALESCE(MAX(position), -1) AS m FROM price_tiers')?.m ?? -1);
+    const id = randomUUID();
+    store.run('INSERT INTO price_tiers(id,name,position,created_at,updated_at) VALUES (?,?,?,?,?)',
+      id, name, parsed.data.position ?? top + 1, Date.now(), Date.now());
+    store.audit(res.locals.user.id, 'tier.create', { tierId: id, name });
+    res.status(201).json({ tier: asTier(store.get(`${tierSelect} WHERE t.id=?`, id)!) });
+  });
+
+  app.patch('/api/price-tiers/:id', adminOnly, (req, res) => {
+    const current = store.get('SELECT * FROM price_tiers WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
+    if (!current) { res.status(404).json({ error: 'نوع السعر غير موجود.' }); return; }
+    const parsed = tierFields.partial().extend({ active: z.boolean().optional() }).strict().safeParse(req.body ?? {});
+    if (!parsed.success || Object.keys(parsed.data).length === 0) {
+      res.status(400).json({ error: parsed.success ? 'مفيش حاجة تتغير.' : parsed.error.issues[0]?.message || 'بيانات غير صحيحة.' });
+      return;
+    }
+    const name = parsed.data.name === undefined ? current.name : parsed.data.name.trim();
+    if (name !== current.name && store.get('SELECT id FROM price_tiers WHERE name COLLATE NOCASE=? AND id<>?', name, current.id)) {
+      res.status(409).json({ error: `«${name}» موجود بالفعل كنوع تاني في القايمعة.`, code: 'TIER_EXISTS' }); return;
+    }
+    // Stopping the only active type would leave the price list with no column to price anything under.
+    if (parsed.data.active === false) {
+      const activeOthers = Number(store.get('SELECT COUNT(*) AS c FROM price_tiers WHERE active=1 AND id<>?', current.id)?.c || 0);
+      if (!activeOthers) {
+        res.status(409).json({ error: 'ده نوع السعر الوحيد الشغال — الوقف بيسيب القايمعة من غير عمود. اعمل واحد تاني الأول.', code: 'LAST_TIER' });
+        return;
+      }
+    }
+    store.run('UPDATE price_tiers SET name=?, position=?, active=?, updated_at=? WHERE id=?',
+      name, parsed.data.position ?? current.position, parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
+      Date.now(), current.id);
+    store.audit(res.locals.user.id, 'tier.update', { tierId: current.id, fields: Object.keys(parsed.data) });
+    res.json({ tier: asTier(store.get(`${tierSelect} WHERE t.id=?`, current.id)!) });
+  });
+
+  app.delete('/api/price-tiers/:id', adminOnly, (req, res) => {
+    const current = store.get('SELECT * FROM price_tiers WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
+    if (!current) { res.status(404).json({ error: 'نوع السعر غير موجود.' }); return; }
+    const priced = Number(store.get('SELECT COUNT(*) AS c FROM product_prices WHERE tier_id=?', current.id)?.c || 0);
+    if (priced) {
+      res.status(409).json({ error: `${priced} صنف ليه سعر تحت «${current.name}» — الحذف يمسح الأسعار دي. وقّف النوع بدل الحذف.`, code: 'TIER_HAS_PRICES' });
+      return;
+    }
+    // Customers keep being quoted at a rate that no longer exists, so the link clears and the answer
+    // says how many men the office now has to price by hand.
+    const unquoted = Number(store.get('SELECT COUNT(*) AS c FROM customers WHERE price_tier_id=?', current.id)?.c || 0);
+    store.run('DELETE FROM price_tiers WHERE id=?', current.id);
+    store.audit(res.locals.user.id, 'tier.delete', { name: current.name, unquoted });
+    res.json({ ok: true, unquoted });
   });
 
   app.post('/api/visits/check-in', repOnly, (req, res) => {
