@@ -25,6 +25,50 @@ export interface LocationPoint {
   receivedAt: number;
   source: 'gps';
 }
+/**
+ * One area of the customer book — `GET /api/customers/areas`. Rows are grouped by (governorate,
+ * district) exactly as they are typed, which is why both raw values come back as well: the move
+ * below is sent with those, not with the display labels.
+ */
+export interface CustomerArea {
+  governorate: string;
+  district: string;
+  bareGovernorate: string;
+  bareDistrict: string;
+  total: number;
+  /** Customers in this area with no engineer yet — the number this screen is trying to bring to zero. */
+  unassigned: number;
+  inactive: number;
+  visited: number;
+  /** True when one engineer already holds every row here: nothing left to distribute. */
+  settled: boolean;
+  owners: Array<{ repId: string; repName: string; repActive: boolean; customers: number }>;
+  /** The engineer whose registered `region` names this place. A proposal, never an assignment. */
+  suggestedRepId: string | null;
+  suggestedRepName: string;
+}
+
+/** An engineer as the area workbench sees him: the region string is the whole basis of the match. */
+export interface AreaEngineer {
+  id: string;
+  name: string;
+  region: string;
+  color: string;
+  active: boolean;
+}
+
+/** The answer of `POST /api/customers/assign-area` — a preview (`wouldMove`) or the real move (`moved`). */
+export interface AreaMove {
+  matched: number;
+  wouldMove?: number;
+  moved?: number;
+  skipped?: number;
+  /** True when the area held more rows than the server will touch in one press. */
+  capped?: boolean;
+  conflicts: Array<{ id: string; name: string }>;
+  customers: Array<{ id: string; name: string; fromRepId?: string | null }>;
+}
+
 export interface Rep extends User {
   online: boolean;
   createdAt: number | null;
@@ -276,7 +320,12 @@ export interface RepImpact {
  */
 export interface Customer {
   id: string;
-  repId: string;
+  /**
+   * The engineer this customer belongs to, or null for «the company's own list — nobody has been
+   * handed him yet». The office enters customers here by place, and the area workbench on the
+   * customers screen is what turns a null into an engineer. Nothing does it on its own.
+   */
+  repId: string | null;
   name: string;
   phone: string;
   governorate: string;

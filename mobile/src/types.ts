@@ -49,6 +49,11 @@ export type VisitPurpose = 'visit' | 'order' | 'collection' | 'note' | 'issue' |
  */
 export interface Customer {
   id: string;
+  /**
+   * The server's column is nullable now — «the company's list, no engineer yet» is a real row there.
+   * It can never be null on this screen: every read is scoped to the signed-in rep, so a phone only
+   * ever gets rows that already point at it. The type says so, which is why the app never checks it.
+   */
   repId: string;
   name: string;
   phone: string;

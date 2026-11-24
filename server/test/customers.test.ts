@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { hashPassword } from '../src/auth.js';
-import { customerWatch, CUSTOMER_OVERDUE_DAYS, daysSince } from '../../dashboard/src/Customers.js';
+import { customerWatch, CUSTOMER_OVERDUE_DAYS, daysSince, areaNeedsWork, areaKey } from '../../dashboard/src/Customers.js';
 
 /**
  * Customers as master data — the layer every visit (and later every invoice) points at.
@@ -16,6 +16,9 @@ import { customerWatch, CUSTOMER_OVERDUE_DAYS, daysSince } from '../../dashboard
 const config = {
   dbPath: ':memory:', production: false, retentionDays: 30, timezone: 'Africa/Cairo',
   adminEmail: 'admin@mandoub.test', adminPassword: 'TestPassword123!', allowedOrigins: [], port: 0,
+  // Every engineer in these tests is logged in for, and the limiter counts addresses: 15 a minute is
+  // a real protection on a VPS and a false alarm inside one process.
+  loginAccountLimit: 500, loginRateLimit: { windowMs: 60000, limit: 500 },
 };
 const instance = createApp(config);
 const { app, store } = instance;
@@ -88,10 +91,34 @@ test('the same name twice in one list is refused, and allowed in two different l
   assert.equal(inAnotherList.status, 201, 'two engineers may both sell to the same man');
 });
 
-test('a manager creating a customer has to name the owner', async () => {
-  const res = await create({ name: 'مزرعة بدون صاحب' }).set(admin);
-  assert.equal(res.status, 400);
-  assert.equal(res.body.code, 'REP_REQUIRED');
+test('the office adds a customer with no engineer yet; the phone cannot', async () => {
+  // This is the whole point of the company list: a name typed in the office before anybody decided
+  // who drives that area is a real customer, not a 400.
+  const pooled = await create({ name: 'مزرعة بدون صاحب', governorate: 'الغربية', district: 'طنطا' }).set(admin);
+  assert.equal(pooled.status, 201, JSON.stringify(pooled.body));
+  assert.equal(pooled.body.customer.repId, null);
+  assert.equal(pooled.body.customer.repName, 'من غير مهندس');
+
+  const queue = await client.get('/api/customers?unassigned=1&governorate=الغربية&district=طنطا').set(admin);
+  assert.deepEqual(queue.body.customers.map((row: any) => row.id), [pooled.body.customer.id]);
+
+  const fresh = await rep('مهندس لسه داخل');
+  const mine = await client.get('/api/customers').set(fresh.auth);
+  assert.deepEqual(mine.body.customers, [], 'a customer nobody owns is not on anybody list yet');
+
+  // The phone has no pool to dump a name into, and its rule did not move with the office's: whatever
+  // the app sends, a customer recorded from the field belongs to the man standing at the farm.
+  const fromField = await create({ name: 'عميل من الميدان' }).set(fresh.auth);
+  assert.equal(fromField.status, 201, JSON.stringify(fromField.body));
+  assert.equal(fromField.body.customer.repId, fresh.id);
+  const bossy = await create({ name: 'عميل على حساب غيره', repId: pooled.body.customer.repId }).set(fresh.auth);
+  assert.equal(bossy.status, 201);
+  assert.equal(bossy.body.customer.repId, fresh.id, 'a rep passing someone else id buys him nothing');
+
+  const mistyped = await create({ name: 'عميل ليه', repId: 'not-a-uuid' }).set(admin);
+  assert.equal(mistyped.status, 400, 'an owner id that is not an id is refused, never read as «nobody»');
+  assert.match(mistyped.body.error, /المهندس/);
+
   const ghost = await create({ name: 'عميل لحساب متوقف' }).set({ Authorization: 'Bearer nope' });
   assert.equal(ghost.status, 401, 'and nobody anonymous gets in at all');
 });
@@ -252,4 +279,178 @@ test('the cooling rule names a cold relationship and never a refused one', () =>
   const refused = { ...base, stage: 'lost' as const, lostReason: 'السعر', createdAt: now - 90 * DAY, lastVisitAt: now - 90 * DAY };
   assert.equal(customerWatch(refused, now).level, 'ok', 'a closed customer is not a warning');
   assert.match(customerWatch(refused, now).text, /السعر/);
+});
+
+/*
+ * The company list and the area workbench. The office enters customers where they live; the engineer
+ * who drives that area is picked afterwards, so the two questions a manager asks on this screen —
+ * «who owns طنطا?» and «did everybody in طنطا get handed over?» — have to be answerable from the
+ * server, not from eyeballing 300 rows. Every test below is one of those two, plus the one thing that
+ * must never happen: a press that moves a customer nobody meant to move.
+ */
+
+test('one name in the company list is one customer, and the same name at an engineer is not a clash', async () => {
+  const owner = await rep('شريف عبد الله');
+  const first = await create({ name: 'مزرعة الاتحاد', governorate: 'البحيرة', district: 'دمنهور' }).set(admin);
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const twice = await create({ name: 'مزرعة الاتحاد ', governorate: 'البحيرة', district: 'دمنهور' }).set(admin);
+  assert.equal(twice.status, 409, 'the pool gets the same no-duplicate rule as a rep list');
+  assert.equal(twice.body.code, 'CUSTOMER_EXISTS');
+  const atAnEngineer = await create({ name: 'مزرعة الاتحاد', repId: owner.id }).set(admin);
+  assert.equal(atAnEngineer.status, 201, 'and a shop can be in the office list while it is also someone customer');
+});
+
+test('the area table groups the list by place and names the engineer who drives it', async () => {
+  // زفتى and not طنطا, because an earlier test already left one unassigned customer in طنطا and this
+  // file shares one store: the count below is only meaningful inside an area nobody else touched.
+  const tan = await rep('مهندس زفتى');
+  store.run("UPDATE users SET region='مركز زفتى' WHERE id=?", tan.id);
+  for (const name of ['مزرعة القنال', 'مزرعة بقرش', 'مزرعة السبطخانة']) {
+    const res = await create({ name, governorate: 'الغربية', district: 'زفتى' }).set(admin);
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+  }
+  await create({ name: 'مزرعة المحلة', governorate: 'الغربية', district: 'المحلة', repId: tan.id }).set(admin);
+  const res = await client.get('/api/customers/areas').set(admin);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const row = res.body.areas.find((area: any) => area.bareDistrict === 'زفتى');
+  assert.ok(row, 'زفتى shows up as its own area');
+  assert.equal(row.unassigned, 3);
+  assert.equal(row.settled, false, 'three customers with no owner is exactly the row to act on');
+  assert.equal(row.suggestedRepId, tan.id, 'the engineer whose region says زفتى is the proposal');
+  assert.equal(row.suggestedRepName, 'مهندس زفتى');
+  const held = res.body.areas.find((area: any) => area.bareDistrict === 'المحلة');
+  assert.equal(held.settled, true, 'an area already held by one engineer is settled');
+  assert.deepEqual(held.owners.map((o: any) => o.repId), [tan.id]);
+  assert.ok(res.body.engineers.some((e: any) => e.id === tan.id && e.region === 'مركز زفتى'), 'the area workbench reads the engineer region from the team');
+  assert.ok(res.body.totals.unassigned >= 3);
+  // The screen is the manager's, not the team's.
+  const refused = await client.get('/api/customers/areas').set(tan.auth);
+  assert.equal(refused.status, 403);
+});
+
+test('handing an area to an engineer is previewed, and a name clash stops only the row that clashes', async () => {
+  const aly = await rep('مهندس المنوفية');
+  const mine = await create({ name: 'مزرعة شبين', governorate: 'المنوفية', district: 'شبين الكوم' }).set(admin);
+  const alsoMine = await create({ name: 'مزرعة سرس الليان', governorate: 'المنوفية', district: 'شبين الكوم' }).set(admin);
+  // This one the engineer already has. Moving the pool copy onto him would break the one-name rule,
+  // so the pool copy stays where it is and the other two still go.
+  const clash = await create({ name: 'مزرعة اللبدي', governorate: 'المنوفية', district: 'شبين الكوم' }).set(admin);
+  const heHas = await create({ name: 'مزرعة اللبدي', repId: aly.id }).set(admin);
+  assert.equal(heHas.status, 201, JSON.stringify(heHas.body));
+
+  const preview = await client.post('/api/customers/assign-area').set(admin)
+    .send({ governorate: 'المنوفية', district: 'شبين الكوم', repId: aly.id, dryRun: true });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.equal(preview.body.matched, 3);
+  assert.equal(preview.body.wouldMove, 2);
+  assert.deepEqual(preview.body.conflicts.map((c: any) => c.id), [clash.body.customer.id]);
+  assert.equal(store.get('SELECT rep_id AS v FROM customers WHERE id=?', mine.body.customer.id)?.v, null, 'a preview writes nothing');
+  assert.equal(store.get('SELECT rep_id AS v FROM customers WHERE id=?', alsoMine.body.customer.id)?.v, null);
+
+  const moved = await client.post('/api/customers/assign-area').set(admin)
+    .send({ governorate: 'المنوفية', district: 'شبين الكوم', repId: aly.id });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.moved, 2);
+  assert.equal(moved.body.skipped, 1);
+  assert.equal(store.get('SELECT rep_id AS v FROM customers WHERE id=?', mine.body.customer.id)?.v, aly.id);
+  assert.equal(store.get('SELECT rep_id AS v FROM customers WHERE id=?', clash.body.customer.id)?.v, null);
+  const seen = await client.get('/api/customers').set(aly.auth);
+  assert.deepEqual(seen.body.customers.map((r: any) => r.id).sort(),
+    [mine.body.customer.id, alsoMine.body.customer.id, heHas.body.customer.id].sort(), 'the engineer sees what he was handed');
+  const logged = store.get("SELECT metadata FROM audit_log WHERE action='customer.assignArea' ORDER BY created_at DESC, rowid DESC LIMIT 1");
+  assert.ok(logged, 'the move is in the audit log');
+  assert.equal(JSON.parse(String(logged.metadata)).moved, 2);
+
+  // A second press finds nothing to do and says so instead of pretending.
+  // A second press finds three rows in the area and moves none of them: one is already his, two are
+  // already his, and the third is the name clash. That is a refusal, not a silent success.
+  const again = await client.post('/api/customers/assign-area').set(admin)
+    .send({ governorate: 'المنوفية', district: 'شبين الكوم', repId: aly.id });
+  assert.equal(again.status, 409, JSON.stringify(again.body));
+  assert.equal(again.body.code, 'CUSTOMER_EXISTS');
+  assert.match(again.body.error, /تعارض اسم/);
+});
+
+test('an area can be taken back from an engineer, and only when he is told so', async () => {
+  const aly = await rep('مهندس الشرقية');
+  const said = await rep('مهندس الشرقية التاني');
+  const handed = await create({ name: 'مزرعة العاشر', governorate: 'الشرقية', district: 'العاشر من رمضان', repId: aly.id }).set(admin);
+  const kept = await create({ name: 'مزرعة فاقوس', governorate: 'الشرقية', district: 'العاشر من رمضان', repId: said.id }).set(admin);
+
+  // The default refuses to touch a colleague customer, so this press changes nothing.
+  const refused = await client.post('/api/customers/assign-area').set(admin)
+    .send({ governorate: 'الشرقية', district: 'العاشر من رمضان', repId: null });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.code, 'NO_CHANGE');
+  assert.match(refused.body.error, /اقفل/);
+
+  const back = await client.post('/api/customers/assign-area').set(admin)
+    .send({ governorate: 'الشرقية', district: 'العاشر من رمضان', repId: null, onlyUnassigned: false });
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.equal(back.body.moved, 2, 'both rows of the area return to the company list when the switch is off');
+  assert.equal(store.get('SELECT rep_id AS v FROM customers WHERE id=?', handed.body.customer.id)?.v, null);
+  assert.equal(store.get('SELECT rep_id AS v FROM customers WHERE id=?', kept.body.customer.id)?.v, null);
+
+  // One customer at a time is the other control, and it is admin-only.
+  const one = await client.post(`/api/customers/${handed.body.customer.id}/assign`).set(admin).send({ repId: aly.id });
+  assert.equal(one.status, 200, JSON.stringify(one.body));
+  assert.equal(one.body.customer.repId, aly.id);
+  const off = await client.post(`/api/customers/${handed.body.customer.id}/assign`).set(admin).send({ repId: null });
+  assert.equal(off.status, 200);
+  assert.equal(off.body.customer.repId, null);
+  assert.equal(off.body.customer.repName, 'من غير مهندس');
+  const noArea = await client.post('/api/customers/assign-area').set(admin).send({ repId: aly.id });
+  assert.equal(noArea.status, 400);
+  assert.equal(noArea.body.code, 'AREA_REQUIRED');
+  const byRep = await client.post('/api/customers/assign-area').set(aly.auth).send({ district: 'طنطا', repId: aly.id });
+  assert.equal(byRep.status, 403);
+});
+
+test('an engineer area is what makes the suggestion real, and it can be corrected', async () => {
+  // «عندي مهندس في طنطا أربط بيه عملاء طنطا» has a precondition the app has to be able to express:
+  // somebody wrote طنطا under his name. Before this, region was set once at creation and never again,
+  // so the only way to fix a typo was to delete the account.
+  const nomad = await rep('مهندس من غير منطقة');
+  await create({ name: 'مزرعة سيدي سالم', governorate: 'البحيرة', district: 'سيدى سالم' }).set(admin);
+  const before = await client.get('/api/customers/areas').set(admin);
+  const free = before.body.areas.find((area: any) => area.bareDistrict === 'سيدى سالم');
+  assert.equal(free.suggestedRepId, null, 'with no region on anybody, nothing is proposed');
+
+  const noChange = await client.patch(`/api/reps/${nomad.id}`).set(admin).send({});
+  assert.equal(noChange.status, 400);
+  assert.equal(noChange.body.code, 'NO_CHANGE');
+  const set = await client.patch(`/api/reps/${nomad.id}`).set(admin).send({ region: 'سيدى سالم' });
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  assert.equal(set.body.user.region, 'سيدى سالم');
+
+  const after = await client.get('/api/customers/areas').set(admin);
+  const row = after.body.areas.find((area: any) => area.bareDistrict === 'سيدى سالم');
+  assert.equal(row.suggestedRepId, nomad.id, 'and now the area knows who drives it');
+  assert.equal(row.suggestedRepName, 'مهندس من غير منطقة');
+  // The proposal still moves nobody on its own.
+  assert.equal(store.get('SELECT rep_id AS v FROM customers WHERE name=?', 'مزرعة سيدي سالم')?.v, null);
+});
+
+/*
+ * The two rules the area screen computes in the browser, tested here because this file already
+ * imports the module — the same import also proves the screen does not break when it loads.
+ */
+
+test('an area is only hidden when it is finished with', () => {
+  const base = { governorate: 'الغربية', district: 'طنطا', bareGovernorate: 'الغربية', bareDistrict: 'طنطا', total: 4, unassigned: 0, inactive: 0, visited: 4, settled: true, owners: [{ repId: 'a', repName: 'م', repActive: true, customers: 4 }], suggestedRepId: 'a', suggestedRepName: 'م' };
+  assert.equal(areaNeedsWork(base), false, 'one engineer holding every row is a done area');
+  // A row nobody owns is the reason the screen exists, settled or not.
+  assert.equal(areaNeedsWork({ ...base, unassigned: 1 }), true);
+  // Split between two engineers is a decision waiting to happen, even with nothing unassigned.
+  assert.equal(areaNeedsWork({ ...base, settled: false }), true);
+  // A place with customers and nobody at all yet: not settled, and every row needs an owner.
+  assert.equal(areaNeedsWork({ ...base, unassigned: 4, settled: false, owners: [], suggestedRepId: null, suggestedRepName: '' }), true);
+});
+
+test('an area is its own pair of names, not one of them', () => {
+  assert.equal(areaKey({ bareGovernorate: 'الغربية', bareDistrict: 'طنطا' }), areaKey({ bareGovernorate: 'الغربية', bareDistrict: 'طنطا' }));
+  assert.notEqual(areaKey({ bareGovernorate: 'الغربية', bareDistrict: 'طنطا' }), areaKey({ bareGovernorate: 'المنوفية', bareDistrict: 'طنطا' }),
+    'two districts that share a name in two governorates are two areas');
+  assert.notEqual(areaKey({ bareGovernorate: 'الغربية', bareDistrict: 'طنطا' }), areaKey({ bareGovernorate: 'الغربية', bareDistrict: '' }),
+    'and the rows with no district typed are their own row, not a merge into the governorate');
 });

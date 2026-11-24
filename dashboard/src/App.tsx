@@ -551,6 +551,24 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
   const [passwordFor, setPasswordFor] = useState<{ id: string; name: string } | null>(null);
   const [passwordValue, setPasswordValue] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
+  // The area an engineer drives, corrected after the account exists. The customer book is grouped by
+  // place and handed out by place, so this one field is what makes «كل عملاء طنطا لمهندس طنطا» a
+  // proposal at all instead of a coincidence of names.
+  const [areaFor, setAreaFor] = useState<{ id: string; name: string; region: string } | null>(null);
+  const [areaValue, setAreaValue] = useState('');
+  const [savingArea, setSavingArea] = useState(false);
+  async function saveArea() {
+    if (!areaFor) return;
+    setSavingArea(true);
+    try {
+      await patch(`/api/reps/${areaFor.id}`, { region: areaValue.trim() });
+      setError('');
+      setAreaFor(null);
+      setAreaValue('');
+      onChange();
+    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تغيير المنطقة.'); }
+    finally { setSavingArea(false); }
+  }
   async function savePassword() {
     if (!passwordFor) return;
     if (passwordValue.trim().length < 10) { setError('كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.'); return; }
@@ -595,6 +613,11 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
   );
   const passwordButton = (rep: Rep) => (
     <button className="btn ghost sm" onClick={() => { setError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); }}>كلمة المرور</button>
+  );
+  const areaButton = (rep: Rep) => (
+    <button className="btn ghost sm" onClick={() => { setError(''); setAreaValue(rep.region || ''); setAreaFor({ id: rep.id, name: rep.name, region: rep.region || '' }); }}>
+      منطقته
+    </button>
   );
   const deviceButton = (rep: Rep) => (rep as any).deviceId ? (
     <button className="btn ghost sm" onClick={() => void resetDevice(rep)}>فك ربط الجهاز</button>
@@ -688,6 +711,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {deviceButton(rep)}
                   {passwordButton(rep)}
+                  {areaButton(rep)}
                   <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                   {deleteButton(rep)}
                 </span>
@@ -704,12 +728,32 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                     <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}{rep.active ? '' : ' · الحساب متوقف'}</small></span>
                     {deviceButton(rep)}
                     {passwordButton(rep)}
+                    {areaButton(rep)}
                     <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
                     {deleteButton(rep)}
                   </li>
                 ))}
               </ul>
             </>
+          )}
+          {areaFor && (
+            <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
+              <h4 className="panel-title">منطقة {areaFor.name}</h4>
+              <p className="muted small">
+                اكتب المحافظة أو المركز اللي بيسوق فيه — مثال: طنطا، أو الغربية. قايمعة العملاء بتتبني عليه:
+                العملاء اللي في نفس المنطقة هم اللي بيتعرضوا عليه، والربط نفسه ضغطتك أنت مش قرار السيرفر.
+              </p>
+              <div className="filters">
+                <label className="field inline">
+                  <span>المنطقة</span>
+                  <input maxLength={80} value={areaValue} placeholder="طنطا" onChange={event => setAreaValue(event.target.value)} />
+                </label>
+                <button className="btn primary sm" disabled={savingArea || areaValue.trim() === areaFor.region} onClick={() => void saveArea()}>
+                  {savingArea ? 'جارٍ الحفظ…' : 'حفظ'}
+                </button>
+                <button className="btn ghost sm" disabled={savingArea} onClick={() => { setAreaFor(null); setAreaValue(''); }}>إلغاء</button>
+              </div>
+            </div>
           )}
           {passwordFor && (
             <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>

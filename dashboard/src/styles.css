@@ -452,6 +452,20 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .kpi-table tbody tr:hover, .money-table tbody tr:hover { background: #f7fafc; }
 .kpi-table tfoot td, .money-table tfoot td { font-weight: 700; background: #f2f6fa; border-top: 2px solid var(--line); }
 .kpi-table td .dot, .money-table td .dot { display: inline-block; margin-inline-end: 6px; }
+/* The customer book read by area: the same grid as the KPI tables under its own name — `.kpi-table`
+   stays a unique handle on the pages that use it for the browser tests — and deliberately without the
+   900px floor, because this table carries a control inside a row and has to shrink with it. */
+.area-table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.area-table th, .area-table td { padding: 9px 8px; text-align: right; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.area-table thead th { background: var(--sky-100); color: var(--navy-800); font-weight: 700; white-space: nowrap; }
+.area-table tbody tr:hover { background: #f7fafc; }
+.area-table tbody tr td:last-child { white-space: nowrap; }
+.area-move { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid #d9e5ec; border-radius: 12px; background: #f7fafc; }
+.area-move .filters { margin: 0; }
+/* A checkbox with a sentence under it: the box stays on the label line, the explanation is allowed to
+   wrap — «اللي من غير مهندس بس» changes what a press does, so it has to be readable, not clipped. */
+.field.inline.checkbox { align-items: flex-start; }
+.field.inline.checkbox > small { display: block; margin-top: 2px; }
 .bar-cell { display: flex; align-items: center; gap: 8px; }
 .bar { flex: 1; min-width: 42px; height: 7px; border-radius: 999px; background: #e9eff5; overflow: hidden; }
 .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--sky-500), var(--gold-500)); border-radius: 999px; }

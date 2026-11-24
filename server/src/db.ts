@@ -118,7 +118,11 @@ export class Store {
       -- check-in be measured against where the customer actually is.
       CREATE TABLE IF NOT EXISTS customers (
         id TEXT PRIMARY KEY,
-        rep_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        -- Null means «the company's customer, not linked to an engineer yet». The office enters the
+        -- list first and hands it out afterwards — area by area — so a name typed in the office must
+        -- not be rejected because nobody had decided who owns it. ON DELETE SET NULL and not CASCADE:
+        -- a customer is an asset of the company, and an engineer leaving must not delete him.
+        rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
         name TEXT NOT NULL,
         phone TEXT NOT NULL DEFAULT '',
         governorate TEXT NOT NULL DEFAULT '',
@@ -133,6 +137,7 @@ export class Store {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS customers_rep_name ON customers(rep_id, name COLLATE NOCASE);
       CREATE INDEX IF NOT EXISTS customers_rep_active ON customers(rep_id, active);
+
       -- ---- Sales: the catalogue, the warehouses, the stock ledger, the invoices ----
       --
       -- These tables are the money record of the company, which changes what the schema has to
@@ -387,6 +392,77 @@ export class Store {
         CREATE INDEX IF NOT EXISTS locations_user_time ON locations(user_id, recorded_at);
         CREATE INDEX IF NOT EXISTS locations_recorded ON locations(recorded_at);
       `);
+    }
+    // One name per owner is the rule above. The rows with no owner — the company's own list — need the
+    // same rule on their own terms, and UNIQUE(rep_id, name) matches nothing there (NULL is never equal
+    // to NULL in SQLite). It is a lookup index and not a UNIQUE one, deliberately: a database-level
+    // rule would make deleting an engineer fail. His account going sets rep_id to NULL on every row he
+    // had, and if the office already typed one of those names itself, the unique index rejects the SET
+    // NULL — so a manager pressing «حذف الحساب» gets an error about a duplicate name, and the account
+    // stays half-deleted. Refusing a deletion is worse than a duplicate: the pair of rows is a thing a
+    // person can see and merge on the area screen, and the API checks the name on every write it owns.
+    // The office list is written from the dashboard, and both the create route and the area move ask
+    // the pool before they write.
+    this.db.exec('CREATE INDEX IF NOT EXISTS customers_unassigned_name ON customers(name) WHERE rep_id IS NULL');
+
+    // customers.rep_id used to be NOT NULL, which made «add the company's customers, link them later»
+    // impossible — the office could not type a name before deciding who owns it. SQLite cannot drop a
+    // NOT NULL in place, so the table is rebuilt and the rows are carried over.
+    // PRAGMA foreign_keys has to be OFF for the swap: with enforcement on, DROP TABLE on a parent runs
+    // every child's ON DELETE action — which would have set visits.customer_id and invoices.customer_id
+    // to NULL for the whole database, silently unlinking every recorded visit and invoice from the
+    // customer it belongs to. The pragma is per-connection and cannot change inside a transaction, so
+    // it is set outside one and restored even if the rebuild throws.
+    const customersSql = String(this.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='customers'")?.sql || '');
+    if (/rep_id\s+TEXT\s+NOT NULL/i.test(customersSql)) {
+      this.db.exec('PRAGMA foreign_keys = OFF');
+      try {
+        this.transaction(() => {
+          this.db.exec(`
+            CREATE TABLE customers_rebuilt (
+              id TEXT PRIMARY KEY,
+              rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+              name TEXT NOT NULL,
+              phone TEXT NOT NULL DEFAULT '',
+              governorate TEXT NOT NULL DEFAULT '',
+              district TEXT NOT NULL DEFAULT '',
+              village TEXT NOT NULL DEFAULT '',
+              notes TEXT NOT NULL DEFAULT '',
+              lat REAL, lng REAL,
+              stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','following','active','dormant','lost')),
+              lost_reason TEXT NOT NULL DEFAULT '',
+              active INTEGER NOT NULL DEFAULT 1,
+              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+            );
+            INSERT INTO customers_rebuilt
+              SELECT id, rep_id, name, phone, governorate, district, village, notes, lat, lng, stage, lost_reason, active, created_at, updated_at
+              FROM customers;
+            DROP TABLE customers;
+            ALTER TABLE customers_rebuilt RENAME TO customers;
+            CREATE INDEX IF NOT EXISTS customers_rep_active ON customers(rep_id, active);
+          `);
+          // The child tables keep their own text (`REFERENCES customers(id) ON DELETE SET NULL`), and
+          // the rename restores the name they point at. Verify rather than trust it: a rebuild that
+          // quietly broke those links is worse than the constraint it removed.
+          const broken = this.all('PRAGMA foreign_key_check') as Array<Record<string, any>>;
+          if (broken.length) throw new Error(`rebuilding customers broke ${broken.length} foreign key reference(s)`);
+          // A database older than the visits.customer_id / invoices.customer_id columns has nothing to
+          // re-point — those columns are added by migrations further down this list — so asking for them
+          // here would throw «no such column» on exactly the upgrade this block exists to serve.
+          for (const child of ['visits', 'invoices']) {
+            if (!this.all(`PRAGMA table_info(${child})`).some((col: any) => col.name === 'customer_id')) continue;
+            const orphaned = Number(this.get(`SELECT COUNT(*) AS c FROM ${child} WHERE customer_id IS NOT NULL
+              AND customer_id NOT IN (SELECT id FROM customers)`)?.c || 0);
+            if (orphaned) throw new Error(`rebuilding customers orphaned ${orphaned} row(s) of ${child}`);
+          }
+          // The rebuild drops the table's indexes with it, so put both back: the per-owner uniqueness
+          // rule that was there before, and the office list's lookup index next to it.
+          this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS customers_rep_name ON customers(rep_id, name COLLATE NOCASE)');
+          this.db.exec('CREATE INDEX IF NOT EXISTS customers_unassigned_name ON customers(name) WHERE rep_id IS NULL');
+        });
+      } finally {
+        this.db.exec('PRAGMA foreign_keys = ON');
+      }
     }
     // Every representative used to be created with the same default colour, so the live map
     // drew identical pins for the whole team. Give each one its own colour once; an explicit
