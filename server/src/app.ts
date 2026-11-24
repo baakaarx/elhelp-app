@@ -98,9 +98,38 @@ const startShiftSchema = z.object({
   deviceId: z.string().trim().min(3).max(120),
   deviceName: z.string().trim().max(120).optional().default(''),
 }).strict();
+/**
+ * The company's customer book. The office (manager and his sales team) enters it and decides who serves
+ * whom; an engineer's phone reads its own slice and cannot add to it. That asymmetry is the design:
+ * a name typed in the field is how one farm ends up as three customers and three numbers.
+ */
+const CUSTOMER_STAGES = ['new', 'following', 'active', 'dormant', 'lost'] as const;
+type CustomerStage = typeof CUSTOMER_STAGES[number];
+const customerFields = z.object({
+  name: z.string().trim().min(2, 'اسم العميل / المزرعة مطلوب.').max(120),
+  phone: z.string().trim().max(30).default(''),
+  // The two halves of «where he is» are what the list is divided by. Free text on purpose: the office
+  // types طنطا the same way it types المحلة, and the area workbench matches on it.
+  governorate: z.string().trim().max(80).default(''),
+  district: z.string().trim().max(80).default(''),
+  village: z.string().trim().max(120).default(''),
+  notes: z.string().trim().max(1000).default(''),
+  stage: z.enum(CUSTOMER_STAGES).default('new'),
+  lostReason: z.string().trim().max(300).default(''),
+});
+// repId is only meaningful on create. Null is a real answer — «the company's customer, not handed to
+// anybody yet» — and a wrong id is refused rather than quietly read as «nobody».
+const newCustomer = customerFields.extend({ repId: z.uuid('اختار المهندس من القايمعة، أو سيبه من غير مهندس يفضل عميل شركة.').nullable().optional() }).strict();
+const patchCustomer = customerFields.partial().extend({ active: z.boolean().optional() }).strict();
+/**
+ * A visit is booked against a row of the book, not a string. customerName stays accepted and is
+ * ignored: a phone that cached an old payload must not be refused for a cosmetic key, and the name on
+ * the row comes from the customer, so it cannot drift.
+ */
 const newVisit = z.object({
   id: z.uuid(),
-  customerName: z.string().trim().min(2, 'اسم العميل / المزرعة مطلوب.').max(120),
+  customerId: z.uuid('لازم تختار العميل من قايمعتك — الزيارة تتسجل على عميل من قايمعة الشركة.'),
+  customerName: z.string().trim().max(120).optional().default(''),
   governorate: z.string().trim().max(80).default(''),
   district: z.string().trim().max(80).default(''),
   village: z.string().trim().max(120).default(''),
@@ -401,7 +430,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   // A visit the system closed still shows the automatic text until the engineer writes the real
   // result. That comparison is the only thing standing between him and a lost record.
   const PENDING_RESULT_SQL = `(v.auto_closed=1 AND v.outcome='${AUTO_CLOSED_OUTCOME.replace(/'/g, "''")}')`;
-  const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.governorate, v.district,
+  const VISIT_SELECT = `SELECT v.id, v.user_id AS userId, v.customer_name AS customerName, v.customer_id AS customerId, v.governorate, v.district,
     v.village, v.phone, v.purpose, v.notes, v.outcome, v.status, v.checked_in_at AS checkedInAt,
     v.checked_out_at AS checkedOutAt, v.duration_seconds AS durationSeconds,
     v.auto_closed AS autoClosed, v.recorded_offline AS recordedOffline, ${PENDING_RESULT_SQL} AS pendingResult,
@@ -771,16 +800,31 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.status(201).json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', id)!) });
   });
   app.patch('/api/reps/:id', adminOnly, (req, res) => {
-    const parsed = z.object({ active: z.boolean() }).strict().safeParse(req.body);
+    // name and region join active: the customer book is divided by place, and «ده مهندس طنطا» is only a
+    // fact once somebody writes طنطا under his name. Being able to correct that without deleting the
+    // account is what makes the area workbench usable. Only the keys that were sent are written.
+    const parsed = z.object({
+      active: z.boolean().optional(),
+      name: z.string().trim().min(2, 'الاسم قصير.').max(80).optional(),
+      region: z.string().trim().max(80).optional(),
+    }).strict().refine(value => Object.keys(value).length > 0, { message: 'مفيش حاجة تتغير.' }).safeParse(req.body ?? {});
     const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
     if (!parsed.success || !user) { res.status(400).json({ error: 'بيانات المهندس أو الحالة غير صحيحة.' }); return; }
-    store.run('UPDATE users SET active=? WHERE id=?', Number(parsed.data.active), user.id);
-    if (!parsed.data.active) {
+    const sets: string[] = []; const params: Array<string | number> = [];
+    for (const key of ['name', 'region'] as const) {
+      const value = parsed.data[key];
+      if (value === undefined) continue;
+      sets.push(key + '=?'); params.push(value);
+    }
+    if (parsed.data.active !== undefined) { sets.push('active=?'); params.push(Number(parsed.data.active)); }
+    store.run('UPDATE users SET ' + sets.join(', ') + ' WHERE id=?', ...params, user.id);
+    if (parsed.data.active === false) {
       endShift(user.id);
       store.run('DELETE FROM sessions WHERE user_id=?', user.id);
       io.in(`user:${user.id}`).disconnectSockets(true);
     }
-    store.audit(res.locals.user.id, parsed.data.active ? 'rep.enable' : 'rep.disable', { repId: user.id });
+    store.audit(res.locals.user.id, parsed.data.active === undefined ? 'rep.update' : (parsed.data.active ? 'rep.enable' : 'rep.disable'),
+      { repId: user.id, fields: Object.keys(parsed.data) });
     invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
@@ -1026,6 +1070,348 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.json({ accepted, duplicates });
   });
   // ---- Field visits: check in / check out around a customer with GPS proof ----
+  /* ----------------------------------------------------------------------------- العملاء: قايمعة الشركة
+   *
+   * The book belongs to the office: the manager and his sales team enter it, and they are also the
+   * ones who decide which engineer serves which customer. The engineer's phone reads its own slice of
+   * it and records visits against it — it cannot add to it, because a name typed in the street is how
+   * one farm becomes three customers and three numbers.
+   *
+   * Nothing here moves a customer on its own. `users.region` matching an area is a text comparison and
+   * text is not a map, so it produces a proposal sitting next to a button, and a bulk move answers
+   * with a preview before it writes anything.
+   */
+  const CUSTOMER_SELECT = `SELECT c.*, u.name AS repName, u.color AS repColor,
+      (SELECT COUNT(*) FROM visits v WHERE v.customer_id=c.id) AS visitCount,
+      (SELECT MAX(v.checked_in_at) FROM visits v WHERE v.customer_id=c.id) AS lastVisitAt,
+      (SELECT COUNT(*) FROM visits v WHERE v.customer_id=c.id AND v.status='open') AS openVisits
+    FROM customers c LEFT JOIN users u ON u.id=c.rep_id`;
+  /** A row with no engineer is kept, not dropped: «من غير مهندس» is a state of the list, not an error. */
+  const asCustomer = (row: Record<string, any> | undefined) => (row ? {
+    id: row.id, repId: row.rep_id ?? null, name: row.name, phone: row.phone,
+    governorate: row.governorate, district: row.district, village: row.village, notes: row.notes,
+    stage: row.stage, lostReason: row.lost_reason, active: !!row.active,
+    createdAt: row.created_at, updatedAt: row.updated_at,
+    repName: row.repName ?? 'من غير مهندس', repColor: row.repColor ?? '#94a3b8',
+    visitCount: Number(row.visitCount || 0), lastVisitAt: row.lastVisitAt ?? null, openVisits: Number(row.openVisits || 0),
+  } : undefined);
+  const loadCustomer = (id: unknown) => store.get('SELECT * FROM customers WHERE id=?', String(id)) as Record<string, any> | undefined;
+  const findActiveRep = (id: unknown) => store.get("SELECT id, name FROM users WHERE id=? AND role='rep' AND active=1", String(id)) as { id: string; name: string } | undefined;
+
+  app.get('/api/customers', auth, (req, res) => {
+    const isAdmin = res.locals.user.role === 'admin';
+    const where: string[] = []; const params: any[] = [];
+    // An engineer never queries his way into a colleague's list; the office sees everyone's.
+    if (!isAdmin) { where.push('c.rep_id=?'); params.push(res.locals.user.id); }
+    else if (typeof req.query.repId === 'string' && req.query.repId) { where.push('c.rep_id=?'); params.push(req.query.repId); }
+    if (!isAdmin || req.query.includeInactive !== '1') where.push('c.active=1');
+    if (isAdmin && req.query.unassigned === '1') where.push('c.rep_id IS NULL');
+    for (const key of ['governorate', 'district'] as const) {
+      const value = typeof req.query[key] === 'string' ? String(req.query[key]).trim() : '';
+      if (isAdmin && value) { where.push(`c.${key}=?`); params.push(value); }
+    }
+    const stage = (CUSTOMER_STAGES as readonly string[]).includes(String(req.query.stage)) ? String(req.query.stage) : '';
+    if (stage) { where.push('c.stage=?'); params.push(stage); }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
+    if (q) { where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.village LIKE ? OR c.district LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 300));
+    const rows = store.all(`${CUSTOMER_SELECT} WHERE ${where.length ? where.join(' AND ') : '1=1'}
+      ORDER BY c.name COLLATE NOCASE LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ customers: rows.map(row => asCustomer(row)!) });
+  });
+
+  app.post('/api/customers', adminOnly, (req, res) => {
+    const parsed = newCustomer.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    let owner: { id: string; name: string } | undefined;
+    if (parsed.data.repId) {
+      owner = findActiveRep(parsed.data.repId);
+      if (!owner) { res.status(404).json({ error: 'المهندس غير موجود أو حسابه متوقف.' }); return; }
+    }
+    const name = String(parsed.data.name).trim();
+    // The office list has no UNIQUE index behind it on purpose (see customers_unassigned_name in
+    // db.ts: a unique one would make deleting an engineer fail), so its no-duplicate rule is asked
+    // here instead — this route is the only place a company customer is ever created.
+    if (!owner && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=?', name)) {
+      res.status(409).json({ error: `«${name}» موجود في قايمعة الشركة بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' }); return;
+    }
+    const now = Date.now();
+    const id = randomUUID();
+    try {
+      store.run(`INSERT INTO customers(id,rep_id,name,phone,governorate,district,village,notes,stage,lost_reason,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      id, owner?.id ?? null, name, parsed.data.phone, parsed.data.governorate, parsed.data.district, parsed.data.village,
+        parsed.data.notes, parsed.data.stage, parsed.data.lostReason, now, now);
+    } catch (error) {
+      // The index is the last word for a row that does have an owner, and a duplicated customer is a
+      // duplicated sales figure — so the answer says which list the name is already in.
+      if (String((error as Error).message).includes('UNIQUE')) {
+        res.status(409).json({ error: `«${name}» موجود في قايمتة ${owner ? owner.name : 'الشركة'} بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' });
+        return;
+      }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'customer.create', { customerId: id, repId: owner?.id ?? null, name });
+    res.status(201).json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, id)) });
+  });
+
+  /** The office edits the book; an engineer reads his slice of it and records visits on it. */
+  app.patch('/api/customers/:id', adminOnly, (req, res) => {
+    const current = loadCustomer(req.params.id);
+    if (!current) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
+    const parsed = patchCustomer.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
+      return;
+    }
+    // «مرفوض» without a reason is how a lost customer becomes nobody's mistake.
+    if (parsed.data.stage === 'lost' && !String(parsed.data.lostReason ?? current.lost_reason ?? '').trim()) {
+      res.status(400).json({ error: 'اكتب سبب رفض العميل قبل ما تقفله.', code: 'LOST_REASON_REQUIRED' }); return;
+    }
+    const merged = { ...current, ...parsed.data };
+    const name = String(merged.name).trim();
+    if (current.rep_id === null && name !== String(current.name).trim()
+      && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', name, current.id)) {
+      res.status(409).json({ error: `«${name}» موجود في قايمعة الشركة بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
+    }
+    try {
+      store.run(`UPDATE customers SET name=?, phone=?, governorate=?, district=?, village=?, notes=?, stage=?, lost_reason=?, active=?, updated_at=?
+        WHERE id=?`,
+      name, merged.phone ?? '', merged.governorate ?? '', merged.district ?? '', merged.village ?? '', merged.notes ?? '',
+        merged.stage, merged.lostReason ?? '', parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
+        Date.now(), current.id);
+    } catch (error) {
+      if (String((error as Error).message).includes('UNIQUE')) {
+        res.status(409).json({ error: `«${name}» موجود في قايمتة ${current.rep_id ? 'المهندس ده' : 'الشركة'} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
+        return;
+      }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'customer.update', { customerId: current.id, fields: Object.keys(parsed.data) });
+    invalidateKpis(); broadcast();
+    res.json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
+  });
+
+  /**
+   * Delete only while nothing was ever recorded on him. The moment a visit points at the row, deleting
+   * the customer takes his history with him — stopping him keeps both.
+   */
+  app.delete('/api/customers/:id', adminOnly, (req, res) => {
+    const current = loadCustomer(req.params.id);
+    if (!current) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
+    const visits = Number(store.get('SELECT COUNT(*) AS c FROM visits WHERE customer_id=?', current.id)?.c || 0);
+    if (visits) {
+      res.status(409).json({ error: `العميل عليه ${visits} زيارة — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, code: 'CUSTOMER_HAS_VISITS' });
+      return;
+    }
+    store.run('DELETE FROM customers WHERE id=?', current.id);
+    store.audit(res.locals.user.id, 'customer.delete', { name: current.name, repId: current.rep_id ?? null });
+    res.json({ ok: true });
+  });
+
+  /**
+   * One customer at a time — including back to the office list. Taking a customer off a man who left or
+   * who travels is the same move as handing him to a new one, and the office owns both directions.
+   */
+  app.post('/api/customers/:id/assign', adminOnly, (req, res) => {
+    const parsed = z.object({ repId: z.uuid('اختار المهندس، أو «من غير مهندس» لو العميل هيرجع قايمعة الشركة.').nullable() }).strict().safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'اختار المهندس.' }); return; }
+    const current = loadCustomer(req.params.id);
+    if (!current) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
+    const from = current.rep_id ?? null;
+    if (parsed.data.repId === null) {
+      if (from === null) { res.json({ ok: true, unchanged: true, customer: asCustomer(current) }); return; }
+      if (store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', current.name, current.id)) {
+        res.status(409).json({ error: `«${current.name}» موجود بالفعل في قايمعة الشركة — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
+      }
+      store.run('UPDATE customers SET rep_id=NULL, updated_at=? WHERE id=?', Date.now(), current.id);
+      store.audit(res.locals.user.id, 'customer.assign', { customerId: current.id, from, to: null });
+      res.json({ ok: true, customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
+      return;
+    }
+    const owner = findActiveRep(parsed.data.repId);
+    if (!owner) { res.status(404).json({ error: 'المهندس غير موجود أو حسابه متوقف.' }); return; }
+    if (from === owner.id) { res.json({ ok: true, unchanged: true, customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) }); return; }
+    // The receiving list is the one that has to be free of the name; saying «merge them first» is the
+    // only useful answer, because silently keeping two rows for one farm is what broke the numbers.
+    if (store.get('SELECT id FROM customers WHERE rep_id=? AND name COLLATE NOCASE=? AND id<>?', owner.id, current.name, current.id)) {
+      res.status(409).json({ error: `«${current.name}» موجود عند ${owner.name} بالفعل — ادمج العميلين قبل النقل.`, code: 'CUSTOMER_EXISTS' }); return;
+    }
+    store.run('UPDATE customers SET rep_id=?, updated_at=? WHERE id=?', owner.id, Date.now(), current.id);
+    store.audit(res.locals.user.id, 'customer.assign', { customerId: current.id, from, to: owner.id });
+    invalidateKpis(); broadcast();
+    res.json({ ok: true, customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
+  });
+
+  /* ------------------------------------------------------------------ المناطق: مين بيشيل فين
+   *
+   * The same list read by place instead of by person. This is the screen that answers «كل عملاء طنطا
+   * لمهندس طنطا» in one press, and the press is a review: the areas and the suggested engineer come
+   * from what the office typed, and a move has to be previewed before it happens.
+   */
+  /** طنطا = «مركز طنطا» = «الغربية / طنطا »: spaces, the article, and the prefix word are noise. */
+  const areaWord = (value: unknown) => {
+    let out = String(value ?? '').trim().replace(/\s+/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه');
+    // Peel «ال» twice: a doubled «الال» is a real typo in an autocomplete list, and one pass would
+    // leave «الغربية» and «غربية» as two different areas of one country.
+    for (let i = 0; i < 2; i += 1) out = out.replace(/^ال(?=[\p{L}]{2,})/u, '');
+    return out.toLowerCase();
+  };
+  const areaMatch = (left: unknown, right: unknown) => {
+    const a = areaWord(left); const b = areaWord(right);
+    if (a.length < 2 || b.length < 2) return false;
+    return a === b || a.includes(b) || b.includes(a);
+  };
+
+  app.get('/api/customers/areas', adminOnly, (_req, res) => {
+    const rows = store.all(`SELECT c.governorate AS governorate, c.district AS district,
+        COUNT(*) AS total,
+        SUM(CASE WHEN c.rep_id IS NULL THEN 1 ELSE 0 END) AS unassigned,
+        SUM(CASE WHEN c.active=0 THEN 1 ELSE 0 END) AS inactive,
+        SUM(CASE WHEN v.id IS NOT NULL THEN 1 ELSE 0 END) AS visited
+      FROM customers c
+      LEFT JOIN visits v ON v.customer_id=c.id
+      GROUP BY c.governorate, c.district
+      ORDER BY unassigned DESC, total DESC`) as Array<Record<string, any>>;
+    const ownerRows = store.all(`SELECT c.governorate AS governorate, c.district AS district, c.rep_id AS repId,
+        u.name AS repName, u.active AS repActive, COUNT(*) AS customers
+      FROM customers c JOIN users u ON u.id=c.rep_id
+      GROUP BY c.governorate, c.district, c.rep_id`) as Array<Record<string, any>>;
+    const engineers = store.all("SELECT id, name, region, color, active FROM users WHERE role='rep' ORDER BY active DESC, name COLLATE NOCASE") as Array<Record<string, any>>;
+    const sameArea = (row: Record<string, any>, area: { governorate: string; district: string }) =>
+      (!area.governorate || areaWord(row.governorate) === areaWord(area.governorate))
+      && (!area.district || areaWord(row.district) === areaWord(area.district));
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      areas: rows.map(row => {
+        const area = { governorate: String(row.governorate ?? ''), district: String(row.district ?? '') };
+        const owners = ownerRows.filter(item => sameArea(item, area))
+          .map(item => ({ repId: String(item.repId), repName: String(item.repName ?? ''), repActive: !!item.repActive, customers: Number(item.customers) }));
+        const suggested = engineers.find(item => Number(item.active) && (areaMatch(item.region, area.district) || areaMatch(item.region, area.governorate)));
+        return {
+          governorate: area.governorate || 'من غير محافظة',
+          district: area.district || 'من غير مركز',
+          // The move is sent with these, not with the display labels: an area row with no district
+          // typed is «district = » in the table, not «district = من غير مركز».
+          bareGovernorate: area.governorate, bareDistrict: area.district,
+          total: Number(row.total), unassigned: Number(row.unassigned), inactive: Number(row.inactive),
+          visited: Number(row.visited),
+          // One engineer holding every row here is an area that is done; split between two is the row
+          // the manager actually has to look at.
+          settled: owners.length > 0 && owners.every(item => item.repId === owners[0].repId),
+          owners,
+          suggestedRepId: suggested ? String(suggested.id) : null,
+          suggestedRepName: suggested ? String(suggested.name) : '',
+        };
+      }),
+      engineers: engineers.map(item => ({ id: String(item.id), name: String(item.name), region: String(item.region ?? ''), color: String(item.color ?? '#94a3b8'), active: !!item.active })),
+      totals: {
+        customers: Number(store.get('SELECT COUNT(*) AS c FROM customers')?.c || 0),
+        unassigned: Number(store.get('SELECT COUNT(*) AS c FROM customers WHERE rep_id IS NULL')?.c || 0),
+        areas: rows.length,
+      },
+    });
+  });
+
+  const assignArea = z.object({
+    governorate: z.string().trim().max(80).default(''),
+    district: z.string().trim().max(80).default(''),
+    repId: z.uuid('اختار المهندس، أو «قايمعة الشركة» لو عايز ترجّع المنطقة دي لها.').nullable(),
+    // The safe half by default: hand out the ones nobody owns, and leave a colleague's customer alone
+    // unless the manager said otherwise on purpose.
+    onlyUnassigned: z.boolean().default(true),
+    dryRun: z.boolean().default(false),
+  }).strict();
+
+  /** Hand a whole area to an engineer — or take it back to the company's list. */
+  app.post('/api/customers/assign-area', adminOnly, (req, res) => {
+    const parsed = assignArea.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات المنطقة غير صحيحة.' }); return; }
+    const { governorate, district, repId, onlyUnassigned, dryRun } = parsed.data;
+    if (!governorate && !district) {
+      res.status(400).json({ error: 'اختار المنطقة الأول — نقل قايمعة الشركة كلها مرة واحدة مش حاجة تتعمل بالغلط.', code: 'AREA_REQUIRED' });
+      return;
+    }
+    let owner: { id: string; name: string } | undefined;
+    if (repId) {
+      owner = findActiveRep(repId);
+      if (!owner) { res.status(404).json({ error: 'المهندس غير موجود أو حسابه متوقف.' }); return; }
+    }
+    // Back to the pool with «unassigned only» on is the same set on both sides of the move: it would
+    // report a change that changed nothing, so the switch to flip is named instead.
+    if (!repId && onlyUnassigned) {
+      res.status(409).json({ error: 'ترجعهم قايمعة الشركة وهم أصلًا من غير مهندس؟ اقفل «اللي من غير مهندس بس» لو عايز ترجّع عملاء مهندس.', code: 'NO_CHANGE' });
+      return;
+    }
+    const where: string[] = []; const params: any[] = [];
+    if (governorate) { where.push('governorate=?'); params.push(governorate); }
+    if (district) { where.push('district=?'); params.push(district); }
+    if (onlyUnassigned) where.push('rep_id IS NULL');
+    // The cap is there so a stray empty filter cannot rewrite the whole customer table in one press,
+    // and the answer says when it bit.
+    const AREA_LIMIT = 1000;
+    const targets = store.all(`SELECT id, name, rep_id AS repId FROM customers
+      WHERE ${where.join(' AND ')} ORDER BY name COLLATE NOCASE LIMIT ?`, ...params, AREA_LIMIT) as Array<{ id: string; name: string; repId: string | null }>;
+    if (!targets.length) {
+      res.status(409).json({ error: 'مافيش عملاء في المنطقة دي يطبّق عليهم النقل.', code: 'NO_CHANGE' });
+      return;
+    }
+    const pool = owner
+      ? store.all('SELECT id, name FROM customers WHERE rep_id=?', owner.id) as Array<{ id: string; name: string }>
+      : store.all('SELECT id, name FROM customers WHERE rep_id IS NULL') as Array<{ id: string; name: string }>;
+    const taken = new Map(pool.map(row => [String(row.name).trim().toLowerCase(), row.id]));
+    const conflicts: Array<{ id: string; name: string }> = [];
+    const moving: Array<{ id: string; name: string; fromRepId: string | null }> = [];
+    const queued = new Set<string>();
+    for (const row of targets) {
+      const key = String(row.name).trim().toLowerCase();
+      const holder = taken.get(key);
+      // Either the name already belongs to that owner, or two rows in this area carry one name and only
+      // one of them can land there. Either way the rest move, and the reason is in the answer.
+      if ((holder !== undefined && holder !== row.id) || queued.has(key)) { conflicts.push({ id: row.id, name: row.name }); continue; }
+      queued.add(key);
+      moving.push({ id: row.id, name: row.name, fromRepId: row.repId ?? null });
+    }
+    if (!dryRun && !moving.length && conflicts.length) {
+      // Everything matched but nothing can move is not a success, and it is not «nothing to do» either:
+      // the fix (merge the two rows) is a different job.
+      res.status(409).json({
+        error: `كل عملاء المنطقة دي مرفوضين بسبب تعارض اسم عند ${owner?.name || 'قايمعة الشركة'} — ادمج العميلين المتعارضين الأول.`,
+        code: 'CUSTOMER_EXISTS', conflicts,
+      });
+      return;
+    }
+    if (dryRun) {
+      res.json({ dryRun: true, governorate, district, repId: owner?.id ?? null, onlyUnassigned, matched: targets.length, wouldMove: moving.length, capped: targets.length === AREA_LIMIT, customers: moving, conflicts });
+      return;
+    }
+    const now = Date.now();
+    try {
+      store.transaction(() => {
+        for (const row of moving) store.run('UPDATE customers SET rep_id=?, updated_at=? WHERE id=?', owner?.id ?? null, now, row.id);
+      });
+    } catch (error) {
+      // The index has the last word, and the move is one transaction: whatever half of it was written
+      // is rolled back, and the name in the way is named instead of a stack trace.
+      if (String((error as Error).message).includes('UNIQUE')) {
+        res.status(409).json({ error: `«${moving[0]?.name || ''}» الاسم ده موجود عند ${owner?.name || 'قايمعة الشركة'} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
+        return;
+      }
+      throw error;
+    }
+    store.audit(res.locals.user.id, 'customer.assignArea', { governorate, district, repId: owner?.id ?? null, onlyUnassigned, moved: moving.length, conflicts: conflicts.length });
+    invalidateKpis(); broadcast();
+    res.json({
+      ok: true, governorate, district, repId: owner?.id ?? null, repName: owner?.name ?? '',
+      matched: targets.length, moved: moving.length, skipped: conflicts.length, capped: targets.length === AREA_LIMIT,
+      conflicts, customers: moving,
+    });
+  });
+
   app.post('/api/visits/check-in', repOnly, (req, res) => {
     const parsed = newVisit.safeParse(req.body);
     if (!parsed.success) {
@@ -1037,7 +1423,9 @@ export function createApp(overrides: Partial<Config> = {}) {
           code: 'GPS_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })),
         }); return;
       }
-      res.status(400).json({ error: 'راجع بيانات الزيارة: اسم العميل مطلوب.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
+      // The name is no longer something the phone types, so the message that used to ask for it has to
+      // say what is actually missing — otherwise an older build reading this text fixes the wrong field.
+      res.status(400).json({ error: 'اختار العميل من قايمعتك الأول — الزيارة ما تتسجلش على اسم مكتوب بإيدك.', code: 'CUSTOMER_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
     }
     if (req.body && typeof req.body.deviceId === 'string' && req.body.deviceId.trim().length >= 3) {
       const de = bindDevice(res.locals.user, String(req.body.deviceId).trim());
@@ -1093,16 +1481,39 @@ export function createApp(overrides: Partial<Config> = {}) {
      * can finish from the visits screen. Refusing it would silently delete a customer visit that
      * really happened.
      */
+    // The book is the only source of a customer's name: the visit is written with the name the office
+    // typed, so «محمود» on a phone and «مزرعة محمود» in the dashboard cannot become two ledgers for one
+    // farm. A replay of a visit that is already stored short-circuited above, so a queued visit is
+    // never refused because the office moved its customer in the meantime.
+    const customer = store.get('SELECT id, name, phone, governorate, district, village, active, rep_id AS repId FROM customers WHERE id=?', data.customerId) as Record<string, any> | undefined;
+    if (!customer) {
+      res.status(400).json({ error: 'العميل ده مش في قايمعة الشركة. اختار واحد موجود، أو اطلب من المكتب يضيفه.', code: 'CUSTOMER_NOT_FOUND' });
+      return;
+    }
+    if (customer.repId !== res.locals.user.id) {
+      // The engineer does not choose who he serves, and the phone is not asked to enforce that — the
+      // list it was given is already his, and this is where a hand-crafted request stops.
+      res.status(403).json({ error: 'العميل ده مش من قايمعتك — المكتب هو اللي بيحدد مين يخدم كل عميل.', code: 'CUSTOMER_NOT_YOURS' });
+      return;
+    }
+    if (!customer.active) {
+      res.status(409).json({ error: 'العميل متوقف. لو لازم يتزار، خلّي المكتب يرجّعه من شاشة العملاء.', code: 'CUSTOMER_INACTIVE' });
+      return;
+    }
+
     const closedOnArrival = Boolean(open);
-    store.run(`INSERT INTO visits(id,user_id,customer_name,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerName, data.governorate,
-      data.district, data.village, data.phone, data.purpose, data.notes,
+    store.run(`INSERT INTO visits(id,user_id,customer_name,customer_id,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, String(customer.name), customer.id,
+      // The address halves fall back to the row: the phone sends what its GPS resolved, and what it did
+      // not, the office already knows.
+      data.governorate || String(customer.governorate || ''), data.district || String(customer.district || ''),
+      data.village || String(customer.village || ''), data.phone || String(customer.phone || ''), data.purpose, data.notes,
       closedOnArrival ? 'closed' : 'open', checkedInAt, closedOnArrival ? checkedInAt : null,
       closedOnArrival ? 0 : null, closedOnArrival ? 1 : 0, offline ? 1 : 0,
       closedOnArrival ? AUTO_CLOSED_OUTCOME : '',
       data.location.lat, data.location.lng, data.location.accuracy ?? null, now);
     store.audit(res.locals.user.id, offline ? 'visit.check_in_offline' : 'visit.check_in',
-      { visitId: data.id, purpose: data.purpose, ...(offline ? { recordedAt: checkedInAt } : {}) });
+      { visitId: data.id, purpose: data.purpose, customerId: customer.id, ...(offline ? { recordedAt: checkedInAt } : {}) });
     io.to('admins').emit('visit', visitRow(data.id));
     invalidateKpis(); broadcast();
     res.status(201).json({ visit: visitRow(data.id), duplicate: false, ...(offline ? { recordedOffline: true } : {}) });

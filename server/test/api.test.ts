@@ -329,7 +329,7 @@ test('the KPI analysis task is gone from the assistant', async () => {
 
 test('collections made while checking out are counted in the KPI report', async () => {
   const open = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
-    id: crypto.randomUUID(), customerName: 'مزرعة التحصيل', purpose: 'collection',
+    id: crypto.randomUUID(), customerId: bookCustomer(store, repId, 'مزرعة التحصيل'), customerName: 'مزرعة التحصيل', purpose: 'collection',
     location: { lat: 31.2, lng: 29.9, accuracy: 8 }, deviceId: 'test-device-001',
   });
   assert.equal(open.status, 201, JSON.stringify(open.body));
@@ -507,7 +507,7 @@ let visitId = '';
 test('a visit check-in stores the customer and opens the visit', async () => {
   visitId = crypto.randomUUID();
   const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
-    id: visitId, customerName: 'مزرعة الزيارة', governorate: 'القاهرة', district: 'مدينة نصر', village: 'القرية',
+    id: visitId, customerId: bookCustomer(store, repId, 'مزرعة الزيارة'), customerName: 'مزرعة الزيارة', governorate: 'القاهرة', district: 'مدينة نصر', village: 'القرية',
     phone: '01000000009', purpose: 'visit', notes: 'اختبار', location: { lat: 31.21, lng: 29.92, accuracy: 7 },
   });
   assert.equal(res.status, 201, JSON.stringify(res.body));
@@ -518,7 +518,7 @@ test('a visit check-in stores the customer and opens the visit', async () => {
 });
 
 test('a second check-in is rejected while a visit is still open', async () => {
-  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id: crypto.randomUUID(), customerName: 'عميل تاني', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id: crypto.randomUUID(), customerId: bookCustomer(store, repId, 'عميل تاني'), customerName: 'عميل تاني', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   assert.equal(res.status, 409);
   assert.equal(res.body.openVisitId, visitId);
 });
@@ -545,7 +545,7 @@ test('checking out closes the visit with a measured duration', async () => {
 
 test('a collection checkout is mirrored into the manager reports feed', async () => {
   const id = crypto.randomUUID();
-  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerName: 'مؤسسة التحصيل', purpose: 'collection', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
+  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerId: bookCustomer(store, repId, 'مؤسسة التحصيل'), customerName: 'مؤسسة التحصيل', purpose: 'collection', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
   const out = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({ outcome: 'تحصيل نقدي', amount: 1250 });
   assert.equal(out.status, 200);
   const mirrored = store.get('SELECT * FROM reports WHERE id=?', `visit:${id}`);
@@ -995,6 +995,7 @@ test('a forged token does not buy a fresh rate-limit bucket', async () => {
 // ---- Distance filter: the rewrite must be bit-for-bit the same numbers ---------------------
 
 import { distanceMeters, haversine, type GeoPoint } from '../src/geo.js';
+import { bookCustomer } from './book.js';
 
 /** The original implementation, kept here as the reference the optimised one is checked against. */
 function referenceDistance(points: GeoPoint[]): number {
@@ -1225,7 +1226,7 @@ test("a representative's visit list is today's field log, not every visit ever",
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const older = crypto.randomUUID();
   const visit = await request(app).post('/api/visits/check-in').set(auth(engineer.token))
-    .send({ id: older, customerName: 'مزرعة الأمس', purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 9 } });
+    .send({ id: older, customerId: bookCustomer(store, engineer.id, 'مزرعة الأمس'), customerName: 'مزرعة الأمس', purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 9 } });
   assert.equal(visit.status, 201, JSON.stringify(visit.body));
   // Closed with a real result, so it is a finished visit of yesterday and not one of the two
   // exceptions the engineer's list legitimately carries (still open, or missing its result).

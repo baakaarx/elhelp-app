@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { tokenHash } from '../src/auth.js';
+import { bookCustomer, bookForToken } from './book.js';
 
 /**
  * A visit is a claim about being somewhere.
@@ -54,7 +55,7 @@ async function pushFix(token: string, shiftId: string, lat: number, lng: number,
 }
 async function checkIn(token: string, name: string, lat: number, lng: number) {
   const id = randomUUID();
-  const res = await client.post('/api/visits/check-in').set(auth(token)).send({ id, customerName: name, purpose: 'visit', location: { lat, lng, accuracy: 8 } });
+  const res = await client.post('/api/visits/check-in').set(auth(token)).send({ id, customerId: bookForToken(store, token, name), customerName: name, purpose: 'visit', location: { lat, lng, accuracy: 8 } });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return id;
 }
@@ -64,7 +65,7 @@ test('a visit cannot be checked in with a coarse network-location estimate', asy
   const rep = await makeRep('coarse');
   await openShift(rep);
   const res = await client.post('/api/visits/check-in').set(auth(rep.token)).send({
-    id: randomUUID(), customerName: 'مزرعة بإشارة ضعيفة', purpose: 'visit',
+    id: randomUUID(), customerId: bookCustomer(store, rep.id, 'مزرعة بإشارة ضعيفة'), customerName: 'مزرعة بإشارة ضعيفة', purpose: 'visit',
     location: { lat: 31.2, lng: 29.9, accuracy: 500 }, deviceId: rep.device,
   });
   assert.equal(res.status, 422);

@@ -5,6 +5,7 @@ import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { tokenHash } from '../src/auth.js';
 import { AUTO_CLOSED_OUTCOME } from '../src/db.js';
+import { bookForToken } from './book.js';
 
 /**
  * A visit typed where there is no signal.
@@ -57,8 +58,10 @@ async function openShiftSince(rep: { token: string; device: string }, startedAgo
   store.run('UPDATE shifts SET started_at=? WHERE id=?', Date.now() - startedAgo, shiftId);
   return shiftId;
 }
+// Every body here is a visit the office book has to recognise, and the row is looked up from the
+// token so the fixture stays one line: the payload of each test keeps describing its own case.
 const checkIn = (token: string, body: Record<string, unknown>) =>
-  client.post('/api/visits/check-in').set(auth(token)).send(body);
+  client.post('/api/visits/check-in').set(auth(token)).send({ customerId: bookForToken(store, token, String(body.customerName || 'عميل التجربة')), ...body });
 const visit = (token: string, id: string, body: Record<string, unknown>) =>
   client.post(`/api/visits/${id}/check-out`).set(auth(token)).send(body);
 

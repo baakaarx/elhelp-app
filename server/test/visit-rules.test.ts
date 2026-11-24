@@ -5,6 +5,7 @@ import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { hashPassword } from '../src/auth.js';
 import { localDate } from '../src/geo.js';
+import { bookCustomer } from './book.js';
 
 /**
  * Two rules that lived only in the client, checked against the server itself:
@@ -40,7 +41,7 @@ test('closing a visit without a result is refused by the server', async () => {
 
   const visitId = randomUUID();
   const checkIn = await client.post('/api/visits/check-in').set('Authorization', `Bearer ${token}`)
-    .send({ id: visitId, customerName: 'مزرعة القاعدة', purpose: 'visit', notes: '', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+    .send({ id: visitId, customerId: bookCustomer(store, repId, 'مزرعة القاعدة'), customerName: 'مزرعة القاعدة', purpose: 'visit', notes: '', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   assert.equal(checkIn.status, 201, JSON.stringify(checkIn.body));
 
   const empty = await client.post(`/api/visits/${visitId}/check-out`).set('Authorization', `Bearer ${token}`)
