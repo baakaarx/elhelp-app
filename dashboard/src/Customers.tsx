@@ -572,7 +572,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
                             {shown.wouldMove
                               ? <>هينقل <strong>{formatNumber(shown.wouldMove)}</strong> من {formatNumber(shown.matched)}{shown.conflicts.length ? `، و${formatNumber(shown.conflicts.length)} هيتخطّوا لأن الاسم موجود عند ${nameOf(repId)}` : ''}.</>
                               : <>مفيش حاجة تتنقل من هنا — {onlyUnassigned ? 'كل عملاء المنطقة دي ليهم مهندس بالفعل (شيل علامة «اللي من غير مهندس بس» لو عايز ترجّعهم قائمة الشركة).' : 'الأسماء كلها موجودة عند ' + nameOf(repId) + ' — ادمج العميلين المتعارضين الأول.'}</>}
-                            {shown.capped ? <em className="pill warn"> القايممة موقوفة عند ١٠٠٠ </em> : null}
+                            {shown.capped ? <em className="pill warn"> القائمة موقوفة عند ١٠٠٠ </em> : null}
                           </p>
                           {shown.conflicts.length > 0 && (
                             <p className="muted small">اللي هيتخطّوا: {shown.conflicts.map(item => item.name).join('، ')}</p>

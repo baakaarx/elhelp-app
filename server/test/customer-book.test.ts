@@ -82,7 +82,7 @@ test('one name per owner, and that owner only', async () => {
   const again = await book({ name: 'حاج محمد ', repId: aly.id });
   assert.equal(again.status, 409);
   assert.equal(again.body.code, 'CUSTOMER_EXISTS');
-  assert.match(again.body.error, /قايمتة علي حسن/, 'the answer says which list already has him');
+  assert.match(again.body.error, /قائمة علي حسن/, 'the answer says which list already has him');
 
   const other = await makeRep('ياسر منير');
   const inAnotherList = await book({ name: 'حاج محمد', repId: other.id });

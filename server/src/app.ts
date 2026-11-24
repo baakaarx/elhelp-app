@@ -1186,7 +1186,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       // The index is the last word for a row that does have an owner, and a duplicated customer is a
       // duplicated sales figure — so the answer says which list the name is already in.
       if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(409).json({ error: `«${name}» موجود في قايمتة ${owner ? owner.name : 'الشركة'} بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' });
+        res.status(409).json({ error: `«${name}» موجود في قائمة ${owner ? owner.name : 'الشركة'} بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' });
         return;
       }
       throw error;
@@ -1246,7 +1246,7 @@ export function createApp(overrides: Partial<Config> = {}) {
         Date.now(), current.id);
     } catch (error) {
       if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(409).json({ error: `«${name}» موجود في قايمتة ${current.rep_id ? 'المهندس ده' : 'الشركة'} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
+        res.status(409).json({ error: `«${name}» موجود في قائمة ${current.rep_id ? 'المهندس ده' : 'الشركة'} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
         return;
       }
       throw error;
