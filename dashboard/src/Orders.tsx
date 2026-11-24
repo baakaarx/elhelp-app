@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, post } from './api';
 import { dateTimeText } from './dates';
 import { ago, formatNumber } from './session';
@@ -71,12 +71,17 @@ const parsePrice = (text: string) => {
   const value = Number(normalized);
   return Number.isFinite(value) && value <= 1_000_000_000 ? value : null;
 };
+const quantity = (value: number) => value.toLocaleString('ar-EG', { maximumFractionDigits: 20 });
 const lineSummary = (order: OrderRow) => order.lines
-  .map(line => `${formatNumber(line.qty)} ${line.unit}${line.unitSize ? ` ${line.unitSize}` : ''} ${line.productName}`)
+  .map(line => `${quantity(line.qty)} ${line.unit}${line.unitSize ? ` ${line.unitSize}` : ''} ${line.productName}`)
   .join(' · ');
 
 export default function Orders({ timezone, version, onDone }: { timezone?: string; version: number; onDone: () => void }) {
   const [filter, setFilter] = useState<Filter>('sent');
+  const [offset, setOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const requestId = useRef(0);
+  const pageSize = 100;
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -86,17 +91,18 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
   const [busy, setBusy] = useState('');
 
   const load = useCallback(async () => {
+    const request = ++requestId.current;
     setError('');
     try {
-      const res = await api<{ orders: OrderRow[] }>(`/api/orders?${filter === 'all' ? '' : `status=${filter}&`}limit=100`);
-      setOrders(res.orders);
+      const res = await api<{ orders: OrderRow[]; hasMore: boolean }>(`/api/orders?${filter === 'all' ? '' : `status=${filter}&`}limit=${pageSize}&offset=${offset}`);
+      if (request === requestId.current) { setOrders(res.orders); setHasMore(res.hasMore); }
     } catch (e) {
-      setError(messageOf(e, 'تعذر تحميل الطلبيات.'));
+      if (request === requestId.current) setError(messageOf(e, 'تعذر تحميل الطلبيات.'));
     } finally {
-      setLoading(false);
+      if (request === requestId.current) setLoading(false);
     }
-  }, [filter]);
-  useEffect(() => { void load(); }, [load, version]);
+  }, [filter, offset]);
+  useEffect(() => { void load(); return () => { requestId.current++; }; }, [load, version]);
 
   const priceOf = useCallback((order: OrderRow, line: OrderLine) => {
     const typedValue = typed[order.id]?.[line.productId];
@@ -152,7 +158,7 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
             role="tab"
             aria-selected={filter === item.id}
             className={filter === item.id ? 'tab active' : 'tab'}
-            onClick={() => { setFilter(item.id); setLoading(true); }}
+            onClick={() => { if (filter !== item.id) { setOffset(0); setOpenId(''); setFilter(item.id); setLoading(true); } }}
           >
             {item.label}
           </button>
@@ -230,7 +236,7 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
                                 <span className="grow">
                                   <strong>{line.productName}</strong>
                                   <small className="muted">
-                                    {formatNumber(line.qty)} × {line.unit}{line.unitSize ? ` (${line.unitSize})` : ''}
+                                    {quantity(line.qty)} × {line.unit}{line.unitSize ? ` (${line.unitSize})` : ''}
                                     {line.notes ? ` · ${line.notes}` : ''}
                                   </small>
                                 </span>
@@ -273,9 +279,14 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
           </table>
         </div>
       )}
+      {(offset > 0 || hasMore) && <div className="confirm-pair" aria-label="صفحات الطلبيات">
+        <button className="btn ghost sm" disabled={loading || offset === 0} onClick={() => { setLoading(true); setOpenId(''); setOffset(Math.max(0, offset - pageSize)); }}>السابق</button>
+        <span className="muted small">صفحة {formatNumber(Math.floor(offset / pageSize) + 1)}</span>
+        <button className="btn ghost sm" disabled={loading || !hasMore} onClick={() => { setLoading(true); setOpenId(''); setOffset(offset + pageSize); }}>التالي</button>
+      </div>}
       <p className="muted small">
         مفيش سعر بيطلع للتليفون — اللي قدام المندوب هو الكمية وحالتها («اتبعتت» / «اتقفلت») وخلاص · ختم التسعير بيقفل الطلبية:
-        الرقم اتكتب في الدفتر مرة واحدة، والغلط بعده يتصلّح في الفاتورة مش هنا · الشارة فوق بتفضل منورة لحد ما آخر مستني يتقفل · التوقيت {timezone ?? 'Africa/Cairo'}.
+        الرقم اتكتب في الدفتر مرة واحدة، ولو في غلط بعده بلّغ المسؤول · الشارة فوق بتفضل منورة لحد ما آخر مستني يتقفل · التوقيت {timezone ?? 'Africa/Cairo'}.
       </p>
     </section>
   );

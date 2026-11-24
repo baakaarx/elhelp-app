@@ -455,6 +455,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
 function impactText(impact: RepImpact): string {
   const rows = [
     impact.visits ? `${formatNumber(impact.visits)} زيارة` : '',
+    impact.orders ? `${formatNumber(impact.orders)} طلبية` : '',
     impact.reports ? `${formatNumber(impact.reports)} تقرير ميدان` : '',
     impact.dailyReports ? `${formatNumber(impact.dailyReports)} تقرير يومي` : '',
     impact.locations ? `${formatNumber(impact.locations)} نقطة موقع` : '',
@@ -518,13 +519,17 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
    * rather than being guessed from the rows this page happens to hold — «امسح الحساب» and «امسح
    * سجله كله» are different requests, and only one of them is on offer here.
    */
-  const [impacts, setImpacts] = useState<Record<string, string>>({});
+  const [impacts, setImpacts] = useState<Record<string, { detail: string; ready: boolean }>>({});
+  const impactRequests = useRef<Record<string, number>>({});
   async function loadImpact(rep: Rep) {
+    const request = (impactRequests.current[rep.id] ?? 0) + 1;
+    impactRequests.current[rep.id] = request;
+    setImpacts(current => ({ ...current, [rep.id]: { detail: 'جارٍ حساب سجلات الحساب…', ready: false } }));
     try {
       const impact = await api<RepImpact>(`/api/reps/${rep.id}/impact`);
-      setImpacts(current => ({ ...current, [rep.id]: impactText(impact) }));
+      if (impactRequests.current[rep.id] === request) setImpacts(current => ({ ...current, [rep.id]: { detail: impactText(impact), ready: true } }));
     } catch {
-      setImpacts(current => ({ ...current, [rep.id]: 'تعذر حساب السجلات المرتبطة — الحذف يمسح الحساب وكل بياناته.' }));
+      if (impactRequests.current[rep.id] === request) setImpacts(current => ({ ...current, [rep.id]: { detail: 'تعذر حساب السجلات — ألغِ وجرب تاني.', ready: false } }));
     }
   }
   async function removeRep(rep: Rep) {
@@ -538,7 +543,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
   }
   const deleteButton = (rep: Rep) => (
     <ConfirmAction label="حذف الحساب" confirmLabel="تأكيد الحذف النهائي" busyLabel="جارٍ الحذف…"
-      detail={impacts[rep.id] ?? 'جارٍ حساب سجلات الحساب…'} onArm={() => void loadImpact(rep)}
+      detail={impacts[rep.id]?.detail || 'جارٍ حساب سجلات الحساب…'} confirmDisabled={!impacts[rep.id]?.ready} onArm={() => void loadImpact(rep)}
       onConfirm={() => removeRep(rep)} />
   );
   const passwordButton = (rep: Rep) => (

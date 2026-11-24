@@ -68,7 +68,7 @@ export interface FieldBundle {
   checkIn: (input: VisitInput) => Promise<void>;
   checkOut: (id: string, input: CheckOutInput) => Promise<void>;
   /** ابعث الطلبية — أو احفظها على الهاتف تبعت لوحدها، بنفس طابور الزيارة بالظبط. */
-  submitOrder: (input: OrderInput) => Promise<void>;
+  submitOrder: (input: OrderInput) => Promise<'sent' | 'queued'>;
 }
 
 /** Shown in the consent sheet when background tracking was asked for but cannot run. */
@@ -426,16 +426,14 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       } catch (e) {
         if ((e as { status?: number }).status !== 0) throw e;
         await enqueueOrder({ ...input, recordedAt: Date.now() }, user?.id);
+        setPending(value => value + 1);
         setOfflineNotice('الطلبية اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
-        const result = await flushOutbox(user?.id).catch(() => null);
-        if (result && mounted.current) {
-          setPending(result.pending);
-          setSyncNotice(result.notice ?? '');
-          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
-        }
-        return;
+        // The regular sync loop retries it. Return only after the durable write succeeds so the
+        // confirmation never says it was saved when the device storage was full.
+        return 'queued' as const;
       }
       await refresh();
+      return 'sent' as const;
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
   }, [refresh, user?.id]);

@@ -27,9 +27,9 @@ import { myOrders } from './api';
 const haptic = () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined); };
 const SCROLL_LIMIT = 12;
 
-type Line = { productId: string; qty: number };
+type Line = { productId: string; product: Product; qty: number };
 
-export default function OrderSheet({ visible, onClose, field, visit }: { visible: boolean; onClose: () => void; field: FieldBundle; visit?: Visit | null }) {
+export default function OrderSheet({ visible, onClose, field, visit, onSubmitted }: { visible: boolean; onClose: () => void; field: FieldBundle; visit?: Visit | null; onSubmitted: (result: 'sent' | 'queued') => void }) {
   const [customerId, setCustomerId] = useState('');
   const [search, setSearch] = useState('');
   const [productSearch, setProductSearch] = useState('');
@@ -50,7 +50,6 @@ export default function OrderSheet({ visible, onClose, field, visit }: { visible
     return products.filter(product => `${product.name} ${product.unit} ${product.unitSize}`.toLowerCase().includes(term));
   }, [products, productSearch]);
   const shown = matches.slice(0, SCROLL_LIMIT);
-  const totalQty = lines.reduce((sum, line) => sum + line.qty, 0);
 
   useEffect(() => {
     if (!visible) return;
@@ -71,14 +70,14 @@ export default function OrderSheet({ visible, onClose, field, visit }: { visible
     haptic();
     setLines(prev => {
       const at = prev.findIndex(line => line.productId === product.id);
-      if (at === -1) return [...prev, { productId: product.id, qty: 1 }];
-      return prev.map((line, index) => (index === at ? { ...line, qty: line.qty + 1 } : line));
+      if (at === -1) return [...prev, { productId: product.id, product, qty: 1 }];
+      return prev.map((line, index) => (index === at ? { ...line, qty: Math.min(100000, line.qty + 1) } : line));
     });
   };
   const bump = (productId: string, delta: number) => {
     haptic();
     setLines(prev => prev
-      .map(line => (line.productId === productId ? { ...line, qty: line.qty + delta } : line))
+      .map(line => (line.productId === productId ? { ...line, qty: Math.min(100000, line.qty + delta) } : line))
       .filter(line => line.qty > 0));
   };
 
@@ -86,22 +85,24 @@ export default function OrderSheet({ visible, onClose, field, visit }: { visible
     if (!selected) { setError('اختار العميل من قائمتك الأول — الطلبية بتتسجل على عميل من قائمة الشركة.'); return; }
     if (lines.length === 0) { setError('ضيف صنف واحد على الأقل — دوس + جنب اسمه.'); return; }
     if (lines.some(line => line.qty <= 0)) { setError('اكتب كمية أكبر من صفر لكل صنف.'); return; }
+    if (lines.some(line => !byProduct.has(line.productId))) { setError('في صنف مش موجود دلوقتي في القائمة — احذفه من الطلبية أو كلّم المكتب.'); return; }
     setSaving(true); setError('');
     try {
-      await field.submitOrder({
+      const result = await field.submitOrder({
         id: randomUUID(), customerId: selected.id, notes: notes.trim(),
         ...(visit?.customerId === selected.id ? { visitId: visit.id } : {}),
         lines: lines.map(line => ({ productId: line.productId, qty: line.qty })),
         send: true,
       });
       haptic();
+      onSubmitted(result);
       onClose();
     } catch (e) { setError((e as Error).message); }
     finally { setSaving(false); }
   }
 
   return (
-    <Sheet visible={visible} onClose={onClose} title="تسجيل طلبية">
+    <Sheet visible={visible} onClose={() => { if (!saving) onClose(); }} title="تسجيل طلبية">
       <View style={{ gap: 6 }}>
         <Text style={styles.label}>العميل من قائمتك *</Text>
         <CustomerPicker
@@ -115,12 +116,12 @@ export default function OrderSheet({ visible, onClose, field, visit }: { visible
 
       <View style={{ gap: 6 }}>
         <Text style={styles.label}>الأصناف — دوس + على كل صنف بيقدره العميل</Text>
-        {products.length === 0 ? (
+        {products.length === 0 && lines.length === 0 ? (
           <Empty
             title={field.productsLoading ? 'جارٍ تحميل الأصناف…' : 'مفيش أصناف في قائمة الشركة لسه'}
             hint={field.productsLoading
               ? 'لو الشبكة ضعيفة، آخر قائمة اتحمّلت هتفضل محفوظة.'
-              : 'التيم بيضيف الأصناف من الداشبورد — أول ما يضيفوها هتظهر هنا.'}
+              : field.productsNotice || 'التيم بيضيف الأصناف من الداشبورد — أول ما يضيفوها هتظهر هنا.'}
           />
         ) : (
           <>
@@ -128,13 +129,15 @@ export default function OrderSheet({ visible, onClose, field, visit }: { visible
             {lines.length > 0 && (
               <Card tone="mint" style={{ gap: 0 }}>
                 {lines.map((line, index) => {
-                  const product = byProduct.get(line.productId);
-                  if (!product) return null;
+                  const product = byProduct.get(line.productId) ?? line.product;
+                  const unavailable = !byProduct.has(line.productId);
                   return (
                     <View key={line.productId} style={[styles.lineRow, index > 0 && styles.lineBorder]}>
                       <View style={{ flex: 1, gap: 2 }}>
                         <Text style={styles.lineName}>{product.name}</Text>
                         <Text style={styles.linePack}>{packText(product)}</Text>
+                        {unavailable && <Text style={styles.error}>الصنف مش موجود دلوقتي — احذفه أو كلّم المكتب.</Text>}
+                        <Pressable onPress={() => setLines(prev => prev.filter(item => item.productId !== line.productId))} accessibilityRole="button" accessibilityLabel={`احذف ${product.name}`}><Text style={styles.notice}>حذف الصنف</Text></Pressable>
                       </View>
                       <View style={styles.stepper}>
                         <Pressable onPress={() => bump(line.productId, -1)} accessibilityRole="button" accessibilityLabel={`ناقص ${product.name}`} style={styles.stepBtn}>
@@ -158,7 +161,7 @@ export default function OrderSheet({ visible, onClose, field, visit }: { visible
                   );
                 })}
                 <View style={[styles.lineRow, styles.lineBorder]}>
-                  <Text style={styles.linePack}>مجموع الأصناف: {lines.length} · إجمالي الوحدات: {totalQty}</Text>
+                  <Text style={styles.linePack}>عدد الأصناف: {lines.length}</Text>
                 </View>
               </Card>
             )}
@@ -208,7 +211,7 @@ export default function OrderSheet({ visible, onClose, field, visit }: { visible
         الأسعار والتسعير عند المكتب وحده — اللي يوصلك هنا هو «اتقفلت» وخلاص. الكمية بتُعدّ بالوحدة المكتوبة تحت اسم الصنف (شيكارة / عبوة / جركن).
       </Body>
       <Body muted style={{ fontSize: 11.5 }}>
-        لو الشبكة قطعت، الطلبية بتتحفظ على الموبايل وبتتبعت لوحدها أول ما ترجع — متكررّش عليها من شاشة تانية.
+        لو الشبكة قطعت، الطلبية بتتحفظ على الموبايل وبتتحاول تلقائيًا لما ترجع. لو السيرفر رفضها هتظهر رسالة بالمشكلة — متكررّش الطلبية من شاشة تانية.
       </Body>
     </Sheet>
   );

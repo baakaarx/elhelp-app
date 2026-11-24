@@ -24,6 +24,7 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
   const [checkInOpen, setCheckInOpen] = useState(false);
   const [checkOutVisit, setCheckOutVisit] = useState<Visit | null>(null);
   const [orderOpen, setOrderOpen] = useState(false);
+  const [orderMessage, setOrderMessage] = useState('');
   const [orderVisit, setOrderVisit] = useState<Visit | null>(null);
 
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
@@ -111,6 +112,11 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
           <ActionTile icon="₪" label="تسجيل طلبية" hint="كميات على العميل" onPress={() => { setOrderVisit(null); setOrderOpen(true); }} />
         </View>
 
+        {orderMessage ? <Card tone="mint"><Row style={{ justifyContent: 'space-between' }}>
+          <Text style={{ flex: 1, color: colors.green900 }}>{orderMessage}</Text>
+          <Pressable onPress={() => setOrderMessage('')} accessibilityRole="button" accessibilityLabel="إخفاء رسالة الطلبية"><Text style={styles.link}>إخفاء</Text></Pressable>
+        </Row></Card> : null}
+
         <Card>
           <SectionTitle title="آخر الزيارات" action={<Pressable onPress={onOpenVisits}><Text style={styles.link}>الكل</Text></Pressable>} />
           {(field.visits.length === 0) ? (
@@ -152,7 +158,8 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
         error={field.error}
       />
       <CheckInSheet visible={checkInOpen} onClose={() => setCheckInOpen(false)} field={field} user={user} />
-      <OrderSheet visible={orderOpen} onClose={() => setOrderOpen(false)} field={field} visit={orderVisit} />
+      <OrderSheet visible={orderOpen} onClose={() => setOrderOpen(false)} field={field} visit={orderVisit}
+        onSubmitted={result => setOrderMessage(result === 'queued' ? 'الطلبية اتحفظت على الموبايل وهتتزامن لما الشبكة ترجع.' : 'الطلبية وصلت للمكتب وبقت مستنية التسعير.')} />
       <CheckOutSheet visit={checkOutVisit} onClose={() => setCheckOutVisit(null)} field={field} />
     </>
   );

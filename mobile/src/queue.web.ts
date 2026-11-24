@@ -69,6 +69,10 @@ export async function createQueue(): Promise<Outbox> {
       // Reports first: see queue.native.ts — a GPS backlog must not starve them.
       return [...items.filter(item => item.kind !== 'location'), ...items.filter(item => item.kind === 'location')].slice(0, limit);
     },
+    async listForReplay(locationLimit = 200) {
+      const items = read().sort((a, b) => a.createdAt - b.createdAt);
+      return [...items.filter(item => item.kind !== 'location'), ...items.filter(item => item.kind === 'location').slice(0, locationLimit)];
+    },
     async remove(key: string) { write(read().filter(item => item.key !== key)); },
     async bump(key: string) { write(read().map(item => (item.key === key ? { ...item, attempts: item.attempts + 1 } : item))); },
     async reject(key: string) { write(read().map(item => (item.key === key ? { ...item, rejected: true } : item))); },

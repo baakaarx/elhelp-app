@@ -257,3 +257,52 @@ test('an order outlives the GPS trail it was written in', async () => {
   assert.equal(survivor.visitId, null, 'it only stops pointing at a row that is gone');
   assert.equal(survivor.status, 'sent', 'and the office still has to price it');
 });
+
+test('drafts are private and cannot be sent after the customer is moved or an item is stopped', async () => {
+  const customer = await bookCustomer(repA.id, `عميل مسودة ${randomUUID().slice(0, 8)}`);
+  const product = await makeProduct(`صنف مسودة ${randomUUID().slice(0, 8)}`, 'عبوة', null);
+  const draft = await createOrder(repA, { customerId: customer, send: false, lines: [{ productId: product, qty: 1 }] });
+  assert.equal(draft.status, 201);
+  const id = draft.body.order.id as string;
+  const office = await client.get('/api/orders?status=draft').set(admin);
+  assert.equal(office.status, 200);
+  assert.ok(!office.body.orders.some((row: any) => row.id === id));
+  assert.ok((await client.get('/api/orders?status=draft').set(repA.auth)).body.orders.some((row: any) => row.id === id));
+  assert.equal((await client.patch(`/api/products/${product}`).set(admin).send({ active: false })).status, 200);
+  const stopped = await client.post(`/api/orders/${id}/send`).set(repA.auth).send({});
+  assert.equal(stopped.status, 400);
+  assert.equal(stopped.body.code, 'ORDER_LINES');
+  assert.equal((await client.patch(`/api/products/${product}`).set(admin).send({ active: true })).status, 200);
+  assert.equal((await client.post(`/api/customers/${customer}/assign`).set(admin).send({ repId: repB.id })).status, 200);
+  const moved = await client.post(`/api/orders/${id}/send`).set(repA.auth).send({});
+  assert.equal(moved.status, 403);
+  assert.equal(moved.body.code, 'CUSTOMER_NOT_YOURS');
+  assert.equal(store.get('SELECT status FROM orders WHERE id=?', id)?.status, 'draft');
+});
+
+test('orders reject malformed pagination and the office can page through its queue', async () => {
+  for (const query of ['limit=1.5', 'limit=0', 'limit=Infinity', 'offset=-1', 'status=nope']) {
+    const result = await client.get(`/api/orders?${query}`).set(admin);
+    assert.equal(result.status, 400, `${query}: ${JSON.stringify(result.body)}`);
+  }
+  const one = await client.get('/api/orders?status=sent&limit=1&offset=0').set(admin);
+  const two = await client.get('/api/orders?status=sent&limit=1&offset=1').set(admin);
+  assert.equal(one.status, 200);
+  assert.equal(one.body.hasMore, true);
+  assert.equal(two.status, 200);
+  assert.notEqual(one.body.orders[0].id, two.body.orders[0].id);
+  assert.ok(one.body.orders[0].sentAt <= two.body.orders[0].sentAt);
+});
+
+test('the deletion impact names orders before removing an engineer', async () => {
+  const rep = await makeRep(`مهندس حذف ${randomUUID().slice(0, 8)}`);
+  const customer = await bookCustomer(rep.id, `عميل حذف ${randomUUID().slice(0, 8)}`);
+  const order = await createOrder(rep, { customerId: customer });
+  assert.equal(order.status, 201);
+  const impact = await client.get(`/api/reps/${rep.id}/impact`).set(admin);
+  assert.equal(impact.body.orders, 1);
+  const deleted = await client.delete(`/api/reps/${rep.id}`).set(admin).send({ confirm: true });
+  assert.equal(deleted.status, 200);
+  assert.equal(deleted.body.removed.orders, 1);
+  assert.equal(store.get('SELECT id FROM orders WHERE id=?', order.body.order.id), undefined);
+});

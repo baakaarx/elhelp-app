@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from 'react';
  */
 export const ARM_WINDOW_MS = 10_000;
 
-export default function ConfirmAction({ label, confirmLabel, detail, onArm, onConfirm, className = 'btn ghost sm', busyLabel = 'جارٍ الحذف…' }: {
+export default function ConfirmAction({ label, confirmLabel, detail, onArm, onConfirm, confirmDisabled = false, className = 'btn ghost sm', busyLabel = 'جارٍ الحذف…' }: {
   label: string;
   confirmLabel: string;
   /** What is about to be deleted, in words. Shown while the button is armed. */
@@ -23,6 +23,7 @@ export default function ConfirmAction({ label, confirmLabel, detail, onArm, onCo
   /** Called on the first press — fetch the impact, if there is one to fetch. */
   onArm?: () => void;
   onConfirm: () => Promise<void>;
+  confirmDisabled?: boolean;
   className?: string;
   busyLabel?: string;
 }) {
@@ -51,13 +52,13 @@ export default function ConfirmAction({ label, confirmLabel, detail, onArm, onCo
       {armed ? (
         <span className="confirm-pair">
           {detail ? <small className="muted" role="status">{detail}</small> : null}
-          <button type="button" className="btn danger sm" disabled={busy} onClick={() => void run()}>
+          <button type="button" className="btn danger sm" disabled={busy || confirmDisabled} onClick={() => void run()}>
             {busy ? busyLabel : confirmLabel}
           </button>
           <button type="button" className="btn ghost sm" disabled={busy} onClick={disarm}>إلغاء</button>
         </span>
       ) : (
-        <button type="button" className={className} onClick={arm}>{label}</button>
+        <button type="button" className={className} disabled={busy} onClick={arm}>{label}</button>
       )}
     </>
   );

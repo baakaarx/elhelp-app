@@ -225,10 +225,18 @@ check('the alert feed says so before anyone refreshes', alertsAfterSend.some(row
 const draftOrder = await post('/api/orders', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, lines: [{ productId: orderProductId, qty: 1 }], send: false }, 'rep');
 check('a draft the engineer keeps is nobody\'s business but his', draftOrder.status === 201 && draftOrder.body?.order?.status === 'draft');
 const draftId = String(draftOrder.body?.order?.id || '');
+const officeDrafts = await get('/api/orders?status=draft', admin);
+check('the office does not see the engineer’s unfinished drafts', officeDrafts.status === 200 && !officeDrafts.body?.orders?.some(row => row.id === draftId));
+check('a malformed page size is answered, not a server crash', (await get('/api/orders?limit=1.5', rep, 'rep')).status === 400);
+await patch(`/api/products/${orderProductId}`, admin, { active: false });
+check('a draft cannot be sent with an item the office has stopped', (await post(`/api/orders/${draftId}/send`, rep, {}, 'rep')).status === 400);
+await patch(`/api/products/${orderProductId}`, admin, { active: true });
 check('and while it waits, he may rewrite it', (await patch(`/api/orders/${draftId}`, rep, { notes: 'اتغيرت الكمية', lines: [{ productId: orderProductId, qty: 2 }] }, 'rep')).status === 200);
 const sentDraft = await post(`/api/orders/${draftId}/send`, rep, {}, 'rep');
 check('until he sends it — then the office owns it', sentDraft.status === 200 && sentDraft.body?.order?.status === 'sent');
 check('a sent order refuses its author\'s pen', (await patch(`/api/orders/${draftId}`, rep, { notes: 'غيّرت رأيي' }, 'rep')).status === 409);
+const orderImpact = await get(`/api/reps/${repId}/impact`, admin);
+check('the deletion warning counts the engineer’s orders', Number(orderImpact.body?.orders) >= 2);
 check('the office cannot price half a sheet and stamp it closed', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [] })).status === 400);
 check('a number that contradicts the buyer type it claims is asked about, not guessed at', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 700, tierId: orderTierId }] })).status === 400);
 const priced = await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 750, tierId: orderTierId }] });

@@ -121,7 +121,7 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
     const pendingOrders = await queue.count('order');
     return { sent: 0, pending: pendingBefore, pendingVisits, pendingOrders, notice: ownership.notice, blockedByOwner: true };
   }
-  const items = await queue.list(200);
+  const items = await queue.listForReplay(200);
   const replay = await replayOutboxActions(items, queue, {
     checkIn: checkInVisit,
     checkOut: checkOutVisit,

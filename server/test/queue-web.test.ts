@@ -137,3 +137,22 @@ test('offline orders survive reading and reloading the web queue', async () => {
   assert.equal(items[0].kind, 'order');
   assert.deepEqual(JSON.parse(items[0].payload), order);
 });
+
+
+test('rejected actions cannot starve later work while visit dependencies stay in order', async () => {
+  store.clear();
+  const queue = await createQueue();
+  for (let i = 0; i < 205; i++) {
+    await queue.add('visit-checkin', { id: `rejected-${i}` });
+    await queue.reject(`rejected-${i}`);
+  }
+  await queue.add('visit-checkout', { id: 'checkout:rejected-0', visitId: 'rejected-0', body: {} });
+  await queue.add('order', { id: 'independent-order' });
+  await queue.add('location', { id: 'gps' });
+  const items = await queue.listForReplay(1);
+  assert.equal(items.length, 208);
+  assert.equal(items[0].key, 'rejected-0');
+  assert.ok(items.findIndex(item => item.key === 'checkout:rejected-0') > 0);
+  assert.ok(items.some(item => item.key === 'independent-order'));
+  assert.equal(items.at(-1)?.key, 'gps');
+});

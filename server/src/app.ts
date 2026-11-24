@@ -924,6 +924,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       locations: count('SELECT COUNT(*) AS c FROM locations WHERE user_id=?', user.id),
       visits: count('SELECT COUNT(*) AS c FROM visits WHERE user_id=?', user.id),
       openVisits: count("SELECT COUNT(*) AS c FROM visits WHERE user_id=? AND status='open'", user.id),
+      orders: count('SELECT COUNT(*) AS c FROM orders WHERE user_id=?', user.id),
       reports: count('SELECT COUNT(*) AS c FROM reports WHERE user_id=?', user.id),
       dailyReports: count('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=?', user.id),
       idleReports: count('SELECT COUNT(*) AS c FROM idle_reports WHERE user_id=?', user.id),
@@ -960,6 +961,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const removed = {
       shifts: Number(store.get('SELECT COUNT(*) AS c FROM shifts WHERE user_id=?', user.id)?.c || 0),
       visits: Number(store.get('SELECT COUNT(*) AS c FROM visits WHERE user_id=?', user.id)?.c || 0),
+      orders: Number(store.get('SELECT COUNT(*) AS c FROM orders WHERE user_id=?', user.id)?.c || 0),
       reports: Number(store.get('SELECT COUNT(*) AS c FROM reports WHERE user_id=?', user.id)?.c || 0),
       dailyReports: Number(store.get('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=?', user.id)?.c || 0),
     };
@@ -2190,7 +2192,10 @@ export function createApp(overrides: Partial<Config> = {}) {
       // The unique indexes have the last word (one line per item, one id per order); a race against
       // itself arrives as a duplicate the office can price, not as a crash.
       if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(200).json({ order: orderRow(data.id, 'rep'), duplicate: true }); return;
+        const saved = store.get('SELECT user_id AS userId FROM orders WHERE id=?', data.id) as { userId: string } | undefined;
+        if (saved?.userId === res.locals.user.id) {
+          res.status(200).json({ order: orderRow(data.id, 'rep'), duplicate: true }); return;
+        }
       }
       throw error;
     }
@@ -2238,6 +2243,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!order || order.userId !== res.locals.user.id) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
     // A replayed send of an order that is already in the queue did its job the first time.
     if (order.status !== 'draft') { res.json({ order: orderRow(order.id, 'rep'), duplicate: true }); return; }
+    // A draft may have waited while the office moved its customer or stopped an item.
+    // Apply the same rules as a new sent order before it becomes the office's work.
+    const draft = store.get('SELECT customer_id AS customerId FROM orders WHERE id=?', order.id) as { customerId: string };
+    const gate = orderCustomerGate(res.locals.user.id, draft.customerId);
+    if ('error' in gate) { res.status(gate.status ?? 400).json({ error: gate.error, code: gate.code }); return; }
+    const draftLines = orderLineRows(order.id, false) as Array<{ productId: string; qty: number; notes: string }>;
+    const validLines = resolveOrderLines(draftLines);
+    if ('error' in validLines) { res.status(400).json({ error: validLines.error, code: 'ORDER_LINES' }); return; }
     const now = Date.now();
     let sentAt = now;
     let offline = false;
@@ -2262,11 +2275,24 @@ export function createApp(overrides: Partial<Config> = {}) {
     const isAdmin = res.locals.user.role === 'admin';
     const where: string[] = []; const params: any[] = [];
     if (!isAdmin) { where.push('o.user_id=?'); params.push(res.locals.user.id); }
-    const status = ['draft', 'sent', 'priced'].includes(String(req.query.status)) ? String(req.query.status) : '';
+    // Drafts belong to the engineer until he sends them; the office never sees unfinished work.
+    if (isAdmin) where.push("o.status<>'draft'");
+    const status = req.query.status === undefined ? '' : String(req.query.status);
+    if (status && !['draft', 'sent', 'priced'].includes(status)) { res.status(400).json({ error: 'حالة الطلبية غير صحيحة.' }); return; }
     if (status) { where.push('o.status=?'); params.push(status); }
     if (isAdmin && typeof req.query.repId === 'string' && req.query.repId) { where.push('o.user_id=?'); params.push(String(req.query.repId)); }
-    const limit = Math.min(300, Math.max(1, Number(req.query.limit) || 100));
-    const rows = store.all(`${ORDER_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY o.created_at DESC LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+    const rawLimit = req.query.limit === undefined ? '100' : String(req.query.limit);
+    const rawOffset = req.query.offset === undefined ? '0' : String(req.query.offset);
+    if (!/^\d{1,6}$/.test(rawLimit) || Number(rawLimit) < 1 || !/^\d{1,9}$/.test(rawOffset)) {
+      res.status(400).json({ error: 'عدد الطلبيات أو رقم الصفحة غير صحيح.' }); return;
+    }
+    const limit = Math.min(300, Number(rawLimit));
+    const offset = Number(rawOffset);
+    // Oldest sent orders first so a busy office never starves the oldest request.
+    const sort = isAdmin && status === 'sent' ? 'o.sent_at ASC, o.id ASC' : 'o.created_at DESC, o.id DESC';
+    const rows = store.all(`${ORDER_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY ${sort} LIMIT ? OFFSET ?`, ...params, limit + 1, offset) as Array<Record<string, any>>;
+    const hasMore = rows.length > limit;
+    if (hasMore) rows.pop();
     res.setHeader('Cache-Control', 'private, no-store');
     const orders = rows.map(row => {
       const shaped = orderRow(String(row.id), isAdmin ? 'office' : 'rep')!;
@@ -2281,7 +2307,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
       return shaped;
     });
-    res.json({ orders });
+    res.json({ orders, hasMore });
   });
 
   /**
@@ -2295,7 +2321,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const order = store.get(`SELECT o.id, o.status, o.customer_id AS customerId, c.price_tier_id AS customerTierId, c.name AS customerName
       FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`, String(req.params.id)) as Record<string, any> | undefined;
     if (!order) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
-    if (order.status === 'priced') { res.status(409).json({ error: 'الطلبية متسعّرة ومقفولة — الرقم اتكتب في الدفتر مرة واحدة. الغلط ده يتصلّح في الفاتورة، مش هنا.', code: 'ORDER_PRICED' }); return; }
+    if (order.status === 'priced') { res.status(409).json({ error: 'الطلبية متسعّرة ومقفولة — الرقم اتكتب في الدفتر مرة واحدة. لو فيها غلط، بلّغ المسؤول.', code: 'ORDER_PRICED' }); return; }
     if (order.status !== 'sent') { res.status(409).json({ error: 'الطلبية لسه ما اتبعتتش من الميدان.', code: 'ORDER_NOT_SENT' }); return; }
     const stored = orderLineRows(order.id, false);
     const byProduct = new Map(parsed.data.lines.map(line => [line.productId, line]));
@@ -2353,6 +2379,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!visit) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
     store.run('DELETE FROM visits WHERE id=?', visit.id);
     store.audit(res.locals.user.id, 'visit.delete', { visitId: visit.id, repId: visit.userId, status: visit.status });
+    io.to('admins').emit('visit', { id: visit.id, deleted: true });
     invalidateKpis(); broadcast();
     res.json({ ok: true, visit: { id: visit.id, userId: visit.userId, customerName: visit.customerName } });
   });

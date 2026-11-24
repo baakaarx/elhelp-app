@@ -316,6 +316,7 @@ export interface RepImpact {
   locations: number;
   visits: number;
   openVisits: number;
+  orders: number;
   reports: number;
   dailyReports: number;
   idleReports: number;

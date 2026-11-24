@@ -91,7 +91,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
   function askConfirmDelete() {
     Alert.alert(
       'حذف الحساب نهائيًا',
-      'هيتحذف حسابك وكل بياناتك: الموقع، الورديات، الزيارات، والتقارير. الخطوة دي مش ممكن التراجع عنها.',
+      'هيتحذف حسابك وكل بياناتك: الموقع، الورديات، الزيارات، الطلبيات، والتقارير القديمة. الخطوة دي مش ممكن التراجع عنها.',
       [
         { text: 'إلغاء', style: 'cancel' },
         { text: 'حذف نهائي', style: 'destructive', onPress: () => void eraseAccount() },
@@ -231,7 +231,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       <Card>
         <SectionTitle title="حذف الحساب" action={<Pill label="نهائي" tone="warn" />} />
         <Body muted>
-          حذف الحساب يمسح كل بياناتك من السيرفر فورًا (الموقع، الورديات، الزيارات، التقارير) ويلغي كل الجلسات.
+          حذف الحساب يمسح كل بياناتك من السيرفر فورًا (الموقع، الورديات، الزيارات، الطلبيات، التقارير القديمة) ويلغي كل الجلسات.
           اكتب بريدك للتأكيد، أو راسل مسؤول الخصوصية لو محتاج مساعدة.
         </Body>
         <TextInput

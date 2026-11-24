@@ -40,6 +40,16 @@ export async function createQueue(): Promise<Outbox> {
          ORDER BY ${OUTBOX_ORDER_BY_SQL} LIMIT ?`, limit);
       return rows.map(row => ({ key: row.key, kind: row.kind as OutboxKind, payload: row.payload, createdAt: row.created_at, attempts: row.attempts, rejected: row.rejected === 1 }));
     },
+    async listForReplay(locationLimit = 200) {
+      // Keep rejected check-ins in the same ordered action stream as their dependent check-outs
+      // and orders. A fixed overall limit lets rejected rows block all later work forever.
+      const query = (where: string, ...params: number[]) => db.getAllSync<{ key: string; kind: string; payload: string; created_at: number; attempts: number; rejected: number }>(
+        `SELECT key,kind,payload,created_at,attempts,rejected FROM outbox WHERE ${where} ORDER BY created_at, rowid`, ...params);
+      const actions = query("kind<>'location'");
+      const points = db.getAllSync<{ key: string; kind: string; payload: string; created_at: number; attempts: number; rejected: number }>(
+        "SELECT key,kind,payload,created_at,attempts,rejected FROM outbox WHERE kind='location' ORDER BY created_at, rowid LIMIT ?", locationLimit);
+      return [...actions, ...points].map(row => ({ key: row.key, kind: row.kind as OutboxKind, payload: row.payload, createdAt: row.created_at, attempts: row.attempts, rejected: row.rejected === 1 }));
+    },
     async remove(key: string) { db.runSync('DELETE FROM outbox WHERE key=?', key); },
     async bump(key: string) { db.runSync('UPDATE outbox SET attempts=attempts+1 WHERE key=?', key); },
     async reject(key: string) { db.runSync('UPDATE outbox SET rejected=1 WHERE key=?', key); },

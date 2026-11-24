@@ -30,6 +30,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   expect(result.status()).toBe(201);
   const body = await result.json();
   expect(body.order.status).toBe('sent');
+  await expect(page.getByText('الطلبية وصلت للمكتب وبقت مستنية التسعير.')).toBeVisible();
   expect(body.order.lines[0].qty).toBe(3);
   expect(body.order.lines[0]).not.toHaveProperty('price');
   expect(body.order).not.toHaveProperty('total');

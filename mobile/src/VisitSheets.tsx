@@ -65,7 +65,7 @@ export function CustomerPicker({ field, selected, search, onSearch, onSelect }: 
         title={field.customersLoading ? 'جارٍ تحميل قائمتك…' : 'مفيش عملاء في قائمتك'}
         hint={field.customersLoading
           ? 'لو الشبكة ضعيفة، آخر قائمة اتحمّلت هتفضل محفوظة.'
-          : 'مدير المبيعات هو اللي بيضيف العملاء في قائمة الشركة وبيحدد مين يخدم كل عميل. اطلب منه يضيفك لهم، وبعدها ارجع هنا.'}
+          : field.customersNotice || 'مدير المبيعات هو اللي بيضيف العملاء في قائمة الشركة وبيحدد مين يخدم كل عميل. اطلب منه يضيفك لهم، وبعدها ارجع هنا.'}
       />
     );
   }
@@ -179,7 +179,7 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
   useEffect(() => { setOutcome(''); setNotes(''); setAmount(''); setError(''); }, [visit?.id]);
 
   if (!visit) return null;
-  const isMoney = visit.purpose === 'collection' || visit.purpose === 'order';
+  const isMoney = visit.purpose === 'collection';
   // A visit the system closed (the shift ended, or the phone died) never got its result. The
   // same sheet records it now — the row is already closed, so only the text and the amount go.
   const late = visit.status === 'closed' && Boolean(visit.pendingResult || visit.autoClosed);
