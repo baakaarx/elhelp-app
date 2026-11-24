@@ -12,8 +12,8 @@ export const AUTO_CLOSED_OUTCOME = 'أُغلقت تلقائيًا: انتهت ا
 /**
  * The hourly sweep, and the reason it may fail.
  *
- * `cleanup` runs unattended at three in the morning inside a timer: a full disk, a lock held past
- * `busy_timeout`, or a corrupt index makes it throw — and an exception inside a timer is an
+ * cleanup runs unattended at three in the morning inside a timer: a full disk, a lock held past
+ * busy_timeout, or a corrupt index makes it throw — and an exception inside a timer is an
  * uncaught exception, so Node exits and the whole installation goes dark until someone notices.
  * Losing one sweep costs nothing (the next one is an hour later); losing the process costs the
  * manager the day's trail. So the error is logged and the server keeps serving.
@@ -103,12 +103,54 @@ export class Store {
       CREATE INDEX IF NOT EXISTS daily_reports_date ON daily_reports(report_date);
       CREATE INDEX IF NOT EXISTS daily_reports_time ON daily_reports(created_at);
       CREATE INDEX IF NOT EXISTS daily_report_visits_report ON daily_report_visits(report_id, position);
+      -- ---- The company's customer book ---------------------------------------------------------
+      -- Master data of the sales office: the manager and his team enter it from the dashboard, and an
+      -- engineer never adds a customer from his phone. rep_id is the man the office handed him to,
+      -- and it is deliberately nullable — a name the office typed before deciding who drives that
+      -- area is a real customer, not a half-row waiting for an owner. ON DELETE SET NULL and not
+      -- CASCADE: an engineer leaving the company must not delete his customers, they are the
+      -- company's, and they come back to the unassigned pool to be handed out again.
+      -- One name per owner is enforced by the unique index below (a duplicated customer is a duplicated
+      -- sales figure); the unassigned pool gets the same rule checked in the API instead of an index,
+      -- because a UNIQUE index over rep_id IS NULL would make deleting an engineer fail — his rows
+      -- land in that pool on their way out, and a collision there is a fact to merge, not an error.
+      -- This table is deliberately absent from Store.cleanup(): it is the list, not the log, and
+      -- RETENTION_DAYS must not sweep it.
+      CREATE TABLE IF NOT EXISTS customers (
+        id TEXT PRIMARY KEY,
+        rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL DEFAULT '',
+        governorate TEXT NOT NULL DEFAULT '',
+        district TEXT NOT NULL DEFAULT '',
+        village TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        -- Where the relationship stands. «lost» without a reason is how a refused customer becomes
+        -- nobody's mistake, so the reason is required by the route, not by a CHECK.
+        stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','following','active','dormant','lost')),
+        lost_reason TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS customers_rep_name ON customers(rep_id, name COLLATE NOCASE);
+      CREATE INDEX IF NOT EXISTS customers_rep_active ON customers(rep_id, active, name COLLATE NOCASE);
+      -- The office splits the list by place — «عملاء طنطا لمهندس طنطا» — so an area is a lookup path of
+      -- its own here, not a filter people scroll past.
+      CREATE INDEX IF NOT EXISTS customers_area ON customers(governorate, district, active);
+
       -- Field visits: a rep checks in at a customer, then checks out. The pair is the
       -- auditable record used by the manager timeline and the daily KPIs.
       CREATE TABLE IF NOT EXISTS visits (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        -- The name as it was written on the day. It is copied from the chosen customer rather than
+        -- typed by hand, so the row keeps telling the truth after the office renames the farm — and an
+        -- older visit, whose name was typed freely, still reads the same as it did.
         customer_name TEXT NOT NULL,
+        -- Which row of the company's customer book this visit belongs to. Nullable because the visits
+        -- recorded before the book existed have no row to point at, and rewriting them by name would be
+        -- a guess: «محمود» and «محمود عبد الله» are not proof of one man.
+        customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
         governorate TEXT NOT NULL DEFAULT '',
         district TEXT NOT NULL DEFAULT '',
         village TEXT NOT NULL DEFAULT '',
@@ -219,7 +261,13 @@ export class Store {
       "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE visits ADD COLUMN recorded_offline INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE visits ADD COLUMN customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL",
     ]) { try { this.db.exec(sql); } catch {} }
+    // The index on that column is created here and not up in the schema block, and the order is the
+    // whole point: on a database that already has visits, the CREATE TABLE is skipped, so the column
+    // only exists after the ALTER above. Asking SQLite to index a column that is not there yet is not
+    // a warning — the server fails to start, on every install that existed before this table.
+    try { this.db.exec('CREATE INDEX IF NOT EXISTS visits_customer ON visits(customer_id)'); } catch {}
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
   all(sql: string, ...params: any[]): Row[] { return this.db.prepare(sql).all(...params) as Row[]; }
