@@ -114,7 +114,7 @@ if (orphans.length) {
   for (const name of orphans) console.log(`   ${name}: ${rowsOf(name)} صف`);
 }
 if (junkTiers.length) {
-  console.log(`\nprice_tiers: في ${junkTiers.length} صف من غير اسم (الراوت ما يكتبهمش) — هيتتمسح عشان القايمعة تتبني تاني:`);
+  console.log(`\nprice_tiers: في ${junkTiers.length} صف من غير اسم (الراوت ما يكتبهمش) — هيتتمسح عشان القائمة تتبني تاني:`);
   for (const row of junkTiers) console.log(`   «${row.name}» (id=${String(row.id).slice(0, 8)}…)`);
 }
 if (dragged.length) {
@@ -189,4 +189,4 @@ console.log('الكود الحالي هيبني ترابيزاته لوحده أ
 const rePointed = [...dragged, ...draggedAfterRename];
 if (rePointed.length) console.log(`ورجّعت ${rePointed.length} ترابيزة تشير للأسماء الجديدة بدل النسخة القديمة: ${rePointed.map(item => item.table).join(', ')} — بنفس عدد الصفوف.`);
 if (draggedAfterRename.length) console.log(`${draggedAfterRename.map(item => item.table).join(', ')} اتسحبت وهي بتترمم في نفس الشغلة — مش محتاج تعيد السكربت.`);
-if (junkTiers.length) console.log('قايمعة الأنواع فاضية ⇒ جملة/نصف جملة/تجزئة ترجع أول إقلاع.');
+if (junkTiers.length) console.log('قائمة الأنواع فاضية ⇒ جملة/نصف جملة/تجزئة ترجع أول إقلاع.');

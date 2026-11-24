@@ -6,7 +6,7 @@ import { productCategoryLabels } from './types';
 import type { PriceTier, Product, ProductCategory } from './types';
 
 /**
- * قايمعة الأصناف والأسعار — المكتب بيكتبها من هنا، والمهندس بيقرأها من تليفونه.
+ * قائمة الأصناف والأسعار — المكتب بيكتبها من هنا، والمهندس بيقرأها من تليفونه.
  *
  * The rule the whole screen is built around is what a price is attached to: a price belongs to a pack,
  * not to a product. That is why every price header says «سعر الوحدة», why each cell carries a title
@@ -62,7 +62,7 @@ export default function Products({ timezone }: { timezone?: string }) {
       setTiers(kinds.tiers);
       setError('');
     } catch (e) {
-      setError(messageOf(e, 'تعذر تحميل قايمعة الأصناف.'));
+      setError(messageOf(e, 'تعذر تحميل قائمة الأصناف.'));
     } finally {
       setLoading(false);
     }
@@ -196,7 +196,7 @@ export default function Products({ timezone }: { timezone?: string }) {
     <section className="page">
       <header className="page-head">
         <div>
-          <h2>قايمعة الأصناف والأسعار</h2>
+          <h2>قائمة الأصناف والأسعار</h2>
           <p className="muted">
             المكتب بيكتب الأصناف وأنواع المشترين وسعر كل عبوة. تليفون المهندس بيشوف الاسم والعبوة وبس — التسعير بيتقرّر هنا.
           </p>
@@ -252,7 +252,7 @@ export default function Products({ timezone }: { timezone?: string }) {
 
       {editing && (
         <form className="panel" onSubmit={save}>
-          <h3 className="panel-title">{editing === 'new' ? 'صنف جديد في قايمعة الأصناف' : `تعديل: ${editing.name}`}</h3>
+          <h3 className="panel-title">{editing === 'new' ? 'صنف جديد في قائمة الأصناف' : `تعديل: ${editing.name}`}</h3>
           <div className="filters">
             <label className="field inline">
               <span>اسم الصنف</span>
@@ -296,14 +296,14 @@ export default function Products({ timezone }: { timezone?: string }) {
         <h3 className="panel-title">الأصناف · {formatNumber(products.length)}</h3>
         {tiers.length === 0 && (
           <p className="error banner" role="alert">
-            مفيش نوع مشترٍ أصلًا، فقايمعة الأسعار ملهاش عمود. الأصناف تقدر تضيفها دلوقتي، والسعر يتكتب أول ما تضيف نوع تحت («جملة» مثلًا).
+            مفيش نوع مشترٍ أصلًا، فقائمة الأسعار ملهاش عمود. الأصناف تقدر تضيفها دلوقتي، والسعر يتكتب أول ما تضيف نوع تحت («جملة» مثلًا).
           </p>
         )}
         {products.length === 0 && !loading ? (
           <p className="empty">
             {filters.q || filters.category || filters.unpricedOnly
               ? 'مفيش أصناف بالفلاتر دي — امسح الفلاتر أو ضيف صنف جديد.'
-              : 'قايمعة الأصناف فاضية. أول صنف يتضاف من زرار «صنف جديد» فوق، وبعدين يتسعّر في الأعمدة.'}
+              : 'قائمة الأصناف فاضية. أول صنف يتضاف من زرار «صنف جديد» فوق، وبعدين يتسعّر في الأعمدة.'}
           </p>
         ) : (
           <>
@@ -390,7 +390,7 @@ export default function Products({ timezone }: { timezone?: string }) {
 }
 
 /**
- * أنواع المشترين: راس قايمعة الأسعار.
+ * أنواع المشترين: راس قائمة الأسعار.
  *
  * The office names these and orders them. Nothing here is derived from a region or from what a customer
  * bought last, because «جملة» is a commercial decision and not an inference. Two refusals are the point of
@@ -411,7 +411,7 @@ function TiersPanel({ tiers, onDone }: { tiers: PriceTier[]; onDone: () => void 
     event.preventDefault();
     const trimmed = name.trim();
     if (trimmed.length < 2) { setError('اكتب اسم نوع السعر — «جملة»، «نصف جملة»، «تجزئة»…'); return; }
-    if (position.trim() && !Number.isFinite(Number(position))) { setError('الترتيب رقم، أو سيبه فاضي يتحط في آخر القايمعة.'); return; }
+    if (position.trim() && !Number.isFinite(Number(position))) { setError('الترتيب رقم، أو سيبه فاضي يتحط في آخر القائمة.'); return; }
     setSaving(true);
     setError('');
     setNote('');
@@ -465,12 +465,12 @@ function TiersPanel({ tiers, onDone }: { tiers: PriceTier[]; onDone: () => void 
     <div className="panel">
       <h3 className="panel-title">أنواع المشترين · {formatNumber(tiers.filter(tier => tier.active).length)} شغال</h3>
       <p className="muted small">
-        دول راس قايمعة الأسعار: كل نوع عمود في الجدول فوق. الترتيب = إزاي تتقرأ القايمعة (الأكثر شراءً على الشمال)، مش ترتيب ألفبائي.
+        دول راس قائمة الأسعار: كل نوع عمود في الجدول فوق. الترتيب = إزاي تتقرأ القائمة (الأكثر شراءً على الشمال)، مش ترتيب ألفبائي.
       </p>
       {error && <p className="error" role="alert">{error}</p>}
       {note && <p className="small ok-text">{note}</p>}
       {tiers.length === 0 ? (
-        <p className="empty">مفيش أنواع — ضيف «جملة» تحت عشان قايمعة الأسعار يبقى لها عمود.</p>
+        <p className="empty">مفيش أنواع — ضيف «جملة» تحت عشان قائمة الأسعار يبقى لها عمود.</p>
       ) : (
         <div className="kpi-table-wrap tiers-table">
           <table className="kpi-table">
@@ -539,7 +539,7 @@ function TiersPanel({ tiers, onDone }: { tiers: PriceTier[]; onDone: () => void 
         <button className="btn primary sm" type="submit" disabled={saving}>{saving ? 'جارٍ الحفظ…' : 'ضيف'}</button>
       </form>
       <p className="muted small">
-        نوع موقوف = لسه عمود في القايمعة (عشان تعرف تمسح اللي تحته) بس ما بيتختارشش لعميل جديد، وسعره محفوظ ليرجع · نوع عليه أسعار ما يتحذفش (الحذف يمسح الأسعار) · آخر نوع شغال ما يتقفلش.
+        نوع موقوف = لسه عمود في القائمة (عشان تعرف تمسح اللي تحته) بس ما بيتختارشش لعميل جديد، وسعره محفوظ ليرجع · نوع عليه أسعار ما يتحذفش (الحذف يمسح الأسعار) · آخر نوع شغال ما يتقفلش.
       </p>
     </div>
   );

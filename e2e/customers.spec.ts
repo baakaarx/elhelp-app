@@ -17,17 +17,24 @@ async function openCustomers(page: Page) {
   await signInAsManager(page);
   await page.locator('button.nav-item').filter({ hasText: 'العملاء' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'العملاء' })).toBeVisible();
-  await expect(page.getByRole('heading', { level: 2, name: 'قايمعة العملاء' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'قائمة العملاء' })).toBeVisible();
 }
 /** The two tables on the screen carry their own class, so a locator cannot land on the wrong one. */
 const rows = (page: Page): Locator => page.locator('.customers-table tbody tr');
+/**
+ * The engineer cell is the picker itself, so the row's text now contains every engineer's name as a choice.
+ * Reading «who owns this customer» off the row would pass for any answer; it is read off the selected
+ * option instead, which is the one thing the screen is actually claiming.
+ */
+const ownerOf = (row: Locator): Locator => row.locator('select.rowpick option:checked');
+const ownerPicker = (row: Locator): Locator => row.locator('select.rowpick');
 const areaRow = (page: Page, district: string): Locator =>
   page.locator('.area-table tbody tr').filter({ hasText: district });
 
-test.describe('قايمعة عملاء الشركة', () => {
+test.describe('قائمة عملاء الشركة', () => {
   test('the book shows the customers the office entered, with the visits the field recorded', async ({ page }) => {
     await openCustomers(page);
-    await expect(rows(page).filter({ hasText: 'مزرعة النور' })).toContainText('أحمد حسن');
+    await expect(ownerOf(rows(page).filter({ hasText: 'مزرعة النور' }))).toHaveText('أحمد حسن');
     await expect(rows(page).filter({ hasText: 'مزرعة النور' })).toContainText('جديد');
     await expect(rows(page).filter({ hasText: 'مزرعة النور' })).toContainText('01000000000');
     await expect(page.getByText('توزيع العملاء على المناطق')).toBeVisible();
@@ -45,13 +52,33 @@ test.describe('قايمعة عملاء الشركة', () => {
 
     await expect(rows(page).filter({ hasText: unique })).toBeVisible();
     // Not attached to anybody: a real state of the list, so it must be readable and not hidden.
-    await expect(rows(page).filter({ hasText: unique })).toContainText('من غير مهندس');
+    await expect(ownerOf(rows(page).filter({ hasText: unique }))).toHaveText(/من غير مهندس/);
 
     await page.getByRole('button', { name: 'عميل جديد' }).click();
     await page.locator('form.panel').getByLabel('اسم العميل / المزرعة').fill(unique);
     await page.locator('form.panel').getByRole('button', { name: 'حفظ' }).click();
-    await expect(page.locator('form.panel').getByRole('alert')).toContainText('قايمعة الشركة');
+    await expect(page.locator('form.panel').getByRole('alert')).toContainText('قائمة الشركة');
     await expect(rows(page).filter({ hasText: unique })).toHaveCount(1);
+  });
+
+  test('the row hands a customer to an engineer by itself — no window, no save button', async ({ page }) => {
+    await openCustomers(page);
+    const name = `عميل ربط ${Date.now().toString().slice(-6)}`;
+    await page.getByRole('button', { name: 'عميل جديد' }).click();
+    const form = page.locator('form.panel');
+    await form.getByLabel('اسم العميل / المزرعة').fill(name);
+    await form.getByRole('button', { name: 'حفظ' }).click();
+
+    const row = rows(page).filter({ hasText: name });
+    // Entered a second ago and owned by nobody: the picker's value is the empty one, not a string that
+    // happens to read as «unassigned».
+    await expect(ownerPicker(row)).toHaveValue('');
+    await ownerPicker(row).selectOption({ label: 'مصطفى كامل' });
+    // Nothing was clicked after that. The list reloads from the server, so what reads back is the answer
+    // the POST produced — the same read-back the manager sees, not a widget left showing a choice.
+    await expect(ownerOf(row)).toHaveText('مصطفى كامل');
+    await ownerPicker(row).selectOption({ label: 'من غير مهندس (قائمة الشركة)' });
+    await expect(ownerPicker(row)).toHaveValue('');
   });
 
   test('the area workbench previews the move, then hands the area to the engineer', async ({ page }) => {
@@ -74,7 +101,7 @@ test.describe('قايمعة عملاء الشركة', () => {
     await row.getByRole('button', { name: /تأكيد النقل/ }).click();
     await expect(row.getByText('اتنقلوا')).toBeVisible();
 
-    await expect(rows(page).filter({ hasText: unique })).toContainText('مصطفى كامل');
+    await expect(ownerOf(rows(page).filter({ hasText: unique }))).toHaveText('مصطفى كامل');
   });
 
   test('an engineer without a region gets one, and the area starts proposing him', async ({ page }) => {

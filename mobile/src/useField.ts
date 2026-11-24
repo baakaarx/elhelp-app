@@ -52,7 +52,7 @@ export interface FieldBundle {
   /** Called when the check-in sheet opens, and once when a shift starts (the moment we know there is signal). */
   loadCustomers: () => Promise<void>;
   /**
-   * قايمعة الأصناف، بنفس طريقة التحزين اللي فوق: آخر نسخة ناجحة في الذاكرة علشان «إحنا بنبيع العبوة دي
+   * قائمة الأصناف، بنفس طريقة التحزين اللي فوق: آخر نسخة ناجحة في الذاكرة علشان «إحنا بنبيع العبوة دي
    * ولا لأ» يتقال في الميدان من غير شبكة. الأسعار مش هنا أصلًا — السيرفر ما بيبعتش `prices` لجلسة مهندس.
    */
   products: Product[];
@@ -186,8 +186,8 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       // Answering an unreachable server with an empty list would tell the engineer he has no
       // customers, when the office gave him twenty. Keep the last good copy and say it is not fresh.
       setCustomersNotice(customersRef.current.length
-        ? 'القايمة المعروضة من آخر اتصال — لو المكتب ضاف عميل أو نقل واحد، هتظهر أول ما الشبكة ترجع.'
-        : `تعذر تحميل قايمعة العملاء. ${(e as Error).message || ''}`.trim());
+        ? 'القائمة المعروضة من آخر اتصال — لو المكتب ضاف عميل أو نقل واحد، هتظهر أول ما الشبكة ترجع.'
+        : `تعذر تحميل قائمة العملاء. ${(e as Error).message || ''}`.trim());
     } finally {
       if (mounted.current) setCustomersLoading(false);
     }
@@ -215,8 +215,8 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       const status = (e as { status?: number }).status ?? 0;
       if (status === 401) { onSessionExpired(); return; }
       setProductsNotice(productsRef.current.length
-        ? 'القايمعة المعروضة من آخر اتصال — أي صنف جديد يضيفه المكتب هيظهر أول ما الشبكة ترجع.'
-        : `تعذر تحميل قايمعة الأصناف. ${(e as Error).message || ''}`.trim());
+        ? 'القائمة المعروضة من آخر اتصال — أي صنف جديد يضيفه المكتب هيظهر أول ما الشبكة ترجع.'
+        : `تعذر تحميل قائمة الأصناف. ${(e as Error).message || ''}`.trim());
     } finally {
       if (mounted.current) setProductsLoading(false);
     }

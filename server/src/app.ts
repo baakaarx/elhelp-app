@@ -120,10 +120,10 @@ const customerFields = z.object({
 // repId is only meaningful on create. Null is a real answer — «the company's customer, not handed to
 // anybody yet» — and a wrong id is refused rather than quietly read as «nobody».
 const newCustomer = customerFields.extend({
-  repId: z.uuid('اختار المهندس من القايمعة، أو سيبه من غير مهندس يفضل عميل شركة.').nullable().optional(),
+  repId: z.uuid('اختار المهندس من القائمة، أو سيبه من غير مهندس يفضل عميل شركة.').nullable().optional(),
   // Which column of the price list he buys at. Null is «nobody decided», which is not the same as a
   // default rate: an order for such a customer is priced by hand, and the invoice keeps what was chosen.
-  priceTierId: z.uuid('اختار نوع السعر من القايمعة، أو سيبه من غير تحديد يتسعّر باليد.').nullable().optional(),
+  priceTierId: z.uuid('اختار نوع السعر من القائمة، أو سيبه من غير تحديد يتسعّر باليد.').nullable().optional(),
 }).strict();
 /**
  * The edit body of the customer book, spelled out field by field instead of `.partial()` — and the
@@ -146,7 +146,7 @@ const patchCustomer = z.object({
   lostReason: customerFields.shape.lostReason.unwrap().optional(),
   active: z.boolean().optional(),
   // Null is a decision here («من غير تحديد» — price his orders by hand); an absent key is not a decision.
-  priceTierId: z.uuid('اختار نوع السعر من القايمعة، أو «من غير تحديد» يتسعّر باليد.').nullable().optional(),
+  priceTierId: z.uuid('اختار نوع السعر من القائمة، أو «من غير تحديد» يتسعّر باليد.').nullable().optional(),
 }).strict();
 /**
  * A visit is booked against a row of the book, not a string. customerName stays accepted and is
@@ -155,7 +155,7 @@ const patchCustomer = z.object({
  */
 const newVisit = z.object({
   id: z.uuid(),
-  customerId: z.uuid('لازم تختار العميل من قايمعتك — الزيارة تتسجل على عميل من قايمعة الشركة.'),
+  customerId: z.uuid('لازم تختار العميل من قائمتك — الزيارة تتسجل على عميل من قائمة الشركة.'),
   customerName: z.string().trim().max(120).optional().default(''),
   governorate: z.string().trim().max(80).default(''),
   district: z.string().trim().max(80).default(''),
@@ -1097,7 +1097,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.json({ accepted, duplicates });
   });
   // ---- Field visits: check in / check out around a customer with GPS proof ----
-  /* ----------------------------------------------------------------------------- العملاء: قايمعة الشركة
+  /* ----------------------------------------------------------------------------- العملاء: قائمة الشركة
    *
    * The book belongs to the office: the manager and his sales team enter it, and they are also the
    * ones who decide which engineer serves which customer. The engineer's phone reads its own slice of
@@ -1173,7 +1173,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     // db.ts: a unique one would make deleting an engineer fail), so its no-duplicate rule is asked
     // here instead — this route is the only place a company customer is ever created.
     if (!owner && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=?', name)) {
-      res.status(409).json({ error: `«${name}» موجود في قايمعة الشركة بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' }); return;
+      res.status(409).json({ error: `«${name}» موجود في قائمة الشركة بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' }); return;
     }
     const now = Date.now();
     const id = randomUUID();
@@ -1225,7 +1225,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const lostReason = keep(parsed.data.lostReason, current.lost_reason);
     if (current.rep_id === null && name !== String(current.name).trim()
       && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', name, current.id)) {
-      res.status(409).json({ error: `«${name}» موجود في قايمعة الشركة بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
+      res.status(409).json({ error: `«${name}» موجود في قائمة الشركة بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
     }
     // Sending the same type back is not a change, and clearing it (null) is: «من غير تحديد» is an answer
     // the office gives on purpose when a man's rate is being argued about.
@@ -1278,7 +1278,7 @@ export function createApp(overrides: Partial<Config> = {}) {
    * who travels is the same move as handing him to a new one, and the office owns both directions.
    */
   app.post('/api/customers/:id/assign', adminOnly, (req, res) => {
-    const parsed = z.object({ repId: z.uuid('اختار المهندس، أو «من غير مهندس» لو العميل هيرجع قايمعة الشركة.').nullable() }).strict().safeParse(req.body ?? {});
+    const parsed = z.object({ repId: z.uuid('اختار المهندس، أو «من غير مهندس» لو العميل هيرجع قائمة الشركة.').nullable() }).strict().safeParse(req.body ?? {});
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'اختار المهندس.' }); return; }
     const current = loadCustomer(req.params.id);
     if (!current) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
@@ -1286,7 +1286,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (parsed.data.repId === null) {
       if (from === null) { res.json({ ok: true, unchanged: true, customer: asCustomer(current) }); return; }
       if (store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', current.name, current.id)) {
-        res.status(409).json({ error: `«${current.name}» موجود بالفعل في قايمعة الشركة — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
+        res.status(409).json({ error: `«${current.name}» موجود بالفعل في قائمة الشركة — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
       }
       store.run('UPDATE customers SET rep_id=NULL, updated_at=? WHERE id=?', Date.now(), current.id);
       store.audit(res.locals.user.id, 'customer.assign', { customerId: current.id, from, to: null });
@@ -1380,7 +1380,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const assignArea = z.object({
     governorate: z.string().trim().max(80).default(''),
     district: z.string().trim().max(80).default(''),
-    repId: z.uuid('اختار المهندس، أو «قايمعة الشركة» لو عايز ترجّع المنطقة دي لها.').nullable(),
+    repId: z.uuid('اختار المهندس، أو «قائمة الشركة» لو عايز ترجّع المنطقة دي لها.').nullable(),
     // The safe half by default: hand out the ones nobody owns, and leave a colleague's customer alone
     // unless the manager said otherwise on purpose.
     onlyUnassigned: z.boolean().default(true),
@@ -1393,7 +1393,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات المنطقة غير صحيحة.' }); return; }
     const { governorate, district, repId, onlyUnassigned, dryRun } = parsed.data;
     if (!governorate && !district) {
-      res.status(400).json({ error: 'اختار المنطقة الأول — نقل قايمعة الشركة كلها مرة واحدة مش حاجة تتعمل بالغلط.', code: 'AREA_REQUIRED' });
+      res.status(400).json({ error: 'اختار المنطقة الأول — نقل قائمة الشركة كلها مرة واحدة مش حاجة تتعمل بالغلط.', code: 'AREA_REQUIRED' });
       return;
     }
     let owner: { id: string; name: string } | undefined;
@@ -1404,7 +1404,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     // Back to the pool with «unassigned only» on is the same set on both sides of the move: it would
     // report a change that changed nothing, so the switch to flip is named instead.
     if (!repId && onlyUnassigned) {
-      res.status(409).json({ error: 'ترجعهم قايمعة الشركة وهم أصلًا من غير مهندس؟ اقفل «اللي من غير مهندس بس» لو عايز ترجّع عملاء مهندس.', code: 'NO_CHANGE' });
+      res.status(409).json({ error: 'ترجعهم قائمة الشركة وهم أصلًا من غير مهندس؟ اقفل «اللي من غير مهندس بس» لو عايز ترجّع عملاء مهندس.', code: 'NO_CHANGE' });
       return;
     }
     const where: string[] = []; const params: any[] = [];
@@ -1440,7 +1440,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       // Everything matched but nothing can move is not a success, and it is not «nothing to do» either:
       // the fix (merge the two rows) is a different job.
       res.status(409).json({
-        error: `كل عملاء المنطقة دي مرفوضين بسبب تعارض اسم عند ${owner?.name || 'قايمعة الشركة'} — ادمج العميلين المتعارضين الأول.`,
+        error: `كل عملاء المنطقة دي مرفوضين بسبب تعارض اسم عند ${owner?.name || 'قائمة الشركة'} — ادمج العميلين المتعارضين الأول.`,
         code: 'CUSTOMER_EXISTS', conflicts,
       });
       return;
@@ -1458,7 +1458,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       // The index has the last word, and the move is one transaction: whatever half of it was written
       // is rolled back, and the name in the way is named instead of a stack trace.
       if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(409).json({ error: `«${moving[0]?.name || ''}» الاسم ده موجود عند ${owner?.name || 'قايمعة الشركة'} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
+        res.status(409).json({ error: `«${moving[0]?.name || ''}» الاسم ده موجود عند ${owner?.name || 'قائمة الشركة'} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
         return;
       }
       throw error;
@@ -1472,7 +1472,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
   });
 
-  /* ------------------------------------------------------------------ الأصناف: قايمعة المكتب
+  /* ------------------------------------------------------------------ الأصناف: قائمة المكتب
    *
    * The office names the items, the pack they are sold in, and the price per buyer type. The
    * engineer's phone reads the list to build an order and never edits it — and it is not shown the
@@ -1600,7 +1600,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const tiers = store.all('SELECT id FROM price_tiers') as Array<{ id: string }>;
     const known = new Set(tiers.map(tier => String(tier.id)));
     for (const price of prices) {
-      if (!known.has(price.tierId)) { res.status(404).json({ error: 'نوع السعر ده مش في القايمعة.', code: 'TIER_NOT_FOUND' }); return; }
+      if (!known.has(price.tierId)) { res.status(404).json({ error: 'نوع السعر ده مش في القائمة.', code: 'TIER_NOT_FOUND' }); return; }
     }
     if (new Set(prices.map(price => price.tierId)).size !== prices.length) {
       res.status(400).json({ error: 'نوع سعر متكرر في الطلب — نوع واحد = سعر واحد.' }); return;
@@ -1611,7 +1611,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     // Same name, same pack = the same item twice, and two rows for one item is two prices for one
     // customer. A different pack is a different item and is allowed.
     if (store.get('SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=?', name, unit)) {
-      res.status(409).json({ error: `«${name} — ${unit}» موجود في قايمعة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
+      res.status(409).json({ error: `«${name} — ${unit}» موجود في قائمة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
     }
     const now = Date.now();
     const id = randomUUID();
@@ -1626,7 +1626,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       });
     } catch (error) {
       if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(409).json({ error: `«${name} — ${unit}» موجود في قايمعة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
+        res.status(409).json({ error: `«${name} — ${unit}» موجود في قائمة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
       }
       throw error;
     }
@@ -1683,7 +1683,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const { prices } = parsed.data;
     const known = new Set((store.all('SELECT id FROM price_tiers') as Array<{ id: string }>).map(tier => String(tier.id)));
     const missing = prices.filter(price => !known.has(price.tierId)).map(price => price.tierId);
-    if (missing.length) { res.status(404).json({ error: 'في نوع سعر مش موجود في القايمعة.', code: 'TIER_NOT_FOUND', missing }); return; }
+    if (missing.length) { res.status(404).json({ error: 'في نوع سعر مش موجود في القائمة.', code: 'TIER_NOT_FOUND', missing }); return; }
     if (new Set(prices.map(price => price.tierId)).size !== prices.length) {
       res.status(400).json({ error: 'نوع سعر متكرر في الطلب — نوع واحد = سعر واحد.' }); return;
     }
@@ -1726,7 +1726,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.json({ ok: true });
   });
 
-  /* -------------------------------------------------------- أنواع المشترى: راس قايمعة الأسعار
+  /* -------------------------------------------------------- أنواع المشترى: راس قائمة الأسعار
    *
    * The office names these; the columns of the price list are exactly this list. Deleting a type that
    * still holds prices is refused, because cascade would take twenty prices with it to remove one
@@ -1755,7 +1755,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'اسم نوع السعر مطلوب.' }); return; }
     const name = parsed.data.name.trim();
     if (store.get('SELECT id, active FROM price_tiers WHERE name COLLATE NOCASE=?', name)) {
-      res.status(409).json({ error: `«${name}» موجود في قايمعة الأنواع بالفعل.`, code: 'TIER_EXISTS' }); return;
+      res.status(409).json({ error: `«${name}» موجود في قائمة الأنواع بالفعل.`, code: 'TIER_EXISTS' }); return;
     }
     const top = Number(store.get('SELECT COALESCE(MAX(position), -1) AS m FROM price_tiers')?.m ?? -1);
     const id = randomUUID();
@@ -1775,13 +1775,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     const name = parsed.data.name === undefined ? current.name : parsed.data.name.trim();
     if (name !== current.name && store.get('SELECT id FROM price_tiers WHERE name COLLATE NOCASE=? AND id<>?', name, current.id)) {
-      res.status(409).json({ error: `«${name}» موجود بالفعل كنوع تاني في القايمعة.`, code: 'TIER_EXISTS' }); return;
+      res.status(409).json({ error: `«${name}» موجود بالفعل كنوع تاني في القائمة.`, code: 'TIER_EXISTS' }); return;
     }
     // Stopping the only active type would leave the price list with no column to price anything under.
     if (parsed.data.active === false) {
       const activeOthers = Number(store.get('SELECT COUNT(*) AS c FROM price_tiers WHERE active=1 AND id<>?', current.id)?.c || 0);
       if (!activeOthers) {
-        res.status(409).json({ error: 'ده نوع السعر الوحيد الشغال — الوقف بيسيب القايمعة من غير عمود. اعمل واحد تاني الأول.', code: 'LAST_TIER' });
+        res.status(409).json({ error: 'ده نوع السعر الوحيد الشغال — الوقف بيسيب القائمة من غير عمود. اعمل واحد تاني الأول.', code: 'LAST_TIER' });
         return;
       }
     }
@@ -1821,7 +1821,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
       // The name is no longer something the phone types, so the message that used to ask for it has to
       // say what is actually missing — otherwise an older build reading this text fixes the wrong field.
-      res.status(400).json({ error: 'اختار العميل من قايمعتك الأول — الزيارة ما تتسجلش على اسم مكتوب بإيدك.', code: 'CUSTOMER_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
+      res.status(400).json({ error: 'اختار العميل من قائمتك الأول — الزيارة ما تتسجلش على اسم مكتوب بإيدك.', code: 'CUSTOMER_REQUIRED', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
     }
     if (req.body && typeof req.body.deviceId === 'string' && req.body.deviceId.trim().length >= 3) {
       const de = bindDevice(res.locals.user, String(req.body.deviceId).trim());
@@ -1883,13 +1883,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     // never refused because the office moved its customer in the meantime.
     const customer = store.get('SELECT id, name, phone, governorate, district, village, active, rep_id AS repId FROM customers WHERE id=?', data.customerId) as Record<string, any> | undefined;
     if (!customer) {
-      res.status(400).json({ error: 'العميل ده مش في قايمعة الشركة. اختار واحد موجود، أو اطلب من المكتب يضيفه.', code: 'CUSTOMER_NOT_FOUND' });
+      res.status(400).json({ error: 'العميل ده مش في قائمة الشركة. اختار واحد موجود، أو اطلب من المكتب يضيفه.', code: 'CUSTOMER_NOT_FOUND' });
       return;
     }
     if (customer.repId !== res.locals.user.id) {
       // The engineer does not choose who he serves, and the phone is not asked to enforce that — the
       // list it was given is already his, and this is where a hand-crafted request stops.
-      res.status(403).json({ error: 'العميل ده مش من قايمعتك — المكتب هو اللي بيحدد مين يخدم كل عميل.', code: 'CUSTOMER_NOT_YOURS' });
+      res.status(403).json({ error: 'العميل ده مش من قائمتك — المكتب هو اللي بيحدد مين يخدم كل عميل.', code: 'CUSTOMER_NOT_YOURS' });
       return;
     }
     if (!customer.active) {

@@ -7,7 +7,7 @@ import { productCategoryLabels, type Product, type ProductCategory } from './typ
 import type { FieldBundle } from './useField';
 
 /**
- * قايمعة الأصناف — شاشة قراءة في التليفون، من غير أي سعر.
+ * قائمة الأصناف — شاشة قراءة في التليفون، من غير أي سعر.
  *
  * The engineer standing in front of a farmer has two questions this screen answers: do we sell this at
  * all, and what do we sell it in. It has no business answering «بكام» — the server does not send prices on
@@ -48,7 +48,7 @@ export default function CatalogueSheet({ visible, onClose, field }: { visible: b
   }, [products, search, category]);
 
   return (
-    <Sheet visible={visible} onClose={onClose} title="قايمعة الأصناف">
+    <Sheet visible={visible} onClose={onClose} title="قائمة الأصناف">
       <Field label="دوّر بالاسم أو العبوة" value={search} onChangeText={setSearch} placeholder="مثال: يوريا أو شيكارة" autoCapitalize="none" />
       <View style={styles.chips}>
         {CATEGORIES.map(item => (
@@ -68,15 +68,15 @@ export default function CatalogueSheet({ visible, onClose, field }: { visible: b
 
       {products.length === 0 ? (
         <Empty
-          title={field.productsLoading ? 'جارٍ تحميل القايمعة…' : 'مفيش أصناف في قايمعة الشركة لسه'}
+          title={field.productsLoading ? 'جارٍ تحميل القائمة…' : 'مفيش أصناف في قائمة الشركة لسه'}
           hint={field.productsLoading
-            ? 'لو الشبكة ضعيفة، آخر قايمعة اتحمّلت هتفضل محفوظة.'
+            ? 'لو الشبكة ضعيفة، آخر قائمة اتحمّلت هتفضل محفوظة.'
             : 'مدير المبيعات والتيم بيضيفوا الأصناف وأسعارها من الداشبورد. أول ما يضيفوها هتظهر هنا.'}
         />
       ) : matches.length === 0 ? (
         <Empty
-          title="مفيش صنف بالاسم ده في القايمعة"
-          hint="جرّب كلمة تانية، أو شيل الفلتار. لو الصنف فعلاً مش في القايمعة، ده معناه إن الشركة ما بتبيعهوش — مش إنه بسعر تاني."
+          title="مفيش صنف بالاسم ده في القائمة"
+          hint="جرّب كلمة تانية، أو شيل الفلتار. لو الصنف فعلاً مش في القائمة، ده معناه إن الشركة ما بتبيعهوش — مش إنه بسعر تاني."
         />
       ) : (
         <>

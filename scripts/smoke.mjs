@@ -143,7 +143,7 @@ check('so the run enters its customer the way the office does', bookCustomer.sta
 const bookCustomerId = String(bookCustomer.body?.customer?.id || '');
 const handTyped = await post('/api/visits/check-in', rep, { id: crypto.randomUUID(), customerName: bookName, location: fix() }, 'rep');
 check('a visit typed by hand is refused', handTyped.status === 400, JSON.stringify(handTyped.body).slice(0, 90));
-check('and the refusal names the fix, not the missing field', handTyped.body?.code === 'CUSTOMER_REQUIRED' && String(handTyped.body?.error).includes('قايمعتك'), String(handTyped.body?.error).slice(0, 90));
+check('and the refusal names the fix, not the missing field', handTyped.body?.code === 'CUSTOMER_REQUIRED' && String(handTyped.body?.error).includes('قائمتك'), String(handTyped.body?.error).slice(0, 90));
 const ghostId = crypto.randomUUID();
 const ghost = await post('/api/visits/check-in', rep, { id: ghostId, customerId: ghostId, location: fix() }, 'rep');
 check('an id that is not in his book is answered with a 4xx, never a crash', ghost.status >= 400 && ghost.status < 500, `${ghost.status} ${JSON.stringify(ghost.body).slice(0, 70)}`);

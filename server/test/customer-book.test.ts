@@ -93,7 +93,7 @@ test('one name per owner, and that owner only', async () => {
   const poolTwice = await book({ name: 'مزرعة الاتحاد', governorate: 'البحيرة' });
   assert.equal(poolTwice.status, 409);
   assert.equal(poolTwice.body.code, 'CUSTOMER_EXISTS');
-  assert.match(poolTwice.body.error, /قايمعة الشركة/);
+  assert.match(poolTwice.body.error, /قائمة الشركة/);
   // The same name at the office and at an engineer is not a duplicate of anything.
   assert.equal((await book({ name: 'مزرعة الاتحاد', repId: aly.id })).status, 201);
   assert.equal((await book({ name: 'مزرعة غلط', repId: 'not-a-uuid' })).status, 400);
@@ -286,11 +286,11 @@ test('a visit is booked on a row of the book, and only on the office’s copy of
   const legacy = await checkIn(aly, { customerName: 'اسم من بيلد قديم' });
   assert.equal(legacy.status, 400);
   assert.equal(legacy.body.code, 'CUSTOMER_REQUIRED');
-  assert.match(legacy.body.error, /قايمعتك/);
+  assert.match(legacy.body.error, /قائمتك/);
   const ghost = await checkIn(aly, { customerId: randomUUID() });
   assert.equal(ghost.status, 400);
   assert.equal(ghost.body.code, 'CUSTOMER_NOT_FOUND');
-  assert.match(ghost.body.error, /قايمعة الشركة/);
+  assert.match(ghost.body.error, /قائمة الشركة/);
   const theirs = await book({ name: 'مزرعة الزميل', repId: other.id });
   const poached = await checkIn(aly, { customerId: theirs.body.customer.id });
   assert.equal(poached.status, 403);

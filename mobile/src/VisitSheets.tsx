@@ -50,7 +50,7 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
   }, [visible]);
 
   async function submit() {
-    if (!selected) { setError('اختار العميل من قايمعتك الأول — الزيارة بتتسجل على عميل من قايمعة الشركة.'); return; }
+    if (!selected) { setError('اختار العميل من قائمتك الأول — الزيارة بتتسجل على عميل من قائمة الشركة.'); return; }
     setSaving(true); setError('');
     try {
       // Never reuse the preview fix for the actual check-in: the OS mock bit must be checked at commit time.
@@ -73,7 +73,7 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
   return (
     <Sheet visible={visible} onClose={onClose} title="تسجيل زيارة جديدة">
       <View style={{ gap: 6 }}>
-        <Text style={styles.label}>العميل من قايمعتك *</Text>
+        <Text style={styles.label}>العميل من قائمتك *</Text>
         {selected ? (
           <Card tone="mint" style={{ gap: 3 }}>
             <Row style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -83,7 +83,7 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
               </Pressable>
             </Row>
             <Text style={styles.pickSub}>
-              {[selected.governorate, selected.district, selected.village].filter(Boolean).join(' · ') || 'من غير عنوان في القايمعة'}
+              {[selected.governorate, selected.district, selected.village].filter(Boolean).join(' · ') || 'من غير عنوان في القائمة'}
             </Text>
             {selected.phone ? <Text style={styles.pickPhone}>{selected.phone}</Text> : null}
             <Text style={styles.pickSub}>
@@ -94,17 +94,17 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
           </Card>
         ) : customers.length === 0 ? (
           <Empty
-            title={field.customersLoading ? 'جارٍ تحميل قايمعتك…' : 'مفيش عملاء في قايمعتك'}
+            title={field.customersLoading ? 'جارٍ تحميل قائمتك…' : 'مفيش عملاء في قائمتك'}
             hint={field.customersLoading
-              ? 'لو الشبكة ضعيفة، آخر قايمعة اتحمّلت هتفضل محفوظة.'
-              : 'مدير المبيعات هو اللي بيضيف العملاء في قايمعة الشركة وبيحدد مين يخدم كل عميل. اطلب منه يضيفك لهم، وبعدها ارجع هنا.'}
+              ? 'لو الشبكة ضعيفة، آخر قائمة اتحمّلت هتفضل محفوظة.'
+              : 'مدير المبيعات هو اللي بيضيف العملاء في قائمة الشركة وبيحدد مين يخدم كل عميل. اطلب منه يضيفك لهم، وبعدها ارجع هنا.'}
           />
         ) : (
           <>
             {field.customersNotice ? <Text style={styles.notice}>{field.customersNotice}</Text> : null}
             <Field label="دوّر بالاسم أو التليفون" value={search} onChangeText={setSearch} placeholder="مثال: محمود أو 010" autoCapitalize="none" />
             {matches.length === 0 ? (
-              <Text style={styles.error}>مفيش عميل في قايمعتك بالاسم ده. لو ده عميل جديد، لازم المكتب يضيفه الأول — الزيارة ما تتسجلش على اسم مكتوب بإيدك.</Text>
+              <Text style={styles.error}>مفيش عميل في قائمتك بالاسم ده. لو ده عميل جديد، لازم المكتب يضيفه الأول — الزيارة ما تتسجلش على اسم مكتوب بإيدك.</Text>
             ) : null}
             {shown.map(row => (
               <Pressable key={row.id} onPress={() => { haptic(); setCustomerId(row.id); }} accessibilityRole="button" style={({ pressed }) => [styles.pickRow, pressed && styles.pickRowPressed]}>
@@ -150,7 +150,7 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Button label={saving ? 'جارٍ التسجيل…' : 'تسجيل الحضور في الزيارة'} onPress={submit} loading={saving} icon="✓" />
       <Body muted style={{ fontSize: 11.5 }}>الزيارة المفتوحة واحدة فقط؛ أنهِها قبل تسجيل زيارة جديدة. كل زيارة تُسجَّل بموافقة ضمن ورديتك المفتوحة.</Body>
-      <Body muted style={{ fontSize: 11.5 }}>عنوان العميل وتليفونه بيتقروا من قايمعة الشركة — لو فيهم غلط، بلّغ المكتب يعدّلهم من شاشة العملاء.</Body>
+      <Body muted style={{ fontSize: 11.5 }}>عنوان العميل وتليفونه بيتقروا من قائمة الشركة — لو فيهم غلط، بلّغ المكتب يعدّلهم من شاشة العملاء.</Body>
     </Sheet>
   );
 }

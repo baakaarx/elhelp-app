@@ -38,10 +38,10 @@ const expectNumber = (cell: Locator, value: string) => expect.poll(() => cellNum
 async function openCatalogue(page: Page) {
   await signInAsManager(page);
   await page.locator('button.nav-item').filter({ hasText: 'الأصناف' }).click();
-  await expect(page.getByRole('heading', { level: 2, name: 'قايمعة الأصناف والأسعار' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'قائمة الأصناف والأسعار' })).toBeVisible();
 }
 
-test.describe('قايمعة الأصناف والأسعار', () => {
+test.describe('قائمة الأصناف والأسعار', () => {
   test('an item shows its pack, and the price is the price of that pack', async ({ page }) => {
     await openCatalogue(page);
     const row = productRow(page, 'يوريا ٤٦٪');
@@ -105,7 +105,7 @@ test.describe('قايمعة الأصناف والأسعار', () => {
     await again.getByLabel('اسم الصنف').fill(` ${unique} `);
     await again.getByLabel('العبوة اللي بيتبيعها').fill(' شيكارة ');
     await again.getByRole('button', { name: 'حفظ' }).click();
-    await expect(again.getByRole('alert')).toContainText('قايمعة الأصناف');
+    await expect(again.getByRole('alert')).toContainText('قائمة الأصناف');
     await expect(productRow(page, unique)).toHaveCount(1);
     // …while the same poison in another pack is a different item and is allowed.
     await again.getByLabel('العبوة اللي بيتبيعها').fill('جركن');

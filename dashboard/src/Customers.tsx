@@ -39,8 +39,6 @@ export default function Customers({ timezone }: { timezone?: string }) {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   // The row whose engineer picker is open, and the id being written to (so one spinner per action).
-  const [linkFor, setLinkFor] = useState('');
-  const [linkRep, setLinkRep] = useState(POOL);
   const [busyRow, setBusyRow] = useState('');
 
   const query = useMemo(() => {
@@ -68,7 +66,7 @@ export default function Customers({ timezone }: { timezone?: string }) {
       setTiers(kinds.tiers);
       setError('');
     } catch (e) {
-      setError(messageOf(e, 'تعذر تحميل قايمعة العملاء.'));
+      setError(messageOf(e, 'تعذر تحميل قائمة العملاء.'));
     } finally {
       setLoading(false);
     }
@@ -155,7 +153,6 @@ export default function Customers({ timezone }: { timezone?: string }) {
     setBusyRow(customer.id);
     try {
       await post(`/api/customers/${customer.id}/assign`, { repId });
-      setLinkFor('');
       await load();
     } catch (e) {
       setError(messageOf(e, 'تعذر نقل العميل.'));
@@ -202,16 +199,16 @@ export default function Customers({ timezone }: { timezone?: string }) {
     <section className="page">
       <header className="page-head">
         <div>
-          <h2>قايمعة العملاء</h2>
+          <h2>قائمة العملاء</h2>
           <p className="muted">
-            عملاء الشركة كلهوم هنا — المكتب بيضيفهم وبيحدد مين يخدم كل عميل. التليفون بيشوف قايمعته هو وبس.
+            عملاء الشركة كلهوم هنا — المكتب بيضيفهم وبيحدد مين يخدم كل عميل. التليفون بيشوف قائمته هو وبس.
           </p>
         </div>
         <button className="btn primary" onClick={openCreate}>عميل جديد</button>
       </header>
 
       <div className="stats">
-        <div className="card stat"><span className="muted small">عملاء الشركة</span><strong>{formatNumber(totals.customers)}</strong><small className="muted">القايمة كلها، الموقوف عليها</small></div>
+        <div className="card stat"><span className="muted small">عملاء الشركة</span><strong>{formatNumber(totals.customers)}</strong><small className="muted">القائمة كلها، الموقوف عليها</small></div>
         <div className="card stat"><span className="muted small">لسه موزعينش</span><strong>{formatNumber(totals.unassigned)}</strong><small className="muted">من غير مهندس — حالة عادية</small></div>
         <div className="card stat"><span className="muted small">مناطق فيها عملاء</span><strong>{formatNumber(totals.areas)}</strong><small className="muted">محافظة / مركز</small></div>
         <div className="card stat"><span className="muted small">الظاهر دلوقتي</span><strong>{formatNumber(customers.length)}</strong><small className="muted">بعد الفلاتر</small></div>
@@ -282,21 +279,21 @@ export default function Customers({ timezone }: { timezone?: string }) {
 
       <div className="panel">
         <h3 className="panel-title">
-          {filters.unassigned ? 'من غير مهندس' : filters.repId ? `قايمعة ${nameOf(filters.repId)}` : 'قايمعة الشركة'}
+          {filters.unassigned ? 'من غير مهندس' : filters.repId ? `قائمة ${nameOf(filters.repId)}` : 'قائمة الشركة'}
           {' '}· {formatNumber(customers.length)}
         </h3>
         {customers.length === 0 && !loading ? (
           <p className="empty">
             {totals.customers
               ? 'مفيش عملاء بالفلاتر دي — امسح الفلاتر أو ضيف عميل جديد.'
-              : 'قايمعة العملاء فاضية. أول عميل يتضاف من زرار «عميل جديد» فوق، وبعدين يتربط بالمهندس.'}
+              : 'قائمة العملاء فاضية. أول عميل يتضاف من زرار «عميل جديد» فوق، وبعدين يتربط بالمهندس.'}
           </p>
         ) : (
           <div className="kpi-table-wrap customers-table">
             <table className="kpi-table">
               <thead>
                 <tr>
-                  <th>العميل</th><th>التليفون</th><th>المنطقة</th><th>المهندس</th><th>المرحلة</th><th>نوع السعر</th><th>الزيارات</th><th>آخر زيارة</th><th></th>
+                  <th>العميل</th><th>المهندس</th><th>المرحلة</th><th>نوع السعر</th><th>الزيارات</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -305,55 +302,53 @@ export default function Customers({ timezone }: { timezone?: string }) {
                     <td>
                       <strong>{customer.name}</strong>
                       {customer.active ? null : <em className="muted small"> · موقوف</em>}
-                      {customer.village ? <small className="muted">{customer.village}</small> : null}
-                      {customer.notes ? <small className="muted">{customer.notes}</small> : null}
-                      {customer.stage === 'lost' && customer.lostReason ? <small className="muted">سبب الرفض: {customer.lostReason}</small> : null}
+                      {/* Everything that only explains the name lives under it now. Nine columns of
+                          read-only text plus four buttons was a table that scrolled sideways and wrapped. */}
+                      {customer.phone ? <small className="mono">{customer.phone}</small> : null}
+                      <small>{[customer.governorate, customer.district, customer.village].filter(Boolean).join(' / ') || 'من غير منطقة'}</small>
+                      {customer.notes ? <small>{customer.notes}</small> : null}
+                      {customer.stage === 'lost' && customer.lostReason ? <small>سبب الرفض: {customer.lostReason}</small> : null}
                     </td>
-                    <td className="mono" dir="ltr">{customer.phone || '—'}</td>
-                    <td>{[customer.governorate, customer.district].filter(Boolean).join(' / ') || '—'}</td>
+                    {/* The cell is the control: a name you click, and the change saves on its own. This is the
+                        one move the office came here for, so it no longer costs a button, a modal, a picker
+                        and a save. */}
                     <td>
-                      <span className="dot" style={{ background: customer.repColor }} aria-hidden="true" /> {customer.repName}
+                      <span className="dot" style={{ background: customer.repColor }} aria-hidden="true" />
+                      <select
+                        className="rowpick"
+                        value={customer.repId ?? POOL}
+                        disabled={busyRow === customer.id}
+                        onChange={event => void assign(customer, event.target.value || null)}
+                        aria-label={`مهندس ${customer.name}`}
+                        title={busyRow === customer.id ? 'جارٍ الحفظ…' : 'اختار المهندس — بيتسجّل على طول'}
+                      >
+                        <option value={POOL}>من غير مهندس (قائمة الشركة)</option>
+                        {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
+                      </select>
+                      {busyRow === customer.id ? <small>جارٍ الحفظ…</small> : null}
                     </td>
                     <td><span className={customer.stage === 'lost' ? 'pill warn' : 'pill'}>{customerStageLabels[customer.stage]}</span></td>
                     <td>
                       {customer.priceTierName || <span className="pill warn" title="نوع السعر مش محدد له — أي طلبية عليه تتسعّر باليد">باليد</span>}
                     </td>
-                    <td className="mono">{formatNumber(customer.visitCount)}{customer.openVisits ? <em className="pill ok"> جارية</em> : null}</td>
-                    <td>{customer.lastVisitAt ? ago(customer.lastVisitAt) : 'ما اتزارش'}</td>
                     <td>
-                      {busyRow === customer.id ? <span className="muted small">جارٍ الحفظ…</span> : (
-                        <>
-                          {linkFor === customer.id ? (
-                            <span className="confirm-pair">
-                              <select value={linkRep} onChange={event => setLinkRep(event.target.value)} aria-label="اربط بمهندس">
-                                <option value={POOL}>من غير مهندس — يفضل في قايمعة الشركة</option>
-                                {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
-                              </select>
-                              <button className="btn primary sm" disabled={busyRow !== ''} onClick={() => void assign(customer, linkRep || null)}>
-                                {customer.repId ? 'نقل' : 'اربط'}
-                              </button>
-                              <button className="btn ghost sm" onClick={() => setLinkFor('')}>إلغاء</button>
-                            </span>
-                          ) : (
-                            <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                              <button className="btn ghost sm" onClick={() => openEdit(customer)}>تعديل</button>
-                              <button className="btn ghost sm" onClick={() => { setLinkFor(customer.id); setLinkRep(customer.repId ?? POOL); }}>
-                                {customer.repId ? 'نقل لمهندس تاني' : 'اربطه بمهندس'}
-                              </button>
-                              {customer.repId ? <button className="btn ghost sm" disabled={busyRow === customer.id} onClick={() => void assign(customer, null)}>قايمعة الشركة</button> : null}
-                              <button className="btn ghost sm" onClick={() => void setActive(customer, !customer.active)}>{customer.active ? 'وقف' : 'رجّع للشغل'}</button>
-                              <ConfirmAction
-                                label="حذف"
-                                confirmLabel="امسحه نهائيًا"
-                                detail={customer.visitCount
-                                  ? `عليه ${formatNumber(customer.visitCount)} زيارة — الحذف هيمحي تاريخه. الأحسن توقّفه.`
-                                  : 'مفيش عليه أي زيارة، الحذف آمن.'}
-                                onConfirm={() => remove(customer)}
-                              />
-                            </span>
-                          )}
-                        </>
-                      )}
+                      <span className="mono">{formatNumber(customer.visitCount)}</span>
+                      {customer.openVisits ? <em className="pill ok"> جارية</em> : null}
+                      <small>{customer.lastVisitAt ? ago(customer.lastVisitAt) : 'ما اتزارش'}</small>
+                    </td>
+                    <td>
+                      <span className="row-actions">
+                        <button className="btn ghost sm" onClick={() => openEdit(customer)}>تعديل</button>
+                        <button className="btn ghost sm" disabled={busyRow === customer.id} onClick={() => void setActive(customer, !customer.active)}>{customer.active ? 'وقف' : 'رجّع للشغل'}</button>
+                        <ConfirmAction
+                          label="حذف"
+                          confirmLabel="امسحه نهائيًا"
+                          detail={customer.visitCount
+                            ? `عليه ${formatNumber(customer.visitCount)} زيارة — الحذف هيمحي تاريخه. الأحسن توقّفه.`
+                            : 'مفيش عليه أي زيارة، الحذف آمن.'}
+                          onConfirm={() => remove(customer)}
+                        />
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -362,7 +357,7 @@ export default function Customers({ timezone }: { timezone?: string }) {
           </div>
         )}
         <p className="muted small" style={{ marginTop: 10 }}>
-          عميل من غير مهندس = لسه ما اتوزّعش، مش عميل منسيّ · {timezone ? '' : ''}التوقيت {timezone ?? 'Africa/Cairo'}.
+          الاسم في عمود «المهندس» هو الأداة نفسها: اضغطه واختار، بيتسجّل على طول ومفيش نافذة · عميل من غير مهندس = لسه ما اتوزّعش، مش عميل منسيّ · التوقيت {timezone ?? 'Africa/Cairo'}.
         </p>
       </div>
 
@@ -390,7 +385,7 @@ function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers,
   const isNew = editing === 'new';
   return (
     <form className="panel" onSubmit={onSave}>
-      <h3 className="panel-title">{isNew ? 'عميل جديد في قايمعة الشركة' : `تعديل: ${editing.name}`}</h3>
+      <h3 className="panel-title">{isNew ? 'عميل جديد في قائمة الشركة' : `تعديل: ${editing.name}`}</h3>
       <div className="filters">
         <label className="field inline">
           <span>اسم العميل / المزرعة</span>
@@ -428,7 +423,7 @@ function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers,
         <label className="field inline">
           <span>{isNew ? 'المهندس' : 'نقل إلى مهندس'}</span>
           <select value={form.repId} onChange={event => setForm({ ...form, repId: event.target.value })}>
-            <option value={POOL}>من غير مهندس — يفضل في قايمعة الشركة</option>
+            <option value={POOL}>من غير مهندس — يفضل في قائمة الشركة</option>
             {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active && rep.id !== form.repId}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
           </select>
         </label>
@@ -489,7 +484,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
     const { repId, onlyUnassigned } = pick(row);
     return { governorate: row.bareGovernorate, district: row.bareDistrict, repId: repId || null, onlyUnassigned };
   };
-  const nameOf = (id: string) => engineers.find(rep => rep.id === id)?.name ?? 'قايمعة الشركة';
+  const nameOf = (id: string) => engineers.find(rep => rep.id === id)?.name ?? 'قائمة الشركة';
 
   async function run(row: AreaRow, dryRun: boolean) {
     const key = areaKey(row);
@@ -532,7 +527,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
     <div className="panel">
       <h3 className="panel-title">توزيع العملاء على المناطق</h3>
       <p className="muted small">
-        كل سطر = محافظة ومركز زي ما اتكتبوا في القايمعة. الاقتراح من «منطقته» المسجلة عند المهندس — اضغط «معاينة الأول» قبل ما يتنقل حد.
+        كل سطر = محافظة ومركز زي ما اتكتبوا في القائمة. الاقتراح من «منطقته» المسجلة عند المهندس — اضغط «معاينة الأول» قبل ما يتنقل حد.
       </p>
       {error && <p className="error" role="alert">{error}</p>}
       {areas.length === 0 ? (
@@ -576,7 +571,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
                           <p className="small">
                             {shown.wouldMove
                               ? <>هينقل <strong>{formatNumber(shown.wouldMove)}</strong> من {formatNumber(shown.matched)}{shown.conflicts.length ? `، و${formatNumber(shown.conflicts.length)} هيتخطّوا لأن الاسم موجود عند ${nameOf(repId)}` : ''}.</>
-                              : <>مفيش حاجة تتنقل من هنا — {onlyUnassigned ? 'كل عملاء المنطقة دي ليهم مهندس بالفعل (شيل علامة «اللي من غير مهندس بس» لو عايز ترجّعهم قايمعة الشركة).' : 'الأسماء كلها موجودة عند ' + nameOf(repId) + ' — ادمج العميلين المتعارضين الأول.'}</>}
+                              : <>مفيش حاجة تتنقل من هنا — {onlyUnassigned ? 'كل عملاء المنطقة دي ليهم مهندس بالفعل (شيل علامة «اللي من غير مهندس بس» لو عايز ترجّعهم قائمة الشركة).' : 'الأسماء كلها موجودة عند ' + nameOf(repId) + ' — ادمج العميلين المتعارضين الأول.'}</>}
                             {shown.capped ? <em className="pill warn"> القايممة موقوفة عند ١٠٠٠ </em> : null}
                           </p>
                           {shown.conflicts.length > 0 && (
@@ -584,7 +579,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
                           )}
                           <span className="confirm-pair">
                             <button className="btn primary sm" disabled={shown.wouldMove === 0 || busy !== ''} onClick={() => void run(row, false)}>
-                              {busy === key + ':go' ? 'جارٍ النقل…' : `تأكيد النقل${repId ? ` لـ ${nameOf(repId)}` : ' قايمعة الشركة'}`}
+                              {busy === key + ':go' ? 'جارٍ النقل…' : `تأكيد النقل${repId ? ` لـ ${nameOf(repId)}` : ' قائمة الشركة'}`}
                             </button>
                             <button className="btn ghost sm" onClick={() => setPreview(values => ({ ...values, [key]: undefined as unknown as AreaPreview }))}>رجوع</button>
                           </span>
@@ -597,7 +592,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
                               setChoice(values => ({ ...values, [key]: { repId: next, onlyUnassigned: next !== POOL } }));
                               setMoved(values => ({ ...values, [key]: undefined as unknown as MoveResult }));
                             }}>
-                              <option value={POOL}>قايمعة الشركة (من غير مهندس)</option>
+                              <option value={POOL}>قائمة الشركة (من غير مهندس)</option>
                               {engineers.map(rep => <option key={rep.id} value={rep.id} disabled={!rep.active}>{rep.name}{rep.active ? '' : ' (موقوف)'}</option>)}
                             </select>
                             <label className="field inline">
@@ -608,7 +603,7 @@ function AreaWorkbench({ book, onDone }: { book: AreaBook | null; onDone: () => 
                           {done ? (
                             <p className="small ok-text">
                               {formatNumber(done.moved)} اتنقلوا{done.skipped ? `، و${formatNumber(done.skipped)} اتخطّوا` : ''}
-                              {done.repName ? ` لـ ${done.repName}` : ' لقايمعة الشركة'}.
+                              {done.repName ? ` لـ ${done.repName}` : ' لقائمة الشركة'}.
                             </p>
                           ) : (
                             <button className="btn ghost sm" disabled={busy !== ''} onClick={() => void run(row, true)}>

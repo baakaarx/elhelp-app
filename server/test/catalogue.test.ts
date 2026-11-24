@@ -88,7 +88,7 @@ test('the same item under the same pack is one item, and a different pack is not
   const again = await addProduct({ name: ' سايبيرمثرين ٥٠٪ ', unit: ' عبوة ' });
   assert.equal(again.status, 409);
   assert.equal(again.body.code, 'PRODUCT_EXISTS');
-  assert.match(again.body.error, /قايمعة الأصناف/);
+  assert.match(again.body.error, /قائمة الأصناف/);
   // A drum of the same poison is a different item with a different price, and must be enterable.
   assert.equal((await addProduct({ name: 'سايبيرمثرين ٥٠٪', unit: 'جرن', unitSize: '٢٠ لتر' })).status, 201);
   // Renaming one item into another item's slot is the same duplicate.
@@ -271,7 +271,7 @@ test('stopping an item does not reset its pack, its category or its notes', asyn
 });
 
 test('the phone is handed a name and a pack — and nothing else', async () => {
-  const rep = await makeRep('مهندس قايمعة');
+  const rep = await makeRep('مهندس قائمة');
   const created = await addProduct({
     name: 'موديو ٥٥٥', category: 'other', unit: 'جركن', unitSize: '٥ لتر',
     notes: 'الجراكن الفاضية ترجع للمخزن', prices: [{ tierId: tierByName('جملة'), price: 900 }],

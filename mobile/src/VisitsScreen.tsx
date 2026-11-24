@@ -56,7 +56,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>زيارات اليوم</Text>
-            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'} · قايمعتك {field.customers.length} عميل{field.products.length ? ` · ${field.products.length} صنف` : ''}{measuredClosed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
+            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'} · قائمتك {field.customers.length} عميل{field.products.length ? ` · ${field.products.length} صنف` : ''}{measuredClosed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
           </View>
           <View style={styles.count}><Text style={styles.countText}>{todayCount}</Text></View>
         </View>
@@ -70,11 +70,11 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         {shift && !field.customersLoading && field.customers.length === 0 && (
           <Card tone="mint">
             <Body>
-              قايمعتك فاضية من العملاء. مدير المبيعات هو اللي بيضيف عملاء الشركة وبيحدد مين يخدم كل
-              عميل — من غير كده مفيش زيارة تتسجّل، لأن الزيارة بتتربط بعميل من القايمعة مش باسم مكتوب.
+              قائمتك فاضية من العملاء. مدير المبيعات هو اللي بيضيف عملاء الشركة وبيحدد مين يخدم كل
+              عميل — من غير كده مفيش زيارة تتسجّل، لأن الزيارة بتتربط بعميل من القائمة مش باسم مكتوب.
             </Body>
             <Row style={{ marginTop: space.sm }}>
-              <Button size="sm" variant="soft" label="أعد تحميل القايمعة" onPress={() => { void field.loadCustomers(); }} />
+              <Button size="sm" variant="soft" label="أعد تحميل القائمة" onPress={() => { void field.loadCustomers(); }} />
             </Row>
           </Card>
         )}
@@ -100,7 +100,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
           <Button label={shift ? '+ تسجيل زيارة جديدة' : 'ابدأ الوردية من الرئيسية'} onPress={() => { if (shift) setCheckInOpen(true); }} disabled={!shift} icon="◎" />
         )}
 
-        <Button label="قايمعة الأصناف اللي بنبيعها" variant="soft" onPress={() => setCatalogueOpen(true)} icon="☷" />
+        <Button label="قائمة الأصناف اللي بنبيعها" variant="soft" onPress={() => setCatalogueOpen(true)} icon="☷" />
 
         <SectionTitle title="السجل" action={
           <Row style={{ gap: 6 }}>

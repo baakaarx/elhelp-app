@@ -449,6 +449,25 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .kpi-table tbody tr:hover { background: #f7fafc; }
 .kpi-table tfoot td { font-weight: 700; background: #f2f6fa; border-top: 2px solid var(--line); }
 .kpi-table td .dot { display: inline-block; margin-inline-end: 6px; }
+/* ---------- The customer book: the row does the work ----------
+ * This table was nine columns of read-only text plus four buttons a row: it scrolled sideways because
+ * `.kpi-table` insists on 900px, and the action cluster wrapped onto two lines. So the quiet facts moved
+ * under the name and the assignment — the move the office actually came here for — is now the cell
+ * itself. It is styled as a name, not as a form field, until you touch it: a list of people full of
+ * bordered dropdowns reads like a settings page, and nobody learns anything from that.
+ */
+.customers-table .kpi-table { min-width: 0; }
+.customers-table td > small { display: block; color: var(--muted); font-size: .76rem; line-height: 1.5; }
+/* Only the lines that explain the row. A nested `small` (the delete prompt) lives in a flex cluster and would be
+ * pushed onto its own line by the rule above. */
+.rowpick {
+  width: auto; max-width: 210px; padding: 3px 8px; border: 1px solid transparent; border-radius: 8px;
+  background: transparent; font: inherit; font-weight: 600; color: var(--navy-800); cursor: pointer;
+}
+.rowpick:hover:not(:disabled), .rowpick:focus-visible { border-color: var(--line); background: #fff; }
+.rowpick:disabled { opacity: .5; cursor: progress; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
 .bar-cell { display: flex; align-items: center; gap: 8px; }
 .bar { flex: 1; min-width: 42px; height: 7px; border-radius: 999px; background: #e9eff5; overflow: hidden; }
 .bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--sky-500), var(--gold-500)); border-radius: 999px; }

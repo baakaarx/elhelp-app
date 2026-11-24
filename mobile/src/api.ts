@@ -126,7 +126,7 @@ export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits
  */
 export const myCustomers = () => get<{ customers: Customer[] }>('/api/customers');
 /**
- * قايمعة الأصناف — للقراءة في الميدان.
+ * قائمة الأصناف — للقراءة في الميدان.
  *
  * No prices arrive on a phone session, and that is the whole design: «بقدّم إيه» question is answered
  * here, «بكام» is answered by the office. Cached the way the customer book is, because the question gets

@@ -349,11 +349,11 @@ export interface Product {
   active: boolean;
   createdAt: number;
   updatedAt: number;
-  /** الأعمدة دي للمكتب وحده — قايمعة المهندس بتجي من غير `prices` أصلًا. */
+  /** الأعمدة دي للمكتب وحده — قائمة المهندس بتجي من غير `prices` أصلًا. */
   prices?: ProductPrice[];
 }
 
-/** رأس قايمعة الأسعار: أنواع المشترى اللي المكتب يسمّيها. */
+/** رأس قائمة الأسعار: أنواع المشترى اللي المكتب يسمّيها. */
 export interface PriceTier {
   id: string;
   name: string;
