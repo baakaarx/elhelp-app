@@ -125,8 +125,27 @@ const newCustomer = customerFields.extend({
   // default rate: an order for such a customer is priced by hand, and the invoice keeps what was chosen.
   priceTierId: z.uuid('اختار نوع السعر من القايمعة، أو سيبه من غير تحديد يتسعّر باليد.').nullable().optional(),
 }).strict();
-const patchCustomer = customerFields.partial().extend({
+/**
+ * The edit body of the customer book, spelled out field by field instead of `.partial()` — and the
+ * difference is how this file used to destroy records.
+ *
+ * `.partial()` makes every key optional but leaves the create-time defaults attached, so a body of
+ * `{ active: false }` parsed into `phone: ''`, `governorate: ''`, `stage: 'new'`, and the route — which
+ * writes what the parse produced — stamped those empties over a real customer. Pressing «وقف» on a man in
+ * the dashboard erased his phone number and his area. A key the caller did not send has to stay absent,
+ * so each default is taken off (`unwrap`) here rather than inherited into the patch.
+ */
+const patchCustomer = z.object({
+  name: customerFields.shape.name.optional(),
+  phone: customerFields.shape.phone.unwrap().optional(),
+  governorate: customerFields.shape.governorate.unwrap().optional(),
+  district: customerFields.shape.district.unwrap().optional(),
+  village: customerFields.shape.village.unwrap().optional(),
+  notes: customerFields.shape.notes.unwrap().optional(),
+  stage: customerFields.shape.stage.unwrap().optional(),
+  lostReason: customerFields.shape.lostReason.unwrap().optional(),
   active: z.boolean().optional(),
+  // Null is a decision here («من غير تحديد» — price his orders by hand); an absent key is not a decision.
   priceTierId: z.uuid('اختار نوع السعر من القايمعة، أو «من غير تحديد» يتسعّر باليد.').nullable().optional(),
 }).strict();
 /**
@@ -1189,8 +1208,21 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (parsed.data.stage === 'lost' && !String(parsed.data.lostReason ?? current.lost_reason ?? '').trim()) {
       res.status(400).json({ error: 'اكتب سبب رفض العميل قبل ما تقفله.', code: 'LOST_REASON_REQUIRED' }); return;
     }
-    const merged = { ...current, ...parsed.data };
-    const name = String(merged.name).trim();
+    /**
+     * The row is stored in snake_case and the body arrives in camelCase, so every column is taken from one
+     * of the two by name — never from a spread of both. A spread reads `lostReason` off a row whose column
+     * is `lost_reason`, comes back undefined, and `?? ''` turns that into a blank: an edit of a customer's
+     * phone number used to erase the reason he was refused, and `unit_size` did the same to an item's pack.
+     */
+    const keep = (sent: string | undefined, column: unknown) => (sent === undefined ? String(column ?? '') : sent);
+    const name = String(parsed.data.name ?? current.name).trim();
+    const phone = keep(parsed.data.phone, current.phone);
+    const governorate = keep(parsed.data.governorate, current.governorate);
+    const district = keep(parsed.data.district, current.district);
+    const village = keep(parsed.data.village, current.village);
+    const notes = keep(parsed.data.notes, current.notes);
+    const stage = parsed.data.stage ?? current.stage;
+    const lostReason = keep(parsed.data.lostReason, current.lost_reason);
     if (current.rep_id === null && name !== String(current.name).trim()
       && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', name, current.id)) {
       res.status(409).json({ error: `«${name}» موجود في قايمعة الشركة بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
@@ -1209,8 +1241,8 @@ export function createApp(overrides: Partial<Config> = {}) {
     try {
       store.run(`UPDATE customers SET name=?, phone=?, governorate=?, district=?, village=?, notes=?, stage=?, lost_reason=?, price_tier_id=?, active=?, updated_at=?
         WHERE id=?`,
-      name, merged.phone ?? '', merged.governorate ?? '', merged.district ?? '', merged.village ?? '', merged.notes ?? '',
-        merged.stage, merged.lostReason ?? '', tierId, parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
+      name, phone, governorate, district, village, notes, stage, lostReason,
+        tierId, parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
         Date.now(), current.id);
     } catch (error) {
       if (String((error as Error).message).includes('UNIQUE')) {
@@ -1536,7 +1568,20 @@ export function createApp(overrides: Partial<Config> = {}) {
     price: z.number().nonnegative('السعر ما يقلش عن صفر.').nullable(),
   }).strict()).max(40).default([]);
   const newProduct = productFields.extend({ prices: priceEdits }).strict();
-  const patchProduct = productFields.partial().extend({ active: z.boolean().optional() }).strict();
+  // Same rule as the customer book: the row keeps its category, its pack text and its notes unless the
+  // call says otherwise — otherwise «وقف الصنف» would quietly reset them.
+  // The same trap, the same way out: `category`, `unitSize` and `notes` all carry create-time defaults, so
+  // a patch of `{ active: false }` would have reset an item's pack text and moved it under «أخرى» while
+  // «وقّف الصنف» was the only thing anybody asked for.
+  const patchProduct = z.object({
+    name: productFields.shape.name.optional(),
+    category: productFields.shape.category.unwrap().optional(),
+    // An absent unit keeps the stored one; a blank one is still refused, by min(1) on the shared field.
+    unit: productFields.shape.unit.optional(),
+    unitSize: productFields.shape.unitSize.unwrap().optional(),
+    notes: productFields.shape.notes.unwrap().optional(),
+    active: z.boolean().optional(),
+  }).strict();
 
   app.post('/api/products', adminOnly, (req, res) => {
     const parsed = newProduct.safeParse(req.body ?? {});
@@ -1593,11 +1638,13 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الصنف غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
       return;
     }
-    const merged = { ...current, ...parsed.data };
-    const name = String(merged.name).trim();
+    // Column by column, like the customer book: `merged.unitSize` off a row that stores `unit_size` is
+    // undefined, and an unrelated edit — stopping an item — would blank the pack text every price depends on.
+    const keep = (sent: string | undefined, column: unknown) => (sent === undefined ? String(column ?? '') : sent);
+    const name = String(parsed.data.name ?? current.name).trim();
     // An edit that sends no unit keeps the one on the row; one that sends an empty string is refused by
     // min(1) above, because «we never said what this is sold in» is not a thing a price can survive.
-    const unit = String(merged.unit ?? '').trim();
+    const unit = keep(parsed.data.unit, current.unit).trim();
     if (!unit) { res.status(400).json({ error: UNIT_HINT, issues: [{ path: ['unit'], message: UNIT_HINT }] }); return; }
     // Renaming into another item's slot is the same duplicate, so it is refused the same way — and the
     // message says which one is in the way.
@@ -1607,7 +1654,8 @@ export function createApp(overrides: Partial<Config> = {}) {
       return;
     }
     store.run(`UPDATE products SET name=?, category=?, unit=?, unit_size=?, notes=?, active=?, updated_at=? WHERE id=?`,
-      name, merged.category, unit, merged.unitSize ?? '', merged.notes ?? '',
+      name, parsed.data.category ?? current.category, unit,
+      keep(parsed.data.unitSize, current.unit_size), keep(parsed.data.notes, current.notes),
       parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0), Date.now(), current.id);
     store.audit(res.locals.user.id, 'product.update', { productId: current.id, fields: Object.keys(parsed.data) });
     res.json({

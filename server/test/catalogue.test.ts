@@ -239,3 +239,28 @@ test('an edit cannot erase the unit either, and a partial edit keeps it', async 
   assert.equal(nameOnly.status, 200, JSON.stringify(nameOnly.body));
   assert.equal(nameOnly.body.product.unit, 'جركن', 'renaming does not lose the pack');
 });
+
+test('stopping an item does not reset its pack, its category or its notes', async () => {
+  // The same trap as the customer book, in the schema this phase added: category, unitSize and notes all
+  // carry create-time defaults, so a `{ active }` patch would have moved a fertilizer under «أخرى» and
+  // blanked the pack text while nobody asked for either.
+  const created = await addProduct({
+    name: 'سلفو ماغنسيوم', category: 'fertilizer', unit: 'جركن', unitSize: '٥ لتر', notes: 'يُخزّن في الظل',
+    prices: [{ tierId: tierByName('جملة'), price: 260 }],
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.product.id as string;
+
+  const stopped = await client.patch(`/api/products/${id}`).set(admin).send({ active: false });
+  assert.equal(stopped.status, 200, JSON.stringify(stopped.body));
+  assert.equal(stopped.body.product.active, false);
+  assert.equal(stopped.body.product.category, 'fertilizer', 'the classification survives an unrelated edit');
+  assert.equal(stopped.body.product.unit, 'جركن');
+  assert.equal(stopped.body.product.unitSize, '٥ لتر');
+  assert.equal(stopped.body.product.notes, 'يُخزّن في الظل');
+  assert.deepEqual(stopped.body.product.prices, [{ tierId: tierByName('جملة'), price: 260 }], 'and the price row is untouched');
+
+  const renamed = await client.patch(`/api/products/${id}`).set(admin).send({ name: 'سلفو ماغنسيوم ٩.٨٪' });
+  assert.equal(renamed.body.product.unit, 'جركن', 'a rename does not lose the pack either');
+  assert.equal(renamed.body.product.unitSize, '٥ لتر');
+});

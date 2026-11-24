@@ -319,3 +319,46 @@ test('a customer with history is stopped, not deleted', async () => {
   assert.equal(store.get('SELECT id FROM customers WHERE id=?', clean.body.customer.id), undefined);
   assert.equal((await client.delete('/api/customers/does-not-exist').set(admin)).status, 404);
 });
+
+test('an edit that touches one field leaves the fields that were not sent alone', async () => {
+  // The shape a partial patch used to destroy: `.partial()` keeps create-time defaults, so `{ active }`
+  // arrived as `phone: ''`, `governorate: ''`, `stage: 'new'` and the route wrote all of it over the row.
+  // Pressing «وقف» on a customer in the dashboard erased his number and his area, and nothing on screen
+  // said so. A key the caller did not send must stay absent, not become a default.
+  const created = await book({
+    name: 'مزرعة الروّاد', phone: '01000000055', governorate: 'الغربية', district: 'طنطا', village: 'ميت حابس',
+    notes: 'بيشتري يوريا كل شهر', stage: 'following',
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.customer.id as string;
+  const before = created.body.customer;
+
+  const stopped = await client.patch(`/api/customers/${id}`).set(admin).send({ active: false });
+  assert.equal(stopped.status, 200, JSON.stringify(stopped.body));
+  assert.equal(stopped.body.customer.active, false, 'the one thing that was asked for happened');
+  for (const field of ['phone', 'governorate', 'district', 'village', 'notes', 'stage'] as const) {
+    assert.equal(stopped.body.customer[field], before[field], `${field} was not in the body and must be untouched`);
+  }
+
+  // And a patch that does send a field still writes it, blank included: «sent empty» and «not sent» are
+  // different requests, and only the second one means «keep».
+  const cleared = await client.patch(`/api/customers/${id}`).set(admin).send({ phone: '', notes: 'ملاحظة جديدة' });
+  assert.equal(cleared.body.customer.phone, '');
+  assert.equal(cleared.body.customer.notes, 'ملاحظة جديدة');
+  assert.equal(cleared.body.customer.governorate, before.governorate, 'the area survived the phone being cleared');
+  assert.equal(cleared.body.customer.stage, before.stage, 'and the stage survived it too');
+  // Stopping a customer takes him out of the default list, so the row is read with the stopped ones in.
+  const listed = await client.get('/api/customers?q=مزرعة الروّاد&includeInactive=1').set(admin);
+  assert.equal(listed.body.customers[0].governorate, before.governorate, 'the list reads the row, not the last patch');
+  assert.equal(listed.body.customers[0].active, false);
+
+  // The field that actually broke is the one spelled differently in the row and in the body: lost_reason
+  // versus lostReason. Moving a refused customer back to «بيتابع» must not delete why he said no, and an
+  // edit of his phone number must not either.
+  const refused = await book({ name: 'مزرعة الرفض', governorate: 'الغربية', district: 'طنطا', stage: 'lost', lostReason: 'السعر أعلى من السوق' });
+  assert.equal(refused.status, 201, JSON.stringify(refused.body));
+  const touched = await client.patch(`/api/customers/${refused.body.customer.id}`).set(admin).send({ phone: '01000000077' });
+  assert.equal(touched.status, 200, JSON.stringify(touched.body));
+  assert.equal(touched.body.customer.lostReason, 'السعر أعلى من السوق', 'the reason survived an unrelated edit');
+  assert.equal(touched.body.customer.stage, 'lost');
+});
