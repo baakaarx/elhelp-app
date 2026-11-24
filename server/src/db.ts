@@ -239,6 +239,77 @@ export class Store {
       CREATE INDEX IF NOT EXISTS visits_user_time ON visits(user_id, checked_in_at);
       CREATE INDEX IF NOT EXISTS visits_open ON visits(user_id, status);
       CREATE INDEX IF NOT EXISTS visits_created ON visits(created_at);
+
+      -- ---- What the engineer agreed to sell: the order ------------------------------------------
+      --
+      -- An order is the promise made in the yard, before anybody put a number on it. The office prices it
+      -- and the phone never does, so there is no price a field could fill in here, and no rate travelling
+      -- to a screen where it would be read as an offer. The team's move is to price these rows and close
+      -- them; an invoice is a different document on top of a closed order, not a rename of one.
+      --
+      -- It is written against a row of the customer book — the same rule as a visit: a name typed by hand
+      -- is a customer who may not exist. visit_id is a link and not a parent, because the man who takes
+      -- an order by phone from the road must not have to check himself in at his own gate to make the
+      -- paperwork work, and the man who agrees it in the field gets the connection the manager wants.
+      CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        -- Who agreed it, kept beside the customer because «مين قال للمزارع الكمية دي؟» gets asked.
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        -- RESTRICT, never CASCADE: an order is money-talk, and deleting a customer must not quietly un-make
+        -- a promise the company made to him. The office stops the row instead, and the sentence it is
+        -- refused with names what is holding him.
+        customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        -- Nullable, and SET NULL rather than CASCADE: cleanup() sweeps visits under RETENTION_DAYS, and a
+        -- promise made inside a swept visit is still a promise. The order survives; it only stops claiming
+        -- a visit it can no longer point at.
+        visit_id TEXT REFERENCES visits(id) ON DELETE SET NULL,
+        -- draft: on the phone, not sent. sent: the office's turn. priced: the team put the numbers on it
+        -- and closed it. There is no «cancelled» on purpose — a field order going away is a decision
+        -- somebody signs, not a row that disappears, and it will be added with its reason when it is needed.
+        status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','sent','priced')),
+        notes TEXT NOT NULL DEFAULT '',
+        -- The phone's own clock on a replayed order, exactly as visits carry it, so the office can tell
+        -- «أُرسلت من المزرعة» from «أُرسلت لما الشبكة رجعت» instead of guessing.
+        recorded_offline INTEGER NOT NULL DEFAULT 0,
+        -- Written once by the office and never recomputed afterwards: it is what the team said the order
+        -- came to, so editing a catalogue price next month must not silently change a closed agreement.
+        total REAL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        sent_at INTEGER, priced_at INTEGER,
+        -- Which account closed it. A number written into the company's book carries a name with it.
+        priced_by TEXT REFERENCES users(id) ON DELETE SET NULL
+      );
+      -- One line per item per order. Two lines for the same item are not two agreements — they are one
+      -- agreement counted twice, which is exactly what a replayed offline send would do to the numbers.
+      CREATE TABLE IF NOT EXISTS order_lines (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        -- The order the phone showed, kept rather than re-derived, because «٣ شيكارة يوريا» written under
+        -- «١ شيكارة مبيد» is the sentence the office reads in that order.
+        position INTEGER NOT NULL,
+        -- RESTRICT again: the item the office priced against cannot disappear under the line. With this in
+        -- place, the guard on deleting an item — which reads the schema instead of a list — starts refusing
+        -- on its own the day orders exist, and names the rows that hold it.
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        -- The name and the pack as they were when the quantity was agreed. A pack is the only thing that
+        -- makes a quantity mean something, and the office is allowed to change «عبوة» to «كرتونة» tomorrow
+        -- without rewriting what was promised in the yard.
+        product_name TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        unit_size TEXT NOT NULL DEFAULT '',
+        -- Zero is a line nobody needs and a negative is a refund wearing a costume; the ceiling is there
+        -- for the fat finger («٣٠» typed as «٣٠٠٠٠٠») that no screen notices before the warehouse does.
+        qty REAL NOT NULL CHECK(qty > 0 AND qty <= 100000),
+        notes TEXT NOT NULL DEFAULT '',
+        -- ---- what the office fills in, and NULL until it does ----
+        -- Which column of the price list was used, so «ليه السعر ده؟» has an answer. Null together with a
+        -- price means it was typed by hand — the normal state for a customer with no buyer type.
+        tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL,
+        price REAL CHECK(price IS NULL OR price >= 0),
+        created_at INTEGER NOT NULL
+      );
+      -- Deliberately absent from Store.cleanup(): a promise outlives the GPS trail it was made in, and
+      -- RETENTION_DAYS is a promise about locations, not about the company's sales history.
       -- Pending approval for OAuth social login (manager must approve)
       CREATE TABLE IF NOT EXISTS idle_reports (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -363,6 +434,18 @@ export class Store {
       { table: 'products', index: 'products_name_unit', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS products_name_unit ON products(name COLLATE NOCASE, unit COLLATE NOCASE)', needs: ['name', 'unit'] },
       { table: 'products', index: 'products_active_category', stmt: 'CREATE INDEX IF NOT EXISTS products_active_category ON products(active, category, name COLLATE NOCASE)', needs: ['active', 'category', 'name'] },
       { table: 'product_prices', index: 'product_prices_tier', stmt: 'CREATE INDEX IF NOT EXISTS product_prices_tier ON product_prices(tier_id, price)', needs: ['tier_id', 'price'] },
+      { table: 'orders', index: 'orders_rep_time', stmt: 'CREATE INDEX IF NOT EXISTS orders_rep_time ON orders(user_id, created_at)', needs: ['user_id', 'created_at'] },
+      { table: 'orders', index: 'orders_customer_time', stmt: 'CREATE INDEX IF NOT EXISTS orders_customer_time ON orders(customer_id, created_at)', needs: ['customer_id', 'created_at'] },
+      { table: 'orders', index: 'orders_visit', stmt: 'CREATE INDEX IF NOT EXISTS orders_visit ON orders(visit_id)', needs: ['visit_id'] },
+      // The badge on the manager's dashboard is exactly «what is still waiting for the team», so the
+      // queue is an index of its own rather than a scan over every order the company ever wrote.
+      { table: 'orders', index: 'orders_queue', stmt: 'CREATE INDEX IF NOT EXISTS orders_queue ON orders(created_at) WHERE status = \'sent\'', needs: ['status', 'created_at'] },
+      // Unique on the item, not merely on the pair with position: see the note above the table.
+      { table: 'order_lines', index: 'order_lines_item', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS order_lines_item ON order_lines(order_id, product_id)', needs: ['order_id', 'product_id'] },
+      { table: 'order_lines', index: 'order_lines_position', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS order_lines_position ON order_lines(order_id, position)', needs: ['order_id', 'position'] },
+      // What the delete guard on `products` counts, one row per line — without it, deleting an item walks
+      // the whole lines table and the office waits on a spinner to be told no.
+      { table: 'order_lines', index: 'order_lines_product_ref', stmt: 'CREATE INDEX IF NOT EXISTS order_lines_product_ref ON order_lines(product_id)', needs: ['product_id'] },
     ];
     for (const def of defs) {
       const shape = new Set((this.all(`PRAGMA table_info(${def.table})`) as Array<Record<string, any>>).map(col => String(col.name)));
@@ -388,11 +471,17 @@ export class Store {
    * sentence that names the script that fixes it, is the difference between a boot log and a support call.
    */
   private checkCatalogueLinks() {
-    const links: Array<[table: string, column: string, parent: string]> = [
-      ['product_prices', 'product_id', 'products'],
-      ['product_prices', 'tier_id', 'price_tiers'],
+    const links: Array<[table: string, column: string, parent: string, about: string]> = [
+      ['product_prices', 'product_id', 'products', 'الأصناف ما تتسعّرش على القاعدة دي'],
+      ['product_prices', 'tier_id', 'price_tiers', 'الأصناف ما تتسعّرش على القاعدة دي'],
+      // The order tables are newer than this guard, and the fault costs more here: a line whose parent
+      // moved is a promise the office can open in the list and cannot price.
+      ['order_lines', 'order_id', 'orders', 'الطلبيات ما تتقفلش على القاعدة دي'],
+      ['order_lines', 'product_id', 'products', 'الطلبيات ما تتسعّرش على القاعدة دي'],
+      ['orders', 'customer_id', 'customers', 'الطلبيات ما تركبش على عميل القاعدة دي'],
+      ['orders', 'visit_id', 'visits', 'الطلبيات ما تركبش على زيارة القاعدة دي'],
     ];
-    for (const [table, column, parent] of links) {
+    for (const [table, column, parent, about] of links) {
       const columns = new Set((this.all(`PRAGMA table_info(${table})`) as Array<Record<string, any>>).map(col => String(col.name)));
       // No such column means the table itself is an older shape, which ensureIndexes has already reported
       // by name; two warnings for one fact teach the operator to ignore both.
@@ -401,7 +490,7 @@ export class Store {
         .find(fk => String(fk.from) === column);
       const target = link ? String(link.table).replace(/^["`]/, '').replace(/["`]$/, '') : '';
       if (target !== parent) {
-        console.error(`[db] ${table}.${column} references ${target || 'nothing'} instead of ${parent} — الأصناف ما تتسعّرش على القاعدة دي. شغّل: node scripts/repair-legacy-catalogue.mjs`);
+        console.error(`[db] ${table}.${column} references ${target || 'nothing'} instead of ${parent} — ${about}. شغّل: node scripts/repair-legacy-catalogue.mjs`);
       }
     }
   }

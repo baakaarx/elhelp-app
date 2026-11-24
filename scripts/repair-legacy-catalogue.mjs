@@ -32,6 +32,13 @@ const EXPECTED = {
   products: ['id', 'name', 'category', 'unit', 'unit_size', 'notes', 'active', 'created_at', 'updated_at'],
   product_prices: ['product_id', 'tier_id', 'price', 'updated_at'],
   price_tiers: ['id', 'name', 'position', 'active', 'created_at', 'updated_at'],
+  // The order tables, since a rejected branch is not the only thing that can own a name first: any box
+  // that ran an experimental sales build and was rolled back can hold `orders` with someone else's
+  // columns, and the current code cannot use a table whose columns are not the ones it asked for.
+  orders: ['id', 'user_id', 'customer_id', 'visit_id', 'status', 'notes', 'recorded_offline', 'total',
+    'created_at', 'updated_at', 'sent_at', 'priced_at', 'priced_by'],
+  order_lines: ['id', 'order_id', 'position', 'product_id', 'product_name', 'unit', 'unit_size', 'qty',
+    'notes', 'tier_id', 'price', 'created_at'],
 };
 /** Names an abandoned build owns that this schema has no opinion about yet. Reported, never renamed. */
 const FOREIGN = ['warehouses', 'stock_movements', 'invoices', 'invoice_series', 'invoice_items', 'collections', 'collection_events', 'sales_targets'];
@@ -70,17 +77,31 @@ const orphans = FOREIGN.filter(name => tables.includes(name));
  * to at all, and the office gets «FOREIGN KEY constraint failed» on the first item they add. Re-pointing
  * those links at the plain name is what lets the app's own CREATE TABLE, on its first boot, be the
  * parent again.
+ *
+ * Only a table the current code owns is re-pointed. invoice_lines and stock_movements from the abandoned
+ * batch keep their link to the legacy bag, because the ids in their rows live there — moving them would
+ * leave every one of those rows pointing at nothing.
  */
-const dragged = [];
-// Only a table the current code owns is re-pointed. invoice_lines and stock_movements from the
-// abandoned batch keep their link to the legacy bag, because the ids in their rows live there — moving
-// them would leave every one of those rows pointing at nothing.
-for (const name of tables.filter(candidate => Object.keys(EXPECTED).includes(candidate) && !toRename.includes(candidate))) {
-  const parents = [...new Set((db.prepare(`PRAGMA foreign_key_list(${name})`).all() || [])
-    .map(fk => String(fk.table))
-    .filter(table => table.endsWith(SUFFIX) && Object.keys(EXPECTED).includes(table.slice(0, -SUFFIX.length))))];
-  if (parents.length) dragged.push({ table: name, parents, rows: rowsOf(name) });
-}
+const ownedChildren = () => tables.filter(name => Object.keys(EXPECTED).includes(name) && !toRename.includes(name));
+const detectDragged = () => {
+  const found = [];
+  for (const name of ownedChildren()) {
+    const parents = [...new Set((db.prepare(`PRAGMA foreign_key_list(${name})`).all() || [])
+      .map(fk => String(fk.table))
+      .filter(table => table.endsWith(SUFFIX) && Object.keys(EXPECTED).includes(table.slice(0, -SUFFIX.length))))];
+    if (parents.length) found.push({ table: name, parents, rows: rowsOf(name) });
+  }
+  return found;
+};
+const dragged = detectDragged();
+/*
+ * The pass above sees only a database that was repaired earlier. The one that matters more is the one
+ * being repaired right now: after `orders` is renamed below, `order_lines` follows it, and a script that
+ * stopped there would leave the office running it twice to find out — with a warning at every boot in
+ * between, and an empty child table pointing at dead rows. So the links are looked at again after the
+ * renames, in the same run.
+ */
+const draggedAfterRename = [];
 
 console.log(`base: ${dbPath}${dryRun ? '  [dry-run: لا تعديل]' : ''}`);
 if (!mismatched.length) console.log('مفيش ترابيزة اسمها بيخالف الشكل اللي الكود الحالي يتوقعه — مفيش حاجة تتعمل.');
@@ -112,6 +133,9 @@ db.exec('BEGIN');
 try {
   for (const row of dependents) db.exec(`DROP ${row.type.toUpperCase()} IF EXISTS ${row.name}`);
   for (const table of toRename) db.exec(`ALTER TABLE ${table} RENAME TO ${table}${SUFFIX}`);
+  for (const item of detectDragged()) {
+    if (!dragged.some(known => known.table === item.table)) draggedAfterRename.push(item);
+  }
   // Only when the table is the one this schema declares: on a table that came from elsewhere, our
   // column names mean nothing and deleting by them would be guessing.
   if (!mismatched.some(item => item.table === 'price_tiers') && junkTiers.length) {
@@ -125,7 +149,7 @@ try {
   // Rebuilt, not edited: SQLite has no ALTER that changes what a column references, so the child table
   // is recreated from its own definition with the parent name restored, row for row. The indexes it
   // carried go with the old copy and the app makes them again on its first boot.
-  for (const item of dragged) {
+  for (const item of [...dragged, ...draggedAfterRename]) {
     const sql = String(db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(item.table).sql);
     let fixed = sql;
     // No regex here: this file has already been burned by escapes, and the string to fix is a literal.
@@ -162,5 +186,7 @@ db.close();
 console.log(`\nاتعمل: ${toRename.map(table => `${table} → ${table}${SUFFIX}`).join(' ، ')}`);
 console.log(dependents.length ? `ومسحت ${dependents.length} من views/triggers اللي كانت مربوطة بيهم.` : 'مفيش views أو triggers مربوطة بيهم.');
 console.log('الكود الحالي هيبني ترابيزاته لوحده أول ما السيرفر يقلع، والصفوف القديمة لسه جوه الأسماء الجديدة.');
-if (dragged.length) console.log(`ورجّعت ${dragged.length} ترابيزة تشير للأسماء الجديدة بدل النسخة القديمة: ${dragged.map(item => item.table).join(', ')} — بنفس عدد الصفوف.`);
+const rePointed = [...dragged, ...draggedAfterRename];
+if (rePointed.length) console.log(`ورجّعت ${rePointed.length} ترابيزة تشير للأسماء الجديدة بدل النسخة القديمة: ${rePointed.map(item => item.table).join(', ')} — بنفس عدد الصفوف.`);
+if (draggedAfterRename.length) console.log(`${draggedAfterRename.map(item => item.table).join(', ')} اتسحبت وهي بتترمم في نفس الشغلة — مش محتاج تعيد السكربت.`);
 if (junkTiers.length) console.log('قايمعة الأنواع فاضية ⇒ جملة/نصف جملة/تجزئة ترجع أول إقلاع.');
