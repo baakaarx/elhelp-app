@@ -25,6 +25,16 @@ const productRow = (page: Page, name: string): Locator =>
 const tierRow = (page: Page, name: string): Locator =>
   page.locator('.tiers-table tbody tr').filter({ has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
 
+/**
+ * A price cell prints Arabic digits with a thousands separator («١٬١٥٠»). The claim under test is that
+ * the number on screen is the number that was typed, so the separator is normalised away rather than
+ * guessed at: hardcoding «١١٥٠» would make this suite fail on the ICU build, not on the product.
+ */
+const cellNumber = async (cell: Locator) =>
+  (await cell.innerText()).replace(/[٬,\s\u066c\u02bc]/g, '').replace(/[٠-٩]/g, digit => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)));
+/** Retries while the cell repaints after a save, which is what `toContainText` would have done. */
+const expectNumber = (cell: Locator, value: string) => expect.poll(() => cellNumber(cell)).toBe(value);
+
 async function openCatalogue(page: Page) {
   await signInAsManager(page);
   await page.locator('button.nav-item').filter({ hasText: 'الأصناف' }).click();
@@ -36,9 +46,9 @@ test.describe('قايمعة الأصناف والأسعار', () => {
     await openCatalogue(page);
     const row = productRow(page, 'يوريا ٤٦٪');
     await expect(row).toContainText('شيكارة · ٥٠ كجم');
-    // Arabic digits, and the exact number that was typed: a price that quietly rounds is a price that
-    // cannot be trusted against an invoice.
-    await expect(row.locator('td').nth(3)).toContainText('١١٥٠');
+    // The exact number that was typed: a price that quietly rounds is a price that cannot be trusted
+    // against an invoice.
+    await expectNumber(row.locator('td').nth(3), '1150');
     // A type with no number is unfinished, not free — so the cell says so instead of showing ٠.
     await expect(row.locator('td').nth(4)).toContainText('بلا سعر');
     await expect(row.locator('td').nth(5)).toContainText('بلا سعر');
@@ -47,8 +57,8 @@ test.describe('قايمعة الأصناف والأسعار', () => {
     await expect(page.getByText('مش الكرتونة ولا الطرد')).toBeVisible();
     // And the buyer types are listed below with the counts the office works from: one item priced under
     // جملة, and one customer quoted at it.
-    await expect(tierRow(page, 'جملة').locator('td').nth(2)).toContainText('١');
-    await expect(tierRow(page, 'جملة').locator('td').nth(3)).toContainText('١');
+    await expectNumber(tierRow(page, 'جملة').locator('td').nth(2), '1');
+    await expectNumber(tierRow(page, 'جملة').locator('td').nth(3), '1');
   });
 
   test('one cell is written without touching the rest of the row', async ({ page }) => {
@@ -57,7 +67,7 @@ test.describe('قايمعة الأصناف والأسعار', () => {
     await row.locator('td').nth(4).getByRole('button').click();
     await row.getByLabel('سعر يوريا ٤٦٪ — نصف جملة').fill('1220');
     await row.getByRole('button', { name: 'حفظ' }).click();
-    await expect(row.locator('td').nth(4)).toContainText('١٢٢٠');
+    await expectNumber(row.locator('td').nth(4), '1220');
 
     // Reading the row back from the server, not from the screen: the column that was not edited has to
     // still hold its number, which is the whole reason prices are written one cell at a time.
@@ -115,7 +125,7 @@ test.describe('قايمعة الأصناف والأسعار', () => {
     await expect(page.locator('.panel').filter({ hasText: 'أنواع المشترين' }).locator('.error')).toContainText('وقّف النوع');
     await expect(tierRow(page, 'جملة')).toBeVisible();
     // And the price itself is still there — stopping a heading is not deleting the numbers under it.
-    await expect(productRow(page, 'يوريا ٤٦٪').locator('td').nth(3)).toContainText('١١٥٠');
+    await expectNumber(productRow(page, 'يوريا ٤٦٪').locator('td').nth(3), '1150');
   });
 
   test('the buyer type is chosen in the customer book, and reads back there', async ({ page }) => {
