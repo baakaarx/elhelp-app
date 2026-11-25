@@ -26,11 +26,13 @@ type Pending = {path:string; body:unknown; kind:'sale'|'receipt'|'opening'|'corr
 export default function Sales({timezone,userId}:{timezone?:string;userId:string}) {
   const pendingKey=`mandoub.sales.pending.${userId}`;
   const operationPanel=useReveal<HTMLDivElement>();
+  const errorPanel=useReveal<HTMLParagraphElement>();
   const [pending,setPending]=useState<Pending|null>(()=>{try {const raw=localStorage.getItem(pendingKey);return raw?JSON.parse(raw) as Pending:null;}catch{return null;}});
   const sending=useRef(false);
   const [view,setView]=useState<'summary'|'prices'|'advanced'>('summary');
   const [options,setOptions]=useState<Options|null>(null), [report,setReport]=useState<Report|null>(null);
   const [loading,setLoading]=useState(true),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
+  const showError=(text:string)=>{setError(text);errorPanel.reveal();};
   const [needsRefresh,setNeedsRefresh]=useState(false);
   const [review,setReview]=useState<'sale'|'receipt'|'opening'|null>(null);
   const [showSale,setShowSale]=useState(false),[mode,setMode]=useState<'direct'|'order'>('direct');
@@ -43,7 +45,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const [detail,setDetail]=useState<Detail|null>(null),[detailMode,setDetailMode]=useState<'invoice'|'correction'|null>(null);
   const [priceProduct,setPriceProduct]=useState(''),[priceTier,setPriceTier]=useState(''),[priceInput,setPriceInput]=useState('');
   const saleRequest=useRef(''),receiptRequest=useRef(''),openingRequest=useRef('');
-  const load=useCallback(async()=>{statementRequest.current++;setStatementBusy(false);setStatement(null);setLoading(true);try {const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);setOptions(o);setReport(r);setStatement(null);setNeedsRefresh(false);setError('');}catch(e){setError(err(e));}finally{setLoading(false);}},[]);
+  const load=useCallback(async()=>{statementRequest.current++;setStatementBusy(false);setStatement(null);setLoading(true);try {const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);setOptions(o);setReport(r);setStatement(null);setNeedsRefresh(false);setError('');}catch(e){showError(err(e));}finally{setLoading(false);}},[]);
   useEffect(()=>{void load();return()=>{statementRequest.current++;};},[load]);
   const selectedOrder=options?.orders.find(o=>o.id===orderId);
   const currentLines = lines.map(l=>({qty:parse(l.qty),price:parse(l.price)}));
@@ -52,10 +54,10 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const paidValue=parse(paid);
   const changeLine=(key:string, patch:Partial<Line>)=>{saleRequest.current='';setLines(prev=>prev.map(line=>line.key===key?{...line,...patch}:line));};
   const suggested=(productId:string,customer:string)=>{const tier=options?.customers.find(c=>c.id===customer)?.priceTierId;const value=options?.prices.find(p=>p.productId===productId&&p.tierId===tier)?.price;return value===undefined?'':String(value);};
-  const refreshAfter=async(success:string)=>{statementRequest.current++;setStatementBusy(false);setStatement(null);setMessage(success);try{const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);setOptions(o);setReport(r);setNeedsRefresh(false);}catch{setNeedsRefresh(true);setError(`${success} لكن الشاشة ما اتحدّثتش. لازم تحدّث الأرقام قبل عملية جديدة.`);}};
+  const refreshAfter=async(success:string)=>{statementRequest.current++;setStatementBusy(false);setStatement(null);setMessage(success);try{const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);setOptions(o);setReport(r);setNeedsRefresh(false);}catch{setNeedsRefresh(true);showError(`${success} لكن الشاشة ما اتحدّثتش. لازم تحدّث الأرقام قبل عملية جديدة.`);}};
   // Tabs on the same device share a single durable pending operation. Web Locks serializes
   // the read/write across tabs where supported; storage events also block other open tabs.
-  useEffect(()=>{const sync=(event:StorageEvent)=>{if(event.key!==pendingKey)return;try{setPending(event.newValue?JSON.parse(event.newValue) as Pending:null);if(!event.newValue)setNeedsRefresh(true);}catch{setError('تعذر قراءة العملية المعلقة. راجع المسؤول قبل التسجيل.');}};window.addEventListener('storage',sync);return()=>window.removeEventListener('storage',sync);},[pendingKey]);
+  useEffect(()=>{const sync=(event:StorageEvent)=>{if(event.key!==pendingKey)return;try{setPending(event.newValue?JSON.parse(event.newValue) as Pending:null);if(!event.newValue)setNeedsRefresh(true);}catch{showError('تعذر قراءة العملية المعلقة. راجع المسؤول قبل التسجيل.');}};window.addEventListener('storage',sync);return()=>window.removeEventListener('storage',sync);},[pendingKey]);
   async function sendOperation(operation:Pending) {
     if (sending.current) throw new Error('العملية لسه بتتحفظ.');
     if(!navigator.locks) throw new Error('المتصفح لا يدعم حماية العمليات بين التبويبات. افتح النظام بمتصفح حديث واتصال آمن.');
@@ -63,7 +65,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
     const run=async()=>{
       const raw=localStorage.getItem(pendingKey);
       if(raw && raw!==JSON.stringify(operation)) {
-        try{setPending(JSON.parse(raw) as Pending);}catch{setError('تعذر قراءة العملية المعلقة. راجع المسؤول قبل التسجيل.');}
+        try{setPending(JSON.parse(raw) as Pending);}catch{showError('تعذر قراءة العملية المعلقة. راجع المسؤول قبل التسجيل.');}
         throw new Error('في عملية معلقة على الجهاز. لازم تتأكد منها الأول.');
       }
       try {
@@ -86,16 +88,16 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
     await sendOperation(pending);setReview(null);setDetail(null);setDetailMode(null);saleRequest.current='';receiptRequest.current='';openingRequest.current='';
     setShowSale(false);setRepChoice('');setLines([emptyLine()]);setPaid('');setOrderId('');setReceiptCustomer('');setReceiptAmount('');setOpeningCustomer('');setOpeningAmount('');
     await refreshAfter('اتأكدنا من العملية واتحدّثت الأرقام.');
-  }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}setError(err(e));}finally{setBusy(false);}}
+  }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}showError(err(e));}finally{setBusy(false);}}
   function saveSale(event:FormEvent) {event.preventDefault();setError('');setMessage('');
-    if(!validLines || !Number.isFinite(paidValue) || paidValue<0 || paidValue>total || !hasInputPrecision(paid,2)){setError('راجع الكميات والأسعار والمبلغ المدفوع: الكمية حتى ٣ أرقام عشرية، والمبالغ حتى رقمين.');return;}
-    if(mode==='direct' && (lines.some(l=>!l.productId) || new Set(lines.map(l=>l.productId)).size!==lines.length)){setError('اختار كل صنف مرة واحدة.');return;}
-    if(mode==='order' && !selectedOrder){setError('اختار طلبية مرسلة.');return;}
+    if(!validLines || !Number.isFinite(paidValue) || paidValue<0 || paidValue>total || !hasInputPrecision(paid,2)){showError('راجع الكميات والأسعار والمبلغ المدفوع: الكمية حتى ٣ أرقام عشرية، والمبالغ حتى رقمين.');return;}
+    if(mode==='direct' && (lines.some(l=>!l.productId) || new Set(lines.map(l=>l.productId)).size!==lines.length)){showError('اختار كل صنف مرة واحدة.');return;}
+    if(mode==='order' && !selectedOrder){showError('اختار طلبية مرسلة.');return;}
     setReview('sale');operationPanel.reveal();
   }
   function entry(event:FormEvent,kind:'receipt'|'opening'){event.preventDefault();setError('');setMessage('');const value=parse(kind==='receipt'?receiptAmount:openingAmount);
-    if(!Number.isFinite(value)||value<0||value>1_000_000_000||(kind==='receipt'&&value===0)||!hasInputPrecision(kind==='receipt'?receiptAmount:openingAmount,2)){setError('اكتب مبلغ صحيح بالجنيه والقرش.');return;}
-    if(kind==='receipt' && value>(report?.debtors.find(c=>c.id===receiptCustomer)?.due??0)){setError('الدفعة أكبر من المبلغ المسجّل على العميل.');return;}
+    if(!Number.isFinite(value)||value<0||value>1_000_000_000||(kind==='receipt'&&value===0)||!hasInputPrecision(kind==='receipt'?receiptAmount:openingAmount,2)){showError('اكتب مبلغ صحيح بالجنيه والقرش.');return;}
+    if(kind==='receipt' && value>(report?.debtors.find(c=>c.id===receiptCustomer)?.due??0)){showError('الدفعة أكبر من المبلغ المسجّل على العميل.');return;}
     setReview(kind);operationPanel.reveal();
   }
   async function confirmReview(){if(!review)return;setError('');setMessage('');setBusy(true);
@@ -109,26 +111,26 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         ref.current='';if(review==='receipt'){setReceiptAmount('');setReceiptCustomer('');}else{setOpeningAmount('');setOpeningCustomer('');}
         const success=review==='receipt'?'الدفعة اتحفظت.':'المديونية القديمة اتحفظت.';setReview(null);await refreshAfter(success);
       }
-    }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}setError(err(e));}finally{setBusy(false);}
+    }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}showError(err(e));}finally{setBusy(false);}
   }
-  async function showStatement(salesOffset=0,receiptsOffset=0){if(!statementCustomer)return;const customer=statementCustomer,request=++statementRequest.current;setStatementBusy(true);setError('');try{const result=await api<Statement>(`/api/sales/statement/${encodeURIComponent(customer)}?salesOffset=${salesOffset}&receiptsOffset=${receiptsOffset}`);if(request===statementRequest.current&&currentStatementCustomer.current===customer)setStatement(result);}catch(e){if(request===statementRequest.current&&currentStatementCustomer.current===customer){setStatement(null);setError(err(e));}}finally{if(request===statementRequest.current&&currentStatementCustomer.current===customer)setStatementBusy(false);}}
+  async function showStatement(salesOffset=0,receiptsOffset=0){if(!statementCustomer)return;const customer=statementCustomer,request=++statementRequest.current;setStatementBusy(true);setError('');try{const result=await api<Statement>(`/api/sales/statement/${encodeURIComponent(customer)}?salesOffset=${salesOffset}&receiptsOffset=${receiptsOffset}`);if(request===statementRequest.current&&currentStatementCustomer.current===customer)setStatement(result);}catch(e){if(request===statementRequest.current&&currentStatementCustomer.current===customer){setStatement(null);showError(err(e));}}finally{if(request===statementRequest.current&&currentStatementCustomer.current===customer)setStatementBusy(false);}}
   async function openDetail(type:'sale'|'receipt',id:string,mode:'invoice'|'correction') {setError('');setMessage('');setBusy(true);try {
     const d=await api<Detail>(`/api/sales/corrections/${type}/${encodeURIComponent(id)}`);setDetail(d);setDetailMode(mode);operationPanel.reveal();
-  }catch(e){setError(err(e));}finally{setBusy(false);}}
+  }catch(e){showError(err(e));}finally{setBusy(false);}}
   async function saveCorrection(values:CorrectionPayload) {if(!detail)return;setError('');setBusy(true);try{
     await sendOperation({path:`/api/sales/corrections/${detail.type}/${encodeURIComponent(detail.record.id)}`,body:{id:crypto.randomUUID(),...values},kind:'correction'});
     setDetail(null);setDetailMode(null);await refreshAfter('التصحيح اتحفظ. راجع الحساب بعد التحديث.');
-  }catch(e){setError(err(e));}finally{setBusy(false);}}
-  async function savePrice(event:FormEvent){event.preventDefault();setError('');setMessage('');const value=parse(priceInput);if(!Number.isFinite(value)||value<0||value>1_000_000_000||!hasInputPrecision(priceInput,2)){setError('اكتب سعر صحيح بالجنيه والقرش.');return;}setBusy(true);try{
+  }catch(e){showError(err(e));}finally{setBusy(false);}}
+  async function savePrice(event:FormEvent){event.preventDefault();setError('');setMessage('');const value=parse(priceInput);if(!Number.isFinite(value)||value<0||value>1_000_000_000||!hasInputPrecision(priceInput,2)){showError('اكتب سعر صحيح بالجنيه والقرش.');return;}setBusy(true);try{
     await api(`/api/products/${priceProduct}/prices`,{method:'PUT',body:JSON.stringify({prices:[{tierId:priceTier,price:value}]})});await refreshAfter('السعر اتحفظ.');
-  }catch(e){setError(err(e));}finally{setBusy(false);}}
+  }catch(e){showError(err(e));}finally{setBusy(false);}}
   const selectPrice=(product:string,tier:string)=>{setPriceProduct(product);setPriceTier(tier);const value=options?.prices.find(p=>p.productId===product&&p.tierId===tier)?.price;setPriceInput(value===undefined?'':String(value));};
   return <section className="page sales-page">
     <header className="page-head"><div><h2>المبيعات والمخزون</h2><p className="muted">تابع البيعات والباقي على العملاء وأرصدة المخازن.</p></div><div className="filters">
       <button className="btn ghost sm" disabled={!!pending||!!review||!!detailMode||needsRefresh||busy} onClick={()=>{setView(view==='prices'?'summary':'prices');setError('');setMessage('');}}>{view==='prices'?'رجوع للملخص':'تعديل الأسعار'}</button>
       {view==='summary'&&!pending&&!review&&!detailMode&&!needsRefresh&&<button className="btn primary" onClick={()=>{setShowSale(!showSale);setError('');setMessage('');}}>{showSale?'إغلاق':'تسجيل فاتورة'}</button>}
     </div></header>
-    {error&&<p className="error" role="alert">{error}</p>}{message&&<p className="ok-text" role="status">{message}</p>}
+    {error&&<p className="error reveal-target" ref={errorPanel.ref} tabIndex={-1} role="alert">{error}</p>}{message&&<p className="ok-text" role="status">{message}</p>}
     {pending?<div className="panel reveal-target" tabIndex={-1} ref={operationPanel.ref}><h3>عملية محتاجة تأكيد</h3><p>الاتصال وقف قبل ما نتأكد من حفظ {pending.kind==='sale'?'الفاتورة':pending.kind==='receipt'?'الدفعة':pending.kind==='correction'?'التصحيح':'المديونية القديمة'}. اضغط تأكيد العملية لإعادة إرسال نفس الطلب بأمان، من غير تكرار.</p><button className="btn primary" disabled={busy} onClick={()=>void retryPending()}>تأكيد العملية</button></div>:needsRefresh?<div className="panel"><h3>لازم نحدّث الأرقام الأول</h3><p>العملية اتحفظت، لكن الأرقام المعروضة ممكن تكون قديمة. حدّثها قبل أي عملية جديدة.</p><button className="btn primary" disabled={loading} onClick={()=>void load()}>تحديث الأرقام</button></div>:loading&&!options?<p>جارٍ التحميل…</p>:!options||!report?<button className="btn ghost sm" onClick={()=>void load()}>حاول تاني</button> :review?<div className="panel reveal-target" ref={operationPanel.ref} tabIndex={-1} aria-label="مراجعة العملية"><h3>راجع البيانات قبل الحفظ</h3>
       {review==='sale'?<>
         <p><strong>العميل:</strong> {options.customers.find(c=>c.id===customerId)?.name} {options.customers.find(c=>c.id===customerId)?.phone} · رقم {customerId.slice(-6)}</p>

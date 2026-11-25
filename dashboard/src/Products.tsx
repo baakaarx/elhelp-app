@@ -36,6 +36,7 @@ export default function Products(_props: { timezone?: string }) {
   const [filters, setFilters] = useState({ q: '', category: '', tierId: NONE, unpricedOnly: false, includeInactive: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [editing, setEditing] = useState<Product | 'new' | null>(null);
   const productForm = useReveal<HTMLFormElement>();
   const [form, setForm] = useState(EMPTY_FORM);
@@ -97,12 +98,14 @@ export default function Products(_props: { timezone?: string }) {
   const set = (next: Partial<typeof filters>) => setFilters(value => ({ ...value, ...next }));
 
   function openCreate() {
+    setMessage('');
     setForm({ ...EMPTY_FORM });
     setFormError('');
     setEditing('new');
     productForm.reveal();
   }
   function openEdit(product: Product) {
+    setMessage('');
     setForm({ name: product.name, category: product.category, unit: product.unit, unitSize: product.unitSize, notes: product.notes });
     setFormError('');
     setEditing(product);
@@ -126,6 +129,7 @@ export default function Products(_props: { timezone?: string }) {
       if (current === 'new') await post('/api/products', fields);
       else if (current) await patch(`/api/products/${current.id}`, fields);
       closeForm();
+      setMessage(current === 'new' ? 'الصنف اتضاف.' : 'الصنف اتعدل.');
       await load();
     } catch (e) {
       setFormError(messageOf(e, 'تعذر حفظ الصنف.'));
@@ -138,9 +142,10 @@ export default function Products(_props: { timezone?: string }) {
   }
 
   async function setActive(product: Product, active: boolean) {
-    setBusyRow(product.id);
+    setMessage('');setBusyRow(product.id);
     try {
       await patch(`/api/products/${product.id}`, { active });
+      setMessage(active ? 'الصنف اتفعّل.' : 'الصنف اتوقف.');
       await load();
     } catch (e) {
       setError(messageOf(e, 'تعذر تغيير حالة الصنف.'));
@@ -150,14 +155,15 @@ export default function Products(_props: { timezone?: string }) {
   }
 
   async function remove(product: Product) {
-    setBusyRow(product.id);
+    setMessage('');setBusyRow(product.id);
     try {
       await del(`/api/products/${product.id}`);
+      setMessage('الصنف اتحذف.');
       await load();
     } catch (e) {
       // «الصنف ده مستخدم: ٣ سطور في order_items» is an answer, not a crash to hide.
-      setError(messageOf(e, 'تعذر حذف الصنف.'));
       await load();
+      setError(messageOf(e, 'تعذر حذف الصنف.'));
     } finally {
       setBusyRow('');
     }
@@ -175,10 +181,11 @@ export default function Products(_props: { timezone?: string }) {
    */
   async function writePrice(product: Product, tier: PriceTier, price: number | null) {
     setBusyRow(product.id);
-    setPriceError('');
+    setMessage('');setPriceError('');
     try {
       await api(`/api/products/${product.id}/prices`, { method: 'PUT', body: JSON.stringify({ prices: [{ tierId: tier.id, price }] }) });
       setDraft(null);
+      setMessage(price === null ? 'السعر اتمسح.' : 'السعر اتحفظ.');
       await load();
     } catch (e) {
       setPriceError(messageOf(e, 'تعذر حفظ السعر.'));
@@ -264,6 +271,9 @@ export default function Products(_props: { timezone?: string }) {
       </div>
 
       {error && <p className="error banner" role="alert">{error}</p>}
+      {message && <p className="ok-text" role="status">{message}</p>}
+
+      {!ready && priceError && <p className="error" role="alert">{priceError}</p>}
 
       {editing && (
         <form className="panel reveal-target" ref={productForm.ref} tabIndex={-1} onSubmit={save}>

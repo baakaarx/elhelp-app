@@ -131,8 +131,11 @@ export default function Customers(_props: { timezone?: string }) {
     } catch (e) {
       // «اتحفظت لكن النقل اترفض» is only true once the row itself went in; saying it after a refused
       // first call would send the office to look for a half-saved record that was never written.
+      const rejected = e instanceof ApiError && e.status >= 400 && e.status < 500 && ![401,403,408,429].includes(e.status);
       setFormError(fieldsSaved
-        ? `البيانات اتحفظت، لكن النقل اترفض: ${messageOf(e, 'تعذر ربط العميل.')}`
+        ? rejected
+          ? `البيانات اتحفظت، لكن النقل اترفض: ${messageOf(e, 'تعذر ربط العميل.')}`
+          : `البيانات اتحفظت، لكن تعذر التأكد من نقل العميل. راجع ربطه في القائمة قبل المحاولة مرة أخرى. ${messageOf(e, '')}`
         : messageOf(e, 'تعذر حفظ العميل.'));
       await load();
     } finally {
