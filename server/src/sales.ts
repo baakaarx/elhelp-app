@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { invoicePdf } from './invoicePdf.js';
 import { z } from 'zod';
 import type { Store } from './db.js';
 
@@ -18,7 +19,7 @@ const correctionBody=z.object({id,reason:z.string().trim().min(5).max(500),balan
   cash:z.object({kind:z.enum(['error','refund']),amountPiasters:z.number().int().positive().max(100_000_000_000)}).strict().nullable()}).strict();
 
 /** Office-only confirmed sales; a priced order is not itself a sale or a payment. */
-export function createSalesRouter(store: Store) {
+export function createSalesRouter(store: Store, timezone:string) {
   const router = Router();
   const balance = (customerId: string): number => Number(store.get(`SELECT
     COALESCE((SELECT SUM(amount_piasters) FROM office_debts_v1 WHERE customer_id=?),0)
@@ -126,11 +127,23 @@ export function createSalesRouter(store: Store) {
       COALESCE((SELECT SUM(amount_piasters) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS correctedAmount
       FROM office_sales_lines_v1 l WHERE l.sale_id=? ORDER BY l.rowid`,targetId):[];
     const snapshot=sale?store.get('SELECT customer_name AS customerName,phone,governorate,district,village,warehouse_name AS warehouseName,rep_name AS repName FROM office_invoice_snapshots_v1 WHERE sale_id=?',targetId):null;
-    return {type,record,lines,events,revision:events.length,balancePiasters:balance(String(record.customerId)),
+    const version=createHash('sha256').update(JSON.stringify({record,snapshot:snapshot??null,lines,events})).digest('hex');
+    return {type,record,lines,events,version,revision:events.length,balancePiasters:balance(String(record.customerId)),
       cashRemaining:Number(record.paid)-Number(store.get(`SELECT COALESCE(SUM(cash_piasters),0) AS n FROM office_corrections_v1 WHERE ${key}=?`,targetId)?.n||0),snapshot:snapshot??null};
   }
+  const readDetail=(type:string,targetId:string):ReturnType<typeof detail>=>{let result:ReturnType<typeof detail>=null;store.transaction(()=>{result=detail(type,targetId);});return result;};
+  router.get('/invoice/:saleId/pdf',async(req,res)=>{
+    const id=String(req.params.saleId);if(!z.uuid().safeParse(id).success){res.status(404).json({error:'البيعة غير موجودة.'});return;}
+    const current=readDetail('sale',id);if(!current){res.status(404).json({error:'البيعة غير موجودة.'});return;}
+    if(typeof req.query.version!=='string'||req.query.version!==current.version){res.status(409).json({error:'الفاتورة اتغيرت. ارجع وافتحها من جديد قبل التحميل.',code:'INVOICE_CHANGED'});return;}
+    try {
+      const bytes=await invoicePdf(current,timezone,Date.now());
+      res.setHeader('Cache-Control','private, no-store');res.setHeader('Content-Type','application/pdf');
+      res.setHeader('Content-Disposition',`attachment; filename="invoice-${id}.pdf"`);res.send(bytes);
+    }catch(error){console.error('[invoice pdf]',error);res.status(500).json({error:'تعذر إنشاء ملف الفاتورة. حاول مرة أخرى.'});}
+  });
   router.get('/corrections/:type/:targetId',(req,res)=>{
-    const result=detail(String(req.params.type),String(req.params.targetId));
+    const result=readDetail(String(req.params.type),String(req.params.targetId));
     if(!result){res.status(404).json({error:'العملية غير موجودة.'});return;}
     res.setHeader('Cache-Control','private, no-store');res.json(result);
   });

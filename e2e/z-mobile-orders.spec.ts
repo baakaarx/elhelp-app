@@ -22,6 +22,8 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   await expect(page.getByText('التقرير اليومي')).toHaveCount(0);
   await page.getByRole('button', { name: 'تسجيل طلبية' }).click();
   await page.getByText('مزرعة النور', { exact: true }).last().click();
+  // The phone only shows the first few catalogue entries until the engineer searches.
+  await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('يوريا');
   await page.getByRole('button', { name: 'ضيف يوريا ٤٦٪' }).click();
   await page.getByLabel('كمية يوريا ٤٦٪').fill('3');
   const response = page.waitForResponse(res => res.url().endsWith('/api/orders') && res.request().method() === 'POST');

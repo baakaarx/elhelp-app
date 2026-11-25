@@ -300,7 +300,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const adminOnly = requireAuth(store, 'admin');
   app.use('/api/warehouse', auth, createWarehouseRouter(store));
   app.use('/api/staff', adminOnly, createStaffRouter(store, id => io.in(`user:${id}`).disconnectSockets(true)));
-  app.use('/api/sales', adminOnly, createSalesRouter(store));
+  app.use('/api/sales', adminOnly, createSalesRouter(store,config.timezone));
   app.use('/api/sales-insights', adminOnly, createInsightsRouter(store,config.timezone));
   app.get('/api/work-priorities', adminOnly, (_req, res) => {
     const waitingOrders = store.all(`SELECT o.id,c.name AS customerName,u.name AS repName,o.sent_at AS sentAt

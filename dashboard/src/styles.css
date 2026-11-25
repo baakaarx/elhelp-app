@@ -529,8 +529,15 @@ input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
 .invoice-print { overflow-wrap:anywhere; }
 .invoice-event { border-top:1px solid #ddd; padding-top:.4rem; margin-top:.5rem; }
 @media print {
+  @page { size:A4; margin:12mm; }
+  body { background:white !important; }
   body * { visibility:hidden !important; }
   .invoice-print,.invoice-print * { visibility:visible !important; }
-  .invoice-print { position:absolute; inset:0; width:100%; box-shadow:none; border:0; background:white; color:black; }
-  .invoice-print .kpi-table-wrap { overflow:visible; }
+  .invoice-print { position:absolute; top:0; left:0; right:0; bottom:auto; height:auto; width:100%; padding:0; box-shadow:none; border:0; background:white; color:black; }
+  .invoice-print .kpi-table-wrap { overflow:visible !important; }
+  .invoice-print .kpi-table { min-width:0; width:100%; table-layout:fixed; }
+  .invoice-print .kpi-table th,.invoice-print .kpi-table td { white-space:normal; overflow-wrap:anywhere; padding:5px; font-size:9pt; }
+  .invoice-print .kpi-table th:first-child { width:43%; }
+  .invoice-print .kpi-table thead { display:table-header-group; }
+  .invoice-print .kpi-table tr { break-inside:avoid; }
 }

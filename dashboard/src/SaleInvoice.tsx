@@ -1,10 +1,12 @@
+import {useState} from 'react';
+import {ApiError,api,apiBlob} from './api';
 import { dateTimeText } from './dates';
 
 export type Detail={type:'sale'|'receipt';record:{id:string;customerId:string;total?:number;paid:number;createdAt:number;actorName:string;currentName:string;currentPhone?:string;currentGovernorate?:string;currentDistrict?:string;currentVillage?:string;currentWarehouse?:string};
  snapshot:{customerName:string;phone:string;governorate:string;district:string;village:string;warehouseName:string;repName:string}|null;
  lines:{id:string;name:string;unit:string;unitSize:string;qty:number;price:number;amount:number;corrected:number;returned:number;correctedAmount:number}[];
  events:{id:string;reason:string;cashKind:'error'|'refund'|null;cash:number;actorName:string;createdAt:number;lines:{name:string;unit:string;unitSize:string;corrected:number;returned:number;amount:number;stockKind:'returned'|'error'|null}[]}[];
- revision:number;balancePiasters:number;cashRemaining:number};
+ revision:number;version:string;balancePiasters:number;cashRemaining:number};
 export const cashP=(p:number)=>`${(p/100).toLocaleString('ar-EG',{maximumFractionDigits:2})} ج.م`;
 export const qtyM=(m:number)=>(m/1000).toLocaleString('ar-EG',{maximumFractionDigits:3});
 export function CorrectionHistory({detail,timezone}:{detail:Detail;timezone?:string}) {
@@ -14,9 +16,23 @@ export function CorrectionHistory({detail,timezone}:{detail:Detail;timezone?:str
   {e.cashKind&&<p>{e.cashKind==='error'?'مبلغ سُجل خطأ ولم يُستلم':'مبلغ أُعيد للعميل'}: {cashP(e.cash)}</p>}
  </div>)}</div>}</>;
 }
-export default function SaleInvoice({detail,timezone,onBack}:{detail:Detail;timezone?:string;onBack:()=>void}) {
+export default function SaleInvoice({detail,timezone,onBack,onRefresh}:{detail:Detail;timezone?:string;onBack:()=>void;onRefresh:(detail:Detail)=>void}) {
+ const [busy,setBusy]=useState(false),[error,setError]=useState(''),[stale,setStale]=useState(false),[asOf]=useState(()=>Date.now());
+ const detailPath=`/api/sales/corrections/sale/${encodeURIComponent(detail.record.id)}`;
+ async function refresh(){setBusy(true);setError('');try{onRefresh(await api<Detail>(detailPath));setStale(false);}catch(e){setError(e instanceof Error?e.message:'تعذر تحديث الفاتورة.');}finally{setBusy(false);}}
+ async function print(){setBusy(true);setError('');try{
+  const latest=await api<Detail>(detailPath);
+  if(latest.version!==detail.version){setStale(true);setError('الفاتورة اتغيرت. حدّثها وراجعها قبل الطباعة.');return;}
+  window.print();
+ }catch(e){setError(e instanceof Error?e.message:'تعذر مراجعة الفاتورة قبل الطباعة.');}finally{setBusy(false);}}
+ async function download(){setBusy(true);setError('');try{
+  const blob=await apiBlob(`/api/sales/invoice/${encodeURIComponent(detail.record.id)}/pdf?version=${encodeURIComponent(detail.version)}`,{},'تعذر تنزيل الفاتورة.');
+  if(blob.type.split(';')[0]!=='application/pdf')throw new Error('تعذر تنزيل ملف PDF صالح. حاول مرة أخرى.');
+  const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`invoice-${detail.record.id}.pdf`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+ }catch(e){if(e instanceof ApiError&&e.code==='INVOICE_CHANGED')setStale(true);setError(e instanceof Error?e.message:'تعذر تنزيل الفاتورة.');}finally{setBusy(false);}}
  const r=detail.record,c=detail.snapshot??{customerName:r.currentName,phone:r.currentPhone??'',governorate:r.currentGovernorate??'',district:r.currentDistrict??'',village:r.currentVillage??'',warehouseName:r.currentWarehouse??'',repName:''};
- return <><div className="filters"><button className="btn primary" onClick={()=>window.print()}>طباعة الفاتورة</button><button className="btn ghost" onClick={onBack}>رجوع للحساب</button></div>
+ return <><div className="filters"><button className="btn primary" disabled={busy||stale} onClick={()=>void print()}>طباعة الفاتورة</button><button className="btn ghost" disabled={busy||stale} onClick={()=>void download()}>تحميل PDF</button><button className="btn ghost" disabled={busy} onClick={onBack}>رجوع للحساب</button></div>
+  {error&&<p className="error" role="alert">{error}</p>}{stale&&<button className="btn ghost" disabled={busy} onClick={()=>void refresh()}>تحديث الفاتورة ومراجعتها</button>}
   <article className="panel invoice-print" dir="rtl"><h2>فاتورة بيع داخلية</h2><p>مستند داخلي — ليست فاتورة ضريبية إلكترونية</p>
   {detail.events.length>0&&<p className="notice"><strong>البيعة عليها تصحيحات — التفاصيل بالأسفل.</strong></p>}
   {!detail.snapshot&&<p className="notice">بيعة قديمة: بيانات العميل والمخزن الحالية وليست نسخة محفوظة وقت البيع؛ المهندس غير موضح هنا.</p>}
@@ -27,6 +43,6 @@ export default function SaleInvoice({detail,timezone,onBack}:{detail:Detail;time
   <p><strong>الإجمالي الأصلي: {cashP(r.total??0)} · المدفوع وقت البيع: {cashP(r.paid)} · الباقي وقت البيع: {cashP((r.total??0)-r.paid)}</strong></p>
   <p>الدفعات اللاحقة تُسجّل على حساب العميل، وليست موزّعة على فاتورة بعينها. راجع كشف الحساب للرصيد الحالي.</p>
   <CorrectionHistory detail={detail} timezone={timezone} />
-  {detail.events.length>0&&<p><strong>قيمة البيعة الحالية بعد تصحيح الأصناف: {cashP((r.total??0)-detail.lines.reduce((sum,l)=>sum+l.correctedAmount,0))}</strong></p>}
+  {detail.events.length>0&&<p><strong>قيمة البيعة الحالية بعد تصحيح الأصناف: {cashP((r.total??0)-detail.lines.reduce((sum,l)=>sum+l.correctedAmount,0))}</strong></p>}<p className="muted small">النسخة تعكس البيانات المسجّلة وقت عرض الفاتورة: {dateTimeText(asOf,timezone)}</p>
   </article></>;
 }

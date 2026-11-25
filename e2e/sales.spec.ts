@@ -222,3 +222,52 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  await expect(page.getByRole('status')).toContainText('التصحيح اتحفظ');
  const r=await (await page.request.get(`/api/sales/corrections/receipt/${receipt}`,{headers})).json();expect(r.balancePiasters).toBe(5500);expect(r.cashRemaining).toBe(0);
 });
+
+test('تنزيل PDF والطباعة يرفضان النسخة القديمة حتى مراجعتها',async({page})=>{
+ await signInAsManager(page);
+ const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));
+ const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const send=async(path:string,data:object)=>{const r=await page.request.post(path,{headers,data});expect(r.ok(),await r.text()).toBeTruthy();return r.json();};
+ const get=async(path:string)=>(await page.request.get(path,{headers})).json();
+ const c=(await send('/api/customers',{name:`عميل طباعة ${Date.now()}`})).customer;
+ const w=(await send('/api/warehouse/warehouses',{name:`مخزن طباعة ${Date.now()}`})).warehouse;
+ const p=(await send('/api/warehouse/products',{name:`صنف طباعة ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+ await send('/api/warehouse/movements',{id:randomUUID(),kind:'opening',productId:p.id,toWarehouseId:w.id,qty:5});
+ const id=randomUUID();await send('/api/sales',{id,customerId:c.id,warehouseId:w.id,paid:3,lines:[{productId:p.id,qty:1,price:10}]});
+ await page.getByRole('button',{name:'المبيعات',exact:true}).click();
+ await page.getByRole('combobox',{name:'العميل لمراجعة الحساب'}).selectOption(c.id);await page.getByRole('button',{name:'عرض الحساب'}).click();
+ const statement=page.getByLabel('حساب العميل');await statement.locator('summary').first().click();await statement.getByRole('button',{name:'عرض الفاتورة'}).click();
+ let d=await get(`/api/sales/corrections/sale/${id}`);
+ const correct=()=>send(`/api/sales/corrections/sale/${id}`,{id:randomUUID(),reason:'تصحيح مبلغ سجل بالخطأ',balancePiasters:d.balancePiasters,revision:d.revision,lines:[],cash:{kind:'error',amountPiasters:100}});
+ await correct();await page.getByRole('button',{name:'تحميل PDF'}).click();await expect(page.getByRole('alert')).toContainText('اتغيرت');
+ await page.getByRole('button',{name:'تحديث الفاتورة ومراجعتها'}).click();await expect(page.locator('.invoice-print')).toContainText('سجل التصحيحات');
+ const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'تحميل PDF'}).click()]);expect(download.suggestedFilename()).toBe(`invoice-${id}.pdf`);
+ const {readFile}=await import('node:fs/promises');const data=await readFile((await download.path())!);expect(data.subarray(0,5).toString()).toBe('%PDF-');
+ await page.evaluate(()=>{(window as unknown as {printCount:number}).printCount=0;window.print=()=>{(window as unknown as {printCount:number}).printCount++;};});
+ await page.getByRole('button',{name:'طباعة الفاتورة'}).click();await expect.poll(()=>page.evaluate(()=>(window as unknown as {printCount:number}).printCount)).toBe(1);
+ d=await get(`/api/sales/corrections/sale/${id}`);await correct();await page.getByRole('button',{name:'طباعة الفاتورة'}).click();
+ await expect(page.getByRole('alert')).toContainText('اتغيرت');expect(await page.evaluate(()=>(window as unknown as {printCount:number}).printCount)).toBe(1);
+ await page.getByRole('button',{name:'تحديث الفاتورة ومراجعتها'}).click();await page.getByRole('button',{name:'طباعة الفاتورة'}).click();
+ await expect.poll(()=>page.evaluate(()=>(window as unknown as {printCount:number}).printCount)).toBe(2);
+});
+
+test('طباعة فاتورة طويلة تحافظ على كل الصفوف والأعمدة عبر الصفحات',async({page})=>{
+ await signInAsManager(page);
+ const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));
+ const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const send=async(path:string,data:object)=>{const r=await page.request.post(path,{headers,data});expect(r.ok(),await r.text()).toBeTruthy();return r.json();};
+ const stamp=Date.now(),c=(await send('/api/customers',{name:`عميل فاتورة طويلة ${stamp}`})).customer,w=(await send('/api/warehouse/warehouses',{name:`مخزن فاتورة طويلة ${stamp}`})).warehouse;
+ const lines:{productId:string;qty:number;price:number}[]=[];
+ for(let i=1;i<=35;i++){
+  const p=(await send('/api/warehouse/products',{name:`صنف تجريبي TEST-${String(i).padStart(2,'0')} ${stamp}`,category:'other',unit:'عبوة'})).product;
+  await send('/api/warehouse/movements',{id:randomUUID(),kind:'opening',productId:p.id,toWarehouseId:w.id,qty:2});lines.push({productId:p.id,qty:1,price:7.25});
+ }
+ const id=randomUUID();await send('/api/sales',{id,customerId:c.id,warehouseId:w.id,paid:5,lines});
+ await page.getByRole('button',{name:'المبيعات',exact:true}).click();await page.getByRole('combobox',{name:'العميل لمراجعة الحساب'}).selectOption(c.id);await page.getByRole('button',{name:'عرض الحساب'}).click();
+ const statement=page.getByLabel('حساب العميل');await statement.locator('summary').first().click();await statement.getByRole('button',{name:'عرض الفاتورة'}).click();
+ await page.emulateMedia({media:'print'});const table=page.locator('.invoice-print table');await expect(table).toHaveCSS('min-width','0px');
+ const widths=await table.evaluate(el=>({table:el.getBoundingClientRect().width,container:el.parentElement!.getBoundingClientRect().width}));expect(widths.table).toBeLessThanOrEqual(widths.container+1);
+ const bytes=await page.pdf({format:'A4',printBackground:true,preferCSSPageSize:true});const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');const pdf=await getDocument({data:new Uint8Array(bytes),useSystemFonts:true}).promise;expect(pdf.numPages).toBeGreaterThan(1);
+ let all='';for(let i=1;i<=pdf.numPages;i++){const p=await pdf.getPage(i),v=p.getViewport({scale:1}),t=await p.getTextContent();for(const item of t.items)if('str' in item){all+=item.str;expect(item.transform[4]).toBeGreaterThanOrEqual(-1);expect(item.transform[4]+item.width).toBeLessThanOrEqual(v.width+1);}}
+ for(let i=1;i<=35;i++)expect(all).toContain(`TEST-${String(i).padStart(2,'0')}`);
+});
