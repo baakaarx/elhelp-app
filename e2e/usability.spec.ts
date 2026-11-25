@@ -125,3 +125,19 @@ test('أرصدة وحركات المخزن تعرض الكمية والوقت ع
   await expect(rows.last()).toContainText(expected);
   await context.close();
 });
+
+test('التصميم الجديد يحافظ على تنقل الموبايل وإظهار الصفحة النشطة', async ({ page }) => {
+  await page.setViewportSize({width:390,height:844});
+  await signIn(page);
+  const nav=page.getByRole('navigation',{name:'التنقل الرئيسي'});
+  await expect(page.getByText('اسحب القائمة للتنقل بين الصفحات')).toBeVisible();
+  expect(await nav.evaluate(el=>el.scrollWidth > el.clientWidth)).toBe(true);
+  await expect(nav.getByRole('button',{name:'مركز العمليات'})).toHaveAttribute('aria-current','page');
+  await nav.getByRole('button',{name:'المبيعات',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'المبيعات والمخزون'})).toBeVisible();
+  await expect(nav.getByRole('button',{name:'المبيعات',exact:true})).toHaveAttribute('aria-current','page');
+  await nav.getByRole('button',{name:'هويتي',exact:true}).click();
+  await expect(nav.getByRole('button',{name:'هويتي',exact:true})).toHaveAttribute('aria-current','page');
+  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
+  expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width+1);
+});

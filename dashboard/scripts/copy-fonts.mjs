@@ -33,3 +33,13 @@ for (const [source, target] of weights) {
   }
 }
 console.log('[copy-fonts] Arabic font weights copied to public/fonts');
+
+// Cairo gives the administrative interface a clear, contemporary Arabic UI face.
+try {
+  const cairoRoot = dirname(require.resolve('@expo-google-fonts/cairo/package.json'));
+  for (const [source, target] of [
+    ['400Regular/Cairo_400Regular.ttf', 'Cairo-400.ttf'],
+    ['600SemiBold/Cairo_600SemiBold.ttf', 'Cairo-600.ttf'],
+    ['700Bold/Cairo_700Bold.ttf', 'Cairo-700.ttf'],
+  ]) await copyFile(join(cairoRoot, source), join(output, target));
+} catch { console.warn('[copy-fonts] Cairo unavailable — dashboard will use its fallback font.'); }

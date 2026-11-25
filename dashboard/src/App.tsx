@@ -1,3 +1,4 @@
+import DashboardIcon from './DashboardIcon';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API_AUTH_REQUIRED_EVENT, ApiError, api, del, getToken, patch, post, setToken } from './api';
@@ -20,18 +21,18 @@ import ConfirmAction from './ConfirmAction';
 import { visitPurposeLabels } from './types';
 
 type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'products' | 'team' | 'account' | 'agent' | 'warehouses' | 'staff';
-const tabs: { id: Tab; label: string; icon: string }[] = [
-  { id: 'live', label: 'مركز العمليات', icon: '◈' },
-  { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
-  { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
-  { id: 'reports', label: 'الزيارات والطلبيات', icon: '✦' },
-  { id: 'customers', label: 'العملاء', icon: '☰' },
-  { id: 'products', label: 'المبيعات', icon: '₪' },
-  { id: 'warehouses', label: 'المخازن', icon: '▣' },
-  { id: 'staff', label: 'حسابات المكتب', icon: '◉' },
-  { id: 'team', label: 'فريق الميدان', icon: '◆' },
-  { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
-  { id: 'account', label: 'هويتي', icon: '◉' },
+const tabs: { id: Tab; label: string }[] = [
+  { id: 'live', label: 'مركز العمليات' },
+  { id: 'monthly', label: 'السجل الشهري' },
+  { id: 'performance', label: 'مؤشرات التأثير' },
+  { id: 'reports', label: 'الزيارات والطلبيات' },
+  { id: 'customers', label: 'العملاء' },
+  { id: 'products', label: 'المبيعات' },
+  { id: 'warehouses', label: 'المخازن' },
+  { id: 'staff', label: 'حسابات المكتب' },
+  { id: 'team', label: 'فريق الميدان' },
+  { id: 'agent', label: 'المساعد الذكي' },
+  { id: 'account', label: 'هويتي' },
 ];
 
 export default function App() {
@@ -245,13 +246,17 @@ export default function App() {
           <div><strong>ELHELB GROUP</strong><small>شبكة الميدان · منذ 1993</small></div>
         </div>
 
-        <nav>
-          {tabs.map(item => (
-            <button key={item.id} className={tab === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(item.id)}>
-              <span aria-hidden="true">{item.icon}</span> {item.label}
+        <p className="mobile-nav-hint">اسحب القائمة للتنقل بين الصفحات <span aria-hidden="true">←</span></p>
+        <nav aria-label="التنقل الرئيسي">
+          {tabs.map((item, index) => (
+            <div className="nav-entry" key={item.id}>
+            {(index === 0 || index === 4 || index === 7) && <span className="nav-section">{index === 0 ? 'المتابعة' : index === 4 ? 'إدارة العمل' : 'الفريق والإعدادات'}</span>}
+            <button className={tab === item.id ? 'nav-item active' : 'nav-item'} aria-current={tab === item.id ? 'page' : undefined} onClick={() => setTab(item.id)}>
+              <DashboardIcon name={item.id} /><span className="nav-label">{item.label}</span>
               {item.id === 'reports' && overview && (overview.sentOrders ?? 0) > 0 && <em className="badge warn">{formatNumber(overview.sentOrders ?? 0)}</em>}
               {item.id === 'live' && warnCount > 0 && <em className="badge warn">{formatNumber(warnCount)}</em>}
             </button>
+            </div>
           ))}
         </nav>
         <div className="sidebar-foot">
@@ -262,11 +267,12 @@ export default function App() {
       <main className="content">
         <header className="topbar">
           <div>
+            <p className="topbar-eyebrow">الهلب جروب <span> / </span> لوحة الإدارة</p>
             <h1>{tabs.find(t => t.id === tab)?.label}</h1>
             <p className="muted small">{dateTimeText(clock, overview?.timezone)} · {user.name}</p>
           </div>
           <div className="topbar-actions">
-            <button className="btn ghost sm" onClick={() => refresh()}>تحديث</button>
+            <button className="btn ghost sm refresh-button" onClick={() => refresh()}><DashboardIcon name="refresh" /> تحديث</button>
             <button className="btn ghost sm" onClick={async () => {
               try { await logout(); } catch { /* Local logout still wins if the API is unreachable. */ }
               clearSession();
@@ -275,17 +281,19 @@ export default function App() {
         </header>
         {error && <p className="error banner" role="alert">{error}</p>}
         {tab === 'live' && (
-          <section className="page">
+          <section className="page live-page">
+            <div className="overview-heading"><div><span className="section-kicker">نظرة عامة</span><h2>متابعة العمل الميداني</h2><p className="muted">كل ما تحتاجه لمتابعة الفريق والطلبيات في مكان واحد.</p></div><span className="overview-status"><span className={connected ? 'status ok' : 'status'} />{connected ? 'متصل بالبث الحي' : 'وضع التحديث الدوري'}</span></div>
             {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} visitStaleMinutes={visitStaleMinutes} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
             {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={repId => setSelectedId(repId)} />}
             <div className="stats">
-              <Stat label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
-              <Stat label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
-              <Stat label="إجمالي مسافة اليوم" value={`${formatNumber(totalKm / 1000)} كم`} hint="تقديري بعد استبعاد النقاط الضعيفة" />
-              <Stat label="طلبيات مستنية" value={formatNumber(overview?.sentOrders ?? 0)} hint="بانتظار تسجيل فاتورة" />
+              <Stat icon="signal" label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
+              <Stat icon="team" label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
+              <Stat icon="distance" label="إجمالي مسافة اليوم" value={`${formatNumber(totalKm / 1000)} كم`} hint="تقديري بعد استبعاد النقاط الضعيفة" />
+              <Stat icon="reports" label="طلبيات مستنية" value={formatNumber(overview?.sentOrders ?? 0)} hint="بانتظار تسجيل فاتورة" />
             </div>
             <div className="live-grid">
               <div className="panel map-panel">
+                <div className="map-heading"><div><h3>خريطة الفريق</h3><p className="muted small">مواقع المهندسين ومساراتهم</p></div><span className="map-heading-icon"><DashboardIcon name="distance" /></span></div>
                 <MapView reps={reps} selectedId={selectedId} route={route} live={connected} syncedAt={syncedAt} timezone={overview?.timezone} />
                 <div className="map-controls">
                   <label className="field inline">
@@ -297,7 +305,7 @@ export default function App() {
                 </div>
               </div>
               <div className="panel">
-                <h3 className="panel-title">الفريق الآن</h3>
+                <div className="team-panel-heading"><div><h3>الفريق الآن</h3><p className="muted small">اختر مهندسًا لعرض التفاصيل</p></div><span className="team-count">{formatNumber(reps.length)}</span></div>
                 <ul className="rep-list">
                   {reps.length === 0 && <li className="empty">لا يوجد مهندسون بعد. أضفهم من صفحة الفريق.</li>}
                   {reps.map(rep => (
@@ -480,8 +488,8 @@ const arabicDate = (iso: string) => {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString('ar-EG', { day: 'numeric', month: 'long', year: 'numeric' });
 };
 
-function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
-  return <div className="stat"><span className="label">{label}</span><strong>{value}</strong><small>{hint}</small></div>;
+function Stat({ label, value, hint, icon }: { label: string; value: string; hint: string; icon: string }) {
+  return <div className="stat"><div className="stat-heading"><span className="label">{label}</span><span className="stat-icon"><DashboardIcon name={icon} /></span></div><strong>{value}</strong><small>{hint}</small></div>;
 }
 
 /** The warning inside the confirm step: real counts, or the honest «مفيش سجلات». */
