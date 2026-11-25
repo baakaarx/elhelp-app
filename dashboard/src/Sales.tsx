@@ -27,7 +27,18 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const pendingKey=`mandoub.sales.pending.${userId}`;
   const operationPanel=useReveal<HTMLDivElement>();
   const errorPanel=useReveal<HTMLParagraphElement>();
-  const [pending,setPending]=useState<Pending|null>(()=>{try {const raw=localStorage.getItem(pendingKey);return raw?JSON.parse(raw) as Pending:null;}catch{return null;}});
+  // Keep unreadable data as a blocker, rather than treating it as no pending operation.
+  const [pendingRaw,setPendingRaw]=useState<string|null>(()=>{try{return localStorage.getItem(pendingKey);}catch{return 'unreadable';}});
+  let pending:Pending|null=null;
+  try {
+    if (pendingRaw !== null) {
+      const value=JSON.parse(pendingRaw);
+      const paths:Record<string,string>={sale:'/api/sales',receipt:'/api/sales/receipts',opening:'/api/sales/opening'};
+      const validPath=typeof value?.kind==='string' && typeof value.path==='string' && (paths[value.kind]===value.path || (value.kind==='correction' && /^\/api\/sales\/corrections\/(sale|receipt)\/[^/]+$/.test(value.path)));
+      if(!validPath || !value.body || typeof value.body!=='object' || typeof value.body.id!=='string' || !value.body.id) throw Error();
+      pending=value as Pending;
+    }
+  } catch { /* Fail closed until the saved operation is checked. */ }
   const sending=useRef(false);
   const [view,setView]=useState<'summary'|'prices'|'advanced'>('summary');
   const [options,setOptions]=useState<Options|null>(null), [report,setReport]=useState<Report|null>(null);
@@ -41,12 +52,13 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const [receiptCustomer,setReceiptCustomer]=useState(''),[receiptAmount,setReceiptAmount]=useState('');
   const [openingCustomer,setOpeningCustomer]=useState(''),[openingAmount,setOpeningAmount]=useState('');
   const [statementCustomer,setStatementCustomer]=useState(''),[statement,setStatement]=useState<Statement|null>(null),[statementBusy,setStatementBusy]=useState(false);
+  const salesRequest=useRef(0);
   const statementRequest=useRef(0),currentStatementCustomer=useRef(statementCustomer);currentStatementCustomer.current=statementCustomer;
   const [detail,setDetail]=useState<Detail|null>(null),[detailMode,setDetailMode]=useState<'invoice'|'correction'|null>(null);
   const [priceProduct,setPriceProduct]=useState(''),[priceTier,setPriceTier]=useState(''),[priceInput,setPriceInput]=useState('');
   const saleRequest=useRef(''),receiptRequest=useRef(''),openingRequest=useRef('');
-  const load=useCallback(async()=>{statementRequest.current++;setStatementBusy(false);setStatement(null);setLoading(true);try {const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);setOptions(o);setReport(r);setStatement(null);setNeedsRefresh(false);setError('');}catch(e){showError(err(e));}finally{setLoading(false);}},[]);
-  useEffect(()=>{void load();return()=>{statementRequest.current++;};},[load]);
+  const load=useCallback(async()=>{const request=++salesRequest.current;statementRequest.current++;setStatementBusy(false);setStatement(null);setLoading(true);try {const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);if(request===salesRequest.current){setOptions(o);setReport(r);setNeedsRefresh(false);setError('');}}catch(e){if(request===salesRequest.current){setNeedsRefresh(true);showError(err(e));}}finally{if(request===salesRequest.current)setLoading(false);}},[]);
+  useEffect(()=>{void load();return()=>{statementRequest.current++;salesRequest.current++;};},[load]);
   const selectedOrder=options?.orders.find(o=>o.id===orderId);
   const currentLines = lines.map(l=>({qty:parse(l.qty),price:parse(l.price)}));
   const validLines=currentLines.length>0 && currentLines.every((l,i)=>Number.isFinite(l.qty)&&l.qty>0&&l.qty<=100_000&&hasInputPrecision(lines[i].qty,3)&&Number.isFinite(l.price)&&l.price>=0&&l.price<=1_000_000_000&&hasInputPrecision(lines[i].price,2));
@@ -54,29 +66,29 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const paidValue=parse(paid);
   const changeLine=(key:string, patch:Partial<Line>)=>{saleRequest.current='';setLines(prev=>prev.map(line=>line.key===key?{...line,...patch}:line));};
   const suggested=(productId:string,customer:string)=>{const tier=options?.customers.find(c=>c.id===customer)?.priceTierId;const value=options?.prices.find(p=>p.productId===productId&&p.tierId===tier)?.price;return value===undefined?'':String(value);};
-  const refreshAfter=async(success:string)=>{statementRequest.current++;setStatementBusy(false);setStatement(null);setMessage(success);try{const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);setOptions(o);setReport(r);setNeedsRefresh(false);}catch{setNeedsRefresh(true);showError(`${success} لكن الشاشة ما اتحدّثتش. لازم تحدّث الأرقام قبل عملية جديدة.`);}};
+  const refreshAfter=async(success:string)=>{const request=++salesRequest.current;setLoading(false);statementRequest.current++;setStatementBusy(false);setStatement(null);setMessage(success);try{const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);if(request===salesRequest.current){setOptions(o);setReport(r);setNeedsRefresh(false);}}catch{if(request===salesRequest.current){setNeedsRefresh(true);showError(`${success} لكن الشاشة ما اتحدّثتش. لازم تحدّث الأرقام قبل عملية جديدة.`);}}};
   // Tabs on the same device share a single durable pending operation. Web Locks serializes
   // the read/write across tabs where supported; storage events also block other open tabs.
-  useEffect(()=>{const sync=(event:StorageEvent)=>{if(event.key!==pendingKey)return;try{setPending(event.newValue?JSON.parse(event.newValue) as Pending:null);if(!event.newValue)setNeedsRefresh(true);}catch{showError('تعذر قراءة العملية المعلقة. راجع المسؤول قبل التسجيل.');}};window.addEventListener('storage',sync);return()=>window.removeEventListener('storage',sync);},[pendingKey]);
+  useEffect(()=>{const sync=(event:StorageEvent)=>{if(event.key!==pendingKey)return;setPendingRaw(event.newValue);if(!event.newValue)setNeedsRefresh(true);};window.addEventListener('storage',sync);return()=>window.removeEventListener('storage',sync);},[pendingKey]);
   async function sendOperation(operation:Pending) {
     if (sending.current) throw new Error('العملية لسه بتتحفظ.');
     if(!navigator.locks) throw new Error('المتصفح لا يدعم حماية العمليات بين التبويبات. افتح النظام بمتصفح حديث واتصال آمن.');
     sending.current=true;
     const run=async()=>{
       const raw=localStorage.getItem(pendingKey);
-      if(raw && raw!==JSON.stringify(operation)) {
-        try{setPending(JSON.parse(raw) as Pending);}catch{showError('تعذر قراءة العملية المعلقة. راجع المسؤول قبل التسجيل.');}
+      if(raw !== null && raw!==JSON.stringify(operation)) {
+        setPendingRaw(raw);
         throw new Error('في عملية معلقة على الجهاز. لازم تتأكد منها الأول.');
       }
       try {
         localStorage.setItem(pendingKey,JSON.stringify(operation));
-        setPending(operation);operationPanel.reveal();
+        setPendingRaw(JSON.stringify(operation));operationPanel.reveal();
         await post(operation.path,operation.body);
-        localStorage.removeItem(pendingKey);setPending(null);
+        localStorage.removeItem(pendingKey);setPendingRaw(null);
       } catch(e) {
         // Authentication or a lost response might follow an earlier successful commit.
         if(e instanceof ApiError && e.status>=400 && e.status<500 && e.status!==401 && e.status!==403 && e.status!==408 && e.status!==429) {
-          localStorage.removeItem(pendingKey);setPending(null);
+          localStorage.removeItem(pendingKey);setPendingRaw(null);
         }
         throw e;
       }
@@ -127,11 +139,11 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const selectPrice=(product:string,tier:string)=>{setPriceProduct(product);setPriceTier(tier);const value=options?.prices.find(p=>p.productId===product&&p.tierId===tier)?.price;setPriceInput(value===undefined?'':String(value));};
   return <section className="page sales-page">
     <header className="page-head"><div><h2>المبيعات والمخزون</h2><p className="muted">تابع البيعات والباقي على العملاء وأرصدة المخازن.</p></div><div className="filters">
-      <button className="btn ghost sm" disabled={!!pending||!!review||!!detailMode||needsRefresh||busy} onClick={()=>{setView(view==='prices'?'summary':'prices');setError('');setMessage('');}}>{view==='prices'?'رجوع للملخص':'تعديل الأسعار'}</button>
-      {view==='summary'&&!pending&&!review&&!detailMode&&!needsRefresh&&<button className="btn primary" onClick={()=>{setShowSale(!showSale);setError('');setMessage('');}}>{showSale?'إغلاق':'تسجيل فاتورة'}</button>}
+      <button className="btn ghost sm" disabled={pendingRaw!==null||!!review||!!detailMode||needsRefresh||busy} onClick={()=>{setView(view==='prices'?'summary':'prices');setError('');setMessage('');}}>{view==='prices'?'رجوع للملخص':'تعديل الأسعار'}</button>
+      {view==='summary'&&pendingRaw===null&&!review&&!detailMode&&!needsRefresh&&<button className="btn primary" onClick={()=>{setShowSale(!showSale);setError('');setMessage('');}}>{showSale?'إغلاق':'تسجيل فاتورة'}</button>}
     </div></header>
     {error&&<p className="error reveal-target" ref={errorPanel.ref} tabIndex={-1} role="alert">{error}</p>}{message&&<p className="ok-text" role="status">{message}</p>}
-    {pending?<div className="panel reveal-target" tabIndex={-1} ref={operationPanel.ref}><h3>عملية محتاجة تأكيد</h3><p>الاتصال وقف قبل ما نتأكد من حفظ {pending.kind==='sale'?'الفاتورة':pending.kind==='receipt'?'الدفعة':pending.kind==='correction'?'التصحيح':'المديونية القديمة'}. اضغط تأكيد العملية لإعادة إرسال نفس الطلب بأمان، من غير تكرار.</p><button className="btn primary" disabled={busy} onClick={()=>void retryPending()}>تأكيد العملية</button></div>:needsRefresh?<div className="panel"><h3>لازم نحدّث الأرقام الأول</h3><p>العملية اتحفظت، لكن الأرقام المعروضة ممكن تكون قديمة. حدّثها قبل أي عملية جديدة.</p><button className="btn primary" disabled={loading} onClick={()=>void load()}>تحديث الأرقام</button></div>:loading&&!options?<p>جارٍ التحميل…</p>:!options||!report?<button className="btn ghost sm" onClick={()=>void load()}>حاول تاني</button> :review?<div className="panel reveal-target" ref={operationPanel.ref} tabIndex={-1} aria-label="مراجعة العملية"><h3>راجع البيانات قبل الحفظ</h3>
+    {pendingRaw!==null?<div className="panel reveal-target" tabIndex={-1} ref={operationPanel.ref}><h3>عملية محتاجة تأكيد</h3>{pending?<><p>الاتصال وقف قبل ما نتأكد من حفظ {pending.kind==='sale'?'الفاتورة':pending.kind==='receipt'?'الدفعة':pending.kind==='correction'?'التصحيح':'المديونية القديمة'}. اضغط تأكيد العملية لإعادة إرسال نفس الطلب بأمان، من غير تكرار.</p><button className="btn primary" disabled={busy} onClick={()=>void retryPending()}>تأكيد العملية</button></>:<p className="error" role="alert">تعذر قراءة العملية المعلقة على الجهاز؛ قد تكون اتحفظت بالفعل. راجع المسؤول وحساب العميل قبل تسجيل أي عملية أخرى، ولا تمسح بيانات المتصفح.</p>}</div>:needsRefresh?<div className="panel"><h3>لازم نحدّث الأرقام الأول</h3><p>الأرقام غير متاحة أو ممكن تكون قديمة. حدّثها قبل أي عملية جديدة.</p><button className="btn primary" disabled={loading} onClick={()=>void load()}>تحديث الأرقام</button></div>:loading&&!options?<p>جارٍ التحميل…</p>:!options||!report?<button className="btn ghost sm" onClick={()=>void load()}>حاول تاني</button> :review?<div className="panel reveal-target" ref={operationPanel.ref} tabIndex={-1} aria-label="مراجعة العملية"><h3>راجع البيانات قبل الحفظ</h3>
       {review==='sale'?<>
         <p><strong>العميل:</strong> {options.customers.find(c=>c.id===customerId)?.name} {options.customers.find(c=>c.id===customerId)?.phone} · رقم {customerId.slice(-6)}</p>
         <p><strong>المخزن:</strong> {options.warehouses.find(w=>w.id===warehouseId)?.name}</p>
