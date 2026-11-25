@@ -64,7 +64,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const customer=store.get('SELECT id,name,phone FROM customers WHERE id=?',String(req.params.customerId));
     if(!customer){res.status(404).json({error:'العميل غير موجود.'});return;}
     const opening=store.get('SELECT amount_piasters AS amount,actor_name AS actorName,created_at AS createdAt FROM office_debts_v1 WHERE customer_id=?',customer.id);
-    const sales=store.all(`SELECT s.id,s.total_piasters AS total,s.paid_piasters AS paid,s.actor_name AS actorName,s.created_at AS createdAt,s.order_id AS orderId,
+    const sales=store.all(`SELECT s.id,(SELECT number FROM office_invoice_numbers_v1 n WHERE n.sale_id=s.id) AS invoiceNumber,s.total_piasters AS total,s.paid_piasters AS paid,s.actor_name AS actorName,s.created_at AS createdAt,s.order_id AS orderId,
       w.name AS warehouseName,CASE WHEN a.sale_id IS NOT NULL THEN a.rep_name ELSE COALESCE(u.name,'') END AS repName,
       CASE WHEN a.sale_id IS NULL AND u.id IS NOT NULL THEN 'legacy' WHEN a.sale_id IS NULL THEN 'unknown' ELSE a.source END AS repSource,
       CASE WHEN a.sale_id IS NOT NULL AND a.rep_id IS NULL AND a.rep_name<>'' THEN 1 ELSE 0 END AS repDeleted
@@ -88,7 +88,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const accounts=store.all('SELECT id,name,phone FROM customers').map(c=>({...c,balance:balance(String(c.id))}));
     const debtors=accounts.filter(c=>c.balance>0).sort((a,b)=>b.balance-a.balance);
     const creditors=accounts.filter(c=>c.balance<0).sort((a,b)=>a.balance-b.balance);
-    const latest=store.all(`SELECT s.id,s.order_id AS orderId,c.name AS customerName,w.name AS warehouseName,
+    const latest=store.all(`SELECT s.id,(SELECT number FROM office_invoice_numbers_v1 n WHERE n.sale_id=s.id) AS invoiceNumber,s.order_id AS orderId,c.name AS customerName,w.name AS warehouseName,
       s.total_piasters AS total,s.paid_piasters AS paid,s.created_at AS createdAt, EXISTS(SELECT 1 FROM office_corrections_v1 x WHERE x.sale_id=s.id) AS corrected FROM office_sales_v1 s
       JOIN customers c ON c.id=s.customer_id JOIN warehouses w ON w.id=s.warehouse_id ORDER BY s.created_at DESC,s.rowid DESC LIMIT 50`);
     const soldItems=store.all(`SELECT product_name AS name,unit,unit_size AS unitSize,SUM(milli_qty) AS qty,SUM(line_piasters) AS amount
@@ -111,7 +111,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
   function detail(type:string,targetId:string) {
     if(type!=='sale'&&type!=='receipt')return null;
     const sale=type==='sale';
-    const record=sale?store.get(`SELECT s.id,s.customer_id AS customerId,s.warehouse_id AS warehouseId,s.total_piasters AS total,
+    const record=sale?store.get(`SELECT s.id,(SELECT number FROM office_invoice_numbers_v1 n WHERE n.sale_id=s.id) AS invoiceNumber,s.customer_id AS customerId,s.warehouse_id AS warehouseId,s.total_piasters AS total,
       s.paid_piasters AS paid,s.created_at AS createdAt,s.actor_name AS actorName,c.name AS currentName,c.phone AS currentPhone,
       c.governorate AS currentGovernorate,c.district AS currentDistrict,c.village AS currentVillage,w.name AS currentWarehouse
       FROM office_sales_v1 s JOIN customers c ON c.id=s.customer_id JOIN warehouses w ON w.id=s.warehouse_id WHERE s.id=?`,targetId):
@@ -139,7 +139,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     try {
       const bytes=await invoicePdf(current,timezone,Date.now());
       res.setHeader('Cache-Control','private, no-store');res.setHeader('Content-Type','application/pdf');
-      res.setHeader('Content-Disposition',`attachment; filename="invoice-${id}.pdf"`);res.send(bytes);
+      res.setHeader('Content-Disposition',`attachment; filename="invoice-${current.record.invoiceNumber}.pdf"`);res.send(bytes);
     }catch(error){console.error('[invoice pdf]',error);res.status(500).json({error:'تعذر إنشاء ملف الفاتورة. حاول مرة أخرى.'});}
   });
   router.get('/corrections/:type/:targetId',(req,res)=>{
@@ -241,6 +241,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         const paid=cents(data.paid); if (paid>total) throw Error('PAID');
         const now=Date.now();
         store.run('INSERT INTO office_sales_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',data.id,data.orderId??null,data.customerId,data.warehouseId,total,paid,actor.id,actor.name,request,now);
+        store.run('INSERT INTO office_invoice_numbers_v1(sale_id) VALUES(?)',data.id);
         store.run('INSERT INTO office_sale_rep_v1(sale_id,rep_id,rep_name,source) VALUES(?,?,?,?)',data.id,saleRep?.id??null,saleRep?.name??'',data.orderId?'order':saleRep?'direct':'none');
         store.run('INSERT INTO office_invoice_snapshots_v1 VALUES(?,?,?,?,?,?,?,?)',data.id,customer.name,customer.phone,customer.governorate,customer.district,customer.village,warehouse.name,saleRep?.name??'');
         for (const line of calculated) {

@@ -184,6 +184,11 @@ export class Store {
         request_json TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS office_sales_v1_customer_time ON office_sales_v1(customer_id,created_at);
+      -- A stable invoice number is assigned once when a confirmed sale commits.
+      CREATE TABLE IF NOT EXISTS office_invoice_numbers_v1 (
+        number INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id TEXT NOT NULL UNIQUE REFERENCES office_sales_v1(id) ON DELETE RESTRICT
+      );
       CREATE TABLE IF NOT EXISTS office_sales_lines_v1 (
         id TEXT PRIMARY KEY, sale_id TEXT NOT NULL REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
         product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
@@ -515,6 +520,14 @@ export class Store {
         this.run("INSERT INTO inventory_migrations(name) VALUES ('copy_v1_movements')");
       });
     }
+    // Assign pre-existing test/legacy sales in their recorded order, atomically and only once.
+    // BEGIN IMMEDIATE also serializes startup with another process writing confirmed sales.
+    this.transaction(() => {
+      this.db.exec(`INSERT INTO office_invoice_numbers_v1(sale_id)
+        SELECT s.id FROM office_sales_v1 s WHERE NOT EXISTS
+        (SELECT 1 FROM office_invoice_numbers_v1 n WHERE n.sale_id=s.id)
+        ORDER BY s.created_at,s.rowid`);
+    });
     this.ensureIndexes();
     this.checkCatalogueLinks();
 

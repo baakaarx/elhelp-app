@@ -197,8 +197,9 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  await page.getByRole('button',{name:'عرض الحساب'}).click();
  const statement=page.getByLabel('حساب العميل');await statement.locator('summary').first().click();
  await statement.getByRole('button',{name:'عرض الفاتورة'}).click();
- const invoice=page.locator('.invoice-print');await expect(invoice).toContainText('ليست فاتورة ضريبية إلكترونية');await expect(invoice).toContainText(sale);await expect(invoice).toContainText(p.name);
- await page.emulateMedia({media:'print'});await expect(invoice).toHaveCSS('visibility','visible');await expect(page.locator('.page-head')).toHaveCSS('visibility','hidden');const pdf=await page.pdf({format:'A4',printBackground:true});expect(pdf.length).toBeGreaterThan(1000);expect((pdf.toString('latin1').match(/\/Type\s*\/Page\b/g)||[]).length).toBe(1);await page.emulateMedia({media:'screen'});
+ const invoice=page.locator('.invoice-print');await expect(invoice).toContainText('ليست فاتورة ضريبية إلكترونية');await expect(invoice).toContainText('رقم الفاتورة');await expect(invoice).not.toContainText(sale);await expect(invoice.getByRole('img',{name:'شعار الهلب جروب'})).toBeVisible();await expect(invoice).toContainText(p.name);
+ await page.emulateMedia({media:'print'});await expect(invoice).toHaveCSS('visibility','visible');await expect(page.locator('.page-head')).toHaveCSS('visibility','hidden');const pdf=await page.pdf({format:'A4',printBackground:true,preferCSSPageSize:true,displayHeaderFooter:true,footerTemplate:'<span>TEST_BROWSER_ADDRESS</span>'});expect(pdf.length).toBeGreaterThan(1000);
+ const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');const pdfDoc=await getDocument({data:new Uint8Array(pdf),useSystemFonts:true}).promise;const text=await (await pdfDoc.getPage(1)).getTextContent();expect(text.items.map(x=>'str' in x?x.str:'').join(' ')).not.toContain('TEST_BROWSER_ADDRESS');expect((pdf.toString('latin1').match(/\/Type\s*\/Page\b/g)||[]).length).toBe(1);await page.emulateMedia({media:'screen'});
  await page.getByRole('button',{name:'رجوع للحساب'}).click();await statement.locator('summary').first().click();await statement.getByRole('button',{name:'تصحيح أو تسجيل مرتجع'}).click();
  await page.setViewportSize({width:390,height:844});const size=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(size.scroll).toBeLessThanOrEqual(size.width+1);
  await page.getByRole('textbox',{name:`كمية إضافية لتصحيح البيع - ${p.name}`}).fill('0.5');
@@ -241,7 +242,9 @@ test('تنزيل PDF والطباعة يرفضان النسخة القديمة �
  const correct=()=>send(`/api/sales/corrections/sale/${id}`,{id:randomUUID(),reason:'تصحيح مبلغ سجل بالخطأ',balancePiasters:d.balancePiasters,revision:d.revision,lines:[],cash:{kind:'error',amountPiasters:100}});
  await correct();await page.getByRole('button',{name:'تحميل PDF'}).click();await expect(page.getByRole('alert')).toContainText('اتغيرت');
  await page.getByRole('button',{name:'تحديث الفاتورة ومراجعتها'}).click();await expect(page.locator('.invoice-print')).toContainText('سجل التصحيحات');
- const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'تحميل PDF'}).click()]);expect(download.suggestedFilename()).toBe(`invoice-${id}.pdf`);
+ const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'تحميل PDF'}).click()]);expect(download.suggestedFilename()).toBe(`invoice-${d.record.invoiceNumber}.pdf`);
+ await expect(page.getByText('ملف الفاتورة جاهز.',{exact:false})).toBeVisible();await expect(page.getByRole('link',{name:'اضغط هنا لحفظ PDF'})).toHaveAttribute('download',`invoice-${d.record.invoiceNumber}.pdf`);
+ const [manualDownload]=await Promise.all([page.waitForEvent('download'),page.getByRole('link',{name:'اضغط هنا لحفظ PDF'}).click()]);expect(manualDownload.suggestedFilename()).toBe(`invoice-${d.record.invoiceNumber}.pdf`);
  const {readFile}=await import('node:fs/promises');const data=await readFile((await download.path())!);expect(data.subarray(0,5).toString()).toBe('%PDF-');
  await page.evaluate(()=>{(window as unknown as {printCount:number}).printCount=0;window.print=()=>{(window as unknown as {printCount:number}).printCount++;};});
  await page.getByRole('button',{name:'طباعة الفاتورة'}).click();await expect.poll(()=>page.evaluate(()=>(window as unknown as {printCount:number}).printCount)).toBe(1);

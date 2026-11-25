@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces.js';
 import type { Row } from './db.js';
 
@@ -11,6 +12,7 @@ const fontkit=require('@foliojs-fork/fontkit') as {openSync(path:string):{unitsP
 const root=dirname(require.resolve('@expo-google-fonts/cairo/package.json'));
 const normal=join(root,'400Regular/Cairo_400Regular.ttf');
 const bold=join(root,'700Bold/Cairo_700Bold.ttf');
+const logo=fileURLToPath(new URL('../assets/invoice-logo.png',import.meta.url));
 const printer=new PdfPrinter({Cairo:{normal,bold,italics:normal,bolditalics:bold}});
 const fonts={normal:fontkit.openSync(normal),bold:fontkit.openSync(bold)};
 
@@ -71,26 +73,28 @@ export function invoicePdf(data:InvoicePdfData,timezone:string,generatedAt:numbe
  const r=data.record;
  const c=data.snapshot??{customerName:r.currentName,phone:r.currentPhone,governorate:r.currentGovernorate,district:r.currentDistrict,village:r.currentVillage,warehouseName:r.currentWarehouse,repName:''};
  const widths=[90,80,70,224]; // PDFMake columns are LTR; the product is on the right.
- const table:Content[][]=[ [hdr('القيمة الأصلية',widths[0]),hdr('سعر الوحدة',widths[1]),hdr('الكمية',widths[2]),hdr('الصنف والعبوة',widths[3])] ];
+ const table:Content[][]=[ [hdr(data.events.length?'القيمة قبل التصحيح':'القيمة',widths[0]),hdr('سعر الوحدة',widths[1]),hdr('الكمية',widths[2]),hdr('الصنف والعبوة',widths[3])] ];
  for(const l of data.lines)table.push([numberCell(cash(l.amount)),numberCell(cash(l.price)),numberCell(qty(l.qty)),text([l.name,l.unit,l.unitSize].filter(Boolean).join(' · '),widths[3]-10)]);
  const label=(name:string,value:unknown):Content=>({columns:[{text:wrap(value||'—',340),alignment:'right',width:'*'},{text:wrap(name,120,10,true),alignment:'right',width:130,bold:true,color:'#426351'}],columnGap:8,margin:[0,2,0,2]});
  const section=(title:string):Content=>text(title,480,{fontSize:12,bold:true,color:'#1f5a3d',margin:[0,12,0,5]});
  const content:Content[]=[
-  text('فاتورة بيع داخلية',480,{alignment:'center',fontSize:20,bold:true,color:'#164e35',margin:[0,0,0,2]}),
-  text('مستند داخلي — ليست فاتورة ضريبية إلكترونية',480,{alignment:'center',fontSize:10,color:'#597469',margin:[0,0,0,10]}),
+  {columns:[
+    {table:{widths:[74],body:[[{image:logo,fit:[70,72],alignment:'center',margin:[2,4,2,4]}]]},layout:{defaultBorder:false,fillColor:()=> '#0a1b27'},width:82},
+    {stack:[text('الهلب جروب',380,{fontSize:18,bold:true,color:'#153d53'}),
+      text('فاتورة بيع',380,{fontSize:16,bold:true,color:'#153d53',margin:[0,3,0,2]}),
+      text('ليست فاتورة ضريبية إلكترونية',380,{fontSize:9,color:'#597469'})],width:'*'}
+  ],columnGap:12,margin:[0,0,0,12]},
   ...(data.events.length?[text('تنبيه: سُجّلت تصحيحات على هذه البيعة، وتفاصيلها بالأسفل.',480,{bold:true,color:'#9b381b',margin:[0,0,0,5]})]:[]),
-  ...(!data.snapshot?[text('بيعة قديمة: بيانات العميل والمخزن الحالية وليست نسخة محفوظة وقت البيع؛ المهندس غير موضح هنا.',480,{color:'#9b381b',margin:[0,0,0,5]})]:[]),
   section('بيانات الفاتورة'),
-  label('رقم المرجع',r.id),label('تاريخ البيع',date(r.createdAt,timezone)),
-  label('العميل',c.customerName),label('الهاتف',c.phone),
+  label('رقم الفاتورة',r.invoiceNumber),label('تاريخ البيع',date(r.createdAt,timezone)),
+  label(data.snapshot?'العميل':'العميل (البيانات الحالية)',c.customerName),label('الهاتف',c.phone),
   label('العنوان',[c.governorate,c.district,c.village].filter(Boolean).join(' · ')),
-  label('المخزن',c.warehouseName),label('المهندس',c.repName||'غير محدد'),label('المسجّل',r.actorName),
-  section('الأصناف الأصلية'),
+  section(data.events.length?'الأصناف قبل التصحيح':'الأصناف'),
   {table:{headerRows:1,widths,body:table},layout:tableLayout},
   text('كل الأسعار والقيم بالجنيه المصري',480,{fontSize:9,color:'#597469',margin:[0,4,0,0]}),
   section('ملخص وقت البيع'),
-  label('الإجمالي الأصلي',cash(r.total)),label('المدفوع وقت البيع',cash(r.paid)),label('الباقي وقت البيع',cash(Number(r.total)-Number(r.paid))),
-  text('الدفعات اللاحقة تُسجّل على حساب العميل وليست موزّعة على فاتورة بعينها. راجع كشف الحساب للرصيد الحالي.',480,{fontSize:9,color:'#597469',margin:[0,6,0,0]}),
+  label(data.events.length?'الإجمالي قبل التصحيح':'الإجمالي',cash(r.total)),label('المدفوع وقت البيع',cash(r.paid)),label('الباقي وقت البيع',cash(Number(r.total)-Number(r.paid))),
+  text('المبالغ تخص وقت البيع؛ الدفعات اللاحقة تُراجع في كشف حساب العميل.',480,{fontSize:9,color:'#597469',margin:[0,6,0,0]}),
  ];
  if(data.events.length){
   content.push(section('سجل تصحيحات البيعة'));
@@ -107,9 +111,10 @@ export function invoicePdf(data:InvoicePdfData,timezone:string,generatedAt:numbe
   }
   content.push(section('القيمة الحالية بعد التصحيحات'),label('صافي قيمة الأصناف',cash(Number(r.total)-data.lines.reduce((sum,l)=>sum+Number(l.correctedAmount),0))));
  }
- content.push(text('النسخة تعكس بيانات الفاتورة وتصحيحاتها المسجّلة وقت إنشاء الملف.',480,{fontSize:9,color:'#597469',margin:[0,12,0,0]}),label('وقت إنشاء الملف',date(generatedAt,timezone)));
+ // Generated time is not presented as a sale time; the sale date above is authoritative.
+ void generatedAt;
  const doc:TDocumentDefinitions={pageSize:'A4',pageMargins:[38,30,38,42],defaultStyle:{font:'Cairo',fontSize:10,lineHeight:1.15},
-  info:{title:`Internal invoice ${String(r.id)}`,subject:'Internal sales invoice - not an electronic tax invoice'},
+  info:{title:`Invoice ${String(r.invoiceNumber)}`,subject:'Sales invoice - not an electronic tax invoice'},
   footer:(page:number,pages:number)=>({text:`${page} / ${pages}`,alignment:'center',fontSize:9,color:'#71857a',margin:[0,12,0,0]}),content};
  return new Promise((resolve,reject)=>{
   const stream=printer.createPdfKitDocument(doc),chunks:Buffer[]=[];

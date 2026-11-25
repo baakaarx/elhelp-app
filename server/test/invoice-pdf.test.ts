@@ -24,7 +24,7 @@ const pdfUrl=(version:string)=>`/api/sales/invoice/${id}/pdf?version=${version}`
 
 test('invoice PDF is private, valid, contains all rows, accurate numbers and spans pages safely',async()=>{
  const d=await detail(),response=await client.get(pdfUrl(d.version)).set(auth);
- assert.equal(response.status,200);assert.match(response.headers['content-type'],/^application\/pdf/);assert.match(response.headers['content-disposition'],new RegExp(`invoice-${id}\\.pdf`));assert.match(response.headers['cache-control'],/no-store/);assert.equal(response.body.subarray(0,5).toString(),'%PDF-');
+ assert.equal(response.status,200);assert.match(response.headers['content-type'],/^application\/pdf/);assert.match(response.headers['content-disposition'],new RegExp(`invoice-${d.record.invoiceNumber}\\.pdf`));assert.match(response.headers['cache-control'],/no-store/);assert.equal(response.body.subarray(0,5).toString(),'%PDF-');
  const doc=await getDocument({data:new Uint8Array(response.body),useSystemFonts:true}).promise;assert.ok(doc.numPages>=2);
  const pages:string[][]=[];
  for(let i=1;i<=doc.numPages;i++){
@@ -34,7 +34,8 @@ test('invoice PDF is private, valid, contains all rows, accurate numbers and spa
  }
  const all=pages.flat().join(' ');
  for(let i=1;i<=40;i++)assert.ok(all.includes(`ACME-${i}`),`missing or reversed product code ACME-${i}`);
- assert.ok(all.includes('1.5'), 'pack size is not reversed');assert.ok(all.includes('1,234.50'));assert.ok(all.includes('-38'));assert.ok(all.includes('2,000.00'));assert.ok(all.includes('1,990.00'));assert.ok(all.replace(/\s/g,'').includes(id));
+ assert.ok(all.includes('1.5'), 'pack size is not reversed');assert.ok(all.includes('1,234.50'));assert.ok(all.includes('-38'));assert.ok(all.includes('2,000.00'));assert.ok(all.includes('1,990.00'));assert.equal(d.record.invoiceNumber,1);assert.ok(!all.replace(/\s/g,'').includes(id));
+ const ops=await (await doc.getPage(1)).getOperatorList();assert.ok(ops.fnArray.includes(85)||ops.fnArray.includes(82),'company logo is embedded as an image');
  assert.equal((await client.get(pdfUrl(d.version))).status,401);assert.equal((await client.get('/api/sales/invoice/not-an-id/pdf').set(auth)).status,404);
  await send('/api/staff',{name:'حساب مخازن',email:'warehouse@invoice.test',password:'Password12345!',accessScope:'warehouse'});
  const token=(await send('/api/auth/login',{email:'warehouse@invoice.test',password:'Password12345!'})).token;
@@ -61,4 +62,14 @@ test('long unbroken correction reasons wrap and remain within page bounds',async
   for(const item of t.items)if('str' in item){all+=item.str;assert.ok(item.transform[4]>=-1&&item.transform[4]+item.width<=v.width+1&&item.transform[5]>=-1,`clipped: ${item.str}`);}
  }
  assert.ok((all.match(/س/g)||[]).length>=500);assert.ok(all.includes('REF-37'));
+});
+
+
+test('legacy details are disclosed to the office but the old warning is not printed on the invoice',async()=>{
+ instance.store.run('DELETE FROM office_invoice_snapshots_v1 WHERE sale_id=?',id);
+ const d=await detail();assert.equal(d.snapshot,null);assert.equal(d.record.invoiceNumber,1);
+ const r=await client.get(pdfUrl(d.version)).set(auth);assert.equal(r.status,200);
+ const doc=await getDocument({data:new Uint8Array(r.body),useSystemFonts:true}).promise;let text='';
+ for(let i=1;i<=doc.numPages;i++){const t=await (await doc.getPage(i)).getTextContent();text+=t.items.filter((x):x is Extract<(typeof t.items)[number],{str:string}>=>'str' in x).map(x=>x.str).join(' ');}
+ assert.ok(!text.includes('بيعة قديمة'));assert.ok(!text.includes(id));assert.ok(text.includes('البيانات الحالية'));
 });
