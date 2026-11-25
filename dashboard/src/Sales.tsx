@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, post } from './api';
 import { dateTimeText } from './dates';
+import { recommendationQty } from './quantity';
 import { formatNumber } from './session';
 import Products from './Products';
 import SaleInvoice, {type Detail} from './SaleInvoice';
@@ -130,7 +131,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         <p><strong>المخزن:</strong> {options.warehouses.find(w=>w.id===warehouseId)?.name}</p>
         <p><strong>المهندس:</strong> {mode==='order'?selectedOrder?.repName:repChoice==='none'?'بدون مهندس':options.reps.find(r=>r.id===repChoice)?.name}</p>
         {mode==='order'&&selectedOrder&&<p><strong>الطلبية:</strong> {dateTimeText(selectedOrder.sentAt,timezone)} · رقم {selectedOrder.id.slice(-8)}</p>}
-        <ul className="sale-order-lines">{(lines.map(l=>{const p=mode==='order'?selectedOrder?.lines.find(x=>x.productId===l.productId):options.products.find(x=>x.id===l.productId);return {productId:l.productId,name:p?.name??'',unit:p?.unit??'',unitSize:p?.unitSize??'',qty:parse(l.qty),price:parse(l.price)};})).map(l=><li key={l.productId}><strong>{l.name}</strong> · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} للوحدة{mode==='order'&&selectedOrder&&` · ترشيح المهندس: ${qtyText(selectedOrder.lines.find(x=>x.productId===l.productId)!.qty)}`}</li>)}</ul>
+        <ul className="sale-order-lines">{(lines.map(l=>{const p=mode==='order'?selectedOrder?.lines.find(x=>x.productId===l.productId):options.products.find(x=>x.id===l.productId);return {productId:l.productId,name:p?.name??'',unit:p?.unit??'',unitSize:p?.unitSize??'',qty:parse(l.qty),price:parse(l.price)};})).map(l=><li key={l.productId}><strong>{l.name}</strong> · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} للوحدة{mode==='order'&&selectedOrder&&` · ترشيح المهندس: ${recommendationQty(selectedOrder.lines.find(x=>x.productId===l.productId)!.qty)}`}</li>)}</ul>
         {mode==='order'&&selectedOrder&&selectedOrder.lines.some(l=>!lines.some(x=>x.productId===l.productId))&&<p className="notice">أصناف مستبعدة من الفاتورة: {selectedOrder.lines.filter(l=>!lines.some(x=>x.productId===l.productId)).map(l=>l.name).join('، ')}. ترشيح المهندس الأصلي محفوظ.</p>}
         <p><strong>الإجمالي: {cash(total)} · المدفوع الآن: {cash(paidValue)} · الباقي من الفاتورة: {cash(Math.round((total-paidValue)*100)/100)}</strong></p>
         {!options.customers.find(c=>c.id===customerId)?.hasOpening&&<p className="notice">المديونية القديمة للعميل لسه ما اتسجلتش؛ الباقي المسجّل قد لا يكون الرصيد الحقيقي.</p>}{mode==='direct'&&options.orders.some(o=>o.customerId===customerId)&&<p className="notice">تأكد إن الفاتورة دي مش نفس طلبية مرسلة للعميل.</p>}<p className="notice">بعد التأكيد هيتخصم المخزون، والفاتورة لا يمكن تعديلها مباشرة؛ التصحيح مسجل ومراجع. راجع العميل والأصناف والمبلغ كويس.</p>
@@ -163,10 +164,10 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         {lines.length>1&&<button type="button" className="btn ghost sm" onClick={()=>{setLines(v=>v.filter(x=>x.key!==l.key));saleRequest.current='';}}>إزالة الصنف</button>}
       </div>)}<button type="button" className="btn ghost sm" onClick={()=>{setLines(v=>[...v,emptyLine()]);saleRequest.current='';}}>إضافة صنف</button></div>:selectedOrder&&<div className="stack">
         {selectedOrder.notes&&<p className="notice">ملاحظة المهندس: {selectedOrder.notes}</p>}
-          <p className="muted small">كمية المهندس للترشيح فقط ومحفوظة كما أرسلها. عدّل الكمية الفعلية والسعر، أو استبعد صنفًا لم يُبع.</p>
+          <p className="muted small">كمية المهندس للترشيح فقط ومحفوظة كما أرسلها. اكتب الكمية المباعة بحد أقصى ٣ أرقام بعد العلامة العشرية، وحدد السعر، أو استبعد صنفًا لم يُبع.</p>
           {selectedOrder.lines.map(l=>{const edit=lines.find(x=>x.productId===l.productId);return <div className="sale-line" key={l.productId}>
             <label><input type="checkbox" checked={!!edit} onChange={e=>{saleRequest.current='';setLines(prev=>e.target.checked?[...prev,{key:l.productId,productId:l.productId,qty:String(l.qty),price:suggested(l.productId,selectedOrder.customerId),priceEdited:false}]:prev.filter(x=>x.productId!==l.productId));}} /> بيع {l.name}</label>
-            <span>ترشيح المهندس: {qtyText(l.qty)} {l.unit} {l.unitSize}{l.notes?` · ${l.notes}`:''}</span>
+            <span>ترشيح المهندس: {recommendationQty(l.qty)} {l.unit} {l.unitSize}{l.notes?` · ${l.notes}`:''}</span>
             {edit&&<><label className="field"><span>الكمية المباعة · {l.name}</span><input required inputMode="decimal" value={edit.qty} onChange={e=>changeLine(edit.key,{qty:e.target.value})} /></label>
             <label className="field"><span>سعر الوحدة · {l.name} (ج.م)</span><input required inputMode="decimal" value={edit.price} onChange={e=>changeLine(edit.key,{price:e.target.value,priceEdited:true})} /></label></>}
           </div>;})}

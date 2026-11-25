@@ -53,7 +53,13 @@ test('تعذر الاتصال ما يكررش حركة مخزون اتحفظت �
   await page.getByRole('button', {name:'المخازن',exact:true}).click();
   await page.getByRole('combobox', {name:'المخزن',exact:true}).selectOption(wh.warehouse.id);
   await page.getByRole('combobox', {name:'الصنف',exact:true}).selectOption(product.product.id);
+  await page.getByLabel('الكمية').fill('   ');
+  await page.getByRole('button', {name:'حفظ الحركة'}).click();
+  await expect(page.getByRole('alert')).toContainText('اكتب كمية صحيحة');
   await page.getByLabel('الكمية').fill('5');
+  const second=await page.context().newPage();
+  await second.goto('/');
+  await second.getByRole('button', {name:'المخازن',exact:true}).click();
   let dropped = false;
   const ids: string[] = [];
   await page.route('**/api/warehouse/movements', async route => {
@@ -63,11 +69,19 @@ test('تعذر الاتصال ما يكررش حركة مخزون اتحفظت �
     else await route.continue();
   });
   await page.getByRole('button', {name:'حفظ الحركة'}).click();
-  await expect(page.getByRole('alert')).toContainText('تعذر الاتصال بالسيرفر');
-  await page.getByRole('button', {name:'حفظ الحركة'}).click();
+  await expect(page.getByRole('alert').filter({hasText:'تعذر الاتصال بالسيرفر'})).toBeVisible();
+  await expect(page.getByText('في حركة مخزون لم نتأكد من نتيجتها.')).toBeVisible();
+  await expect(second.getByText('في حركة مخزون لم نتأكد من نتيجتها.')).toBeVisible();
+  await expect(second.getByRole('button', {name:'حفظ الحركة'})).toBeDisabled();
+  await page.reload();
+  await page.getByRole('button', {name:'المخازن',exact:true}).click();
+  await expect(page.getByRole('button', {name:'حفظ الحركة'})).toBeDisabled();
+  await page.getByRole('button', {name:'التأكد من الحركة المعلقة'}).click();
   await expect(page.getByRole('status')).toContainText('الحركة اتحفظت');
   expect(ids).toHaveLength(2);
   expect(ids[0]).toBe(ids[1]);
+  await expect(second.getByText('لازم تحدّث الصفحة وتتأكد من الأرصدة قبل تسجيل حركة جديدة.')).toBeVisible();
+  await second.close();
   const stock = await (await page.request.get(`/api/warehouse/stock?warehouseId=${wh.warehouse.id}`, {headers})).json();
   expect(stock.stock.find((row: {id: string}) => row.id === product.product.id).qty).toBe(5);
 });
@@ -90,4 +104,24 @@ test('حفظ حركة نجح لكن تحديث الرصيد فشل يوضح ال
   await page.unroute('**/api/warehouse/stock?*');
   const stock = await (await page.request.get(`/api/warehouse/stock?warehouseId=${wh.warehouse.id}`, {headers})).json();
   expect(stock.stock.find((row: {id: string}) => row.id === product.product.id).qty).toBe(7);
+});
+
+test('أرصدة وحركات المخزن تعرض الكمية والوقت على توقيت النظام لا الجهاز', async ({ browser }) => {
+  const context=await browser.newContext({timezoneId:'America/Los_Angeles'});
+  const page=await context.newPage();
+  await signIn(page);
+  const headers={'X-Mandoub-Token':token,'X-Mandoub-Client':'admin'};
+  const send=async(path:string,data:object)=>{const r=await page.request.post(path,{headers,data});expect(r.ok(),await r.text()).toBeTruthy();return r.json();};
+  const wh=(await send('/api/warehouse/warehouses',{name:`مخزن توقيت ${Date.now()}`})).warehouse;
+  const product=(await send('/api/warehouse/products',{name:`صنف توقيت ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+  await send('/api/warehouse/movements',{id:crypto.randomUUID(),kind:'opening',productId:product.id,toWarehouseId:wh.id,qty:1234.125});
+  const data=await (await page.request.get(`/api/warehouse/movements?warehouseId=${wh.id}`,{headers})).json();
+  const expected=await page.evaluate(at=>new Date(at).toLocaleString('ar-EG',{dateStyle:'full',timeStyle:'short',timeZone:'Africa/Cairo'}),data.movements[0].createdAt);
+  await page.getByRole('button',{name:'المخازن',exact:true}).click();
+  await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(wh.id);
+  const rows=page.locator('tr').filter({hasText:product.name});
+  await expect(rows.first()).toContainText('١٬٢٣٤٫١٢٥');
+  await expect(rows.last()).toContainText('١٬٢٣٤٫١٢٥');
+  await expect(rows.last()).toContainText(expected);
+  await context.close();
 });

@@ -112,12 +112,14 @@ export function createWarehouseRouter(store: Store) {
           const result = store.run('UPDATE warehouse_stock SET milli_qty=milli_qty-? WHERE warehouse_id=? AND product_id=? AND milli_qty>=?', milli, from, m.productId, milli);
           if (!result.changes) throw new Error('INSUFFICIENT_STOCK');
         }
+        if (to && m.kind !== 'opening' && Number(store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',to,m.productId)!.milli_qty) > Number.MAX_SAFE_INTEGER-milli) throw new Error('STOCK_LIMIT');
         if (to && m.kind !== 'opening') store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES (?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET milli_qty=milli_qty+excluded.milli_qty', to, m.productId, milli);
         store.run('INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)', m.id,m.kind,m.productId,from,to,milli,m.note,res.locals.user.id,res.locals.user.name,Date.now());
       });
     } catch (e) {
       if ((e as Error).message === 'STOCK_INITIALIZED') { res.status(409).json({ error: 'الرصيد الافتتاحي اتسجل قبل كده.' }); return; }
       if ((e as Error).message === 'STOCK_NOT_INITIALIZED') { res.status(409).json({ error: 'سجّل الرصيد الافتتاحي للصنف في كل مخزن للحركة الأول.' }); return; }
+      if ((e as Error).message === 'STOCK_LIMIT') { res.status(409).json({ error: 'الرصيد أكبر من الحد الآمن للتسجيل. راجع المسؤول.', code:'STOCK_LIMIT' }); return; }
       if ((e as Error).message === 'INSUFFICIENT_STOCK') { res.status(409).json({ error: 'الكمية أكبر من الرصيد المتاح في المخزن.', code:'INSUFFICIENT_STOCK' }); return; }
       throw e;
     }

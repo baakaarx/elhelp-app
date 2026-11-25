@@ -110,3 +110,19 @@ test('warehouse accounts cannot subscribe to office live events', async () => {
     assert.equal(result,'rejected');
   } finally { socket.close(); }
 });
+
+
+test('inbound stock and transfers reject unsafe integer balances without changing either warehouse', async () => {
+  const w1 = (await client.post('/api/warehouse/warehouses').set(admin).send({name:'مخزن حد آمن مصدر'})).body.warehouse.id;
+  const w2 = (await client.post('/api/warehouse/warehouses').set(admin).send({name:'مخزن حد آمن وجهة'})).body.warehouse.id;
+  const p = (await client.post('/api/warehouse/products').set(admin).send({name:'صنف حد آمن',category:'other',unit:'عبوة'})).body.product.id;
+  const move = (data:object) => client.post('/api/warehouse/movements').set(admin).send(data);
+  await move({id:randomUUID(),kind:'opening',productId:p,toWarehouseId:w1,qty:1});
+  await move({id:randomUUID(),kind:'opening',productId:p,toWarehouseId:w2,qty:0});
+  instance.store.run('UPDATE warehouse_stock SET milli_qty=? WHERE warehouse_id=? AND product_id=?',Number.MAX_SAFE_INTEGER,w2,p);
+  assert.equal((await move({id:randomUUID(),kind:'in',productId:p,toWarehouseId:w2,qty:0.001})).body.code,'STOCK_LIMIT');
+  assert.equal((await move({id:randomUUID(),kind:'transfer',productId:p,fromWarehouseId:w1,toWarehouseId:w2,qty:1})).body.code,'STOCK_LIMIT');
+  assert.equal(instance.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w1,p)?.milli_qty,1000);
+  assert.equal(instance.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w2,p)?.milli_qty,Number.MAX_SAFE_INTEGER);
+  assert.equal((await client.get(`/api/warehouse/movements?warehouseId=${w2}`).set(admin)).body.movements.length,1);
+});

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from './api';
 import { dateTimeText } from './dates';
+import { recommendationQty } from './quantity';
 import { formatNumber } from './session';
 
 interface OrderLine { productId:string;productName:string;unit:string;unitSize:string;qty:number;notes:string }
@@ -32,7 +33,7 @@ export default function Orders({timezone,version}:{timezone?:string;version:numb
       {orders.map(order=><article className="order-card" key={order.id}>
         <div className="order-card-head"><div><strong>{order.customerName}</strong>{order.customerPhone&&<small> · {order.customerPhone}</small>}</div><span className={order.sold?'pill ok':'pill warn'}>{order.sold?'اتسجلت لها فاتورة':'مستنية فاتورة'}</span></div>
         <p className="muted small">المهندس: {order.repName} · {order.sentAt?dateTimeText(order.sentAt,timezone):'—'}{order.recordedOffline?' · اتبعتت بعد رجوع الشبكة':''}</p>
-        <ul>{order.lines.map(line=><li key={line.productId}><strong>{line.productName}</strong> · ترشيح {line.qty.toLocaleString('ar-EG',{maximumFractionDigits:20})} {line.unit} {line.unitSize}{line.notes?` · ${line.notes}`:''}</li>)}</ul>
+        <ul>{order.lines.map(line=><li key={line.productId}><strong>{line.productName}</strong> · ترشيح {recommendationQty(line.qty)} {line.unit} {line.unitSize}{line.notes?` · ${line.notes}`:''}</li>)}</ul>
         {order.notes&&<p className="muted small">ملاحظة المهندس: {order.notes}</p>}
       </article>)}
     </div>}

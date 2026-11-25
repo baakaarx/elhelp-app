@@ -67,7 +67,8 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await expect(debtor).toContainText('١٥');
  const login=await send('/api/auth/login',{email:E2E_REPS[0].email,password:E2E_REP_PASSWORD},{} as typeof headers);
  const repHeaders={'Authorization':`Bearer ${login.token}`,'X-Mandoub-Client':'rep'};
- const orderId=randomUUID();await send('/api/orders',{id:orderId,customerId:c.id,lines:[{productId:p.id,qty:2}],send:true},repHeaders as typeof headers);
+ const tinyProduct=(await send('/api/warehouse/products',{name:`صنف ترشيح دقيق ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+ const orderId=randomUUID();await send('/api/orders',{id:orderId,customerId:c.id,lines:[{productId:p.id,qty:2.12345},{productId:tinyProduct.id,qty:1e-22}],send:true},repHeaders as typeof headers);
 
  // Reload the summary; a priced order alone does not increase sales or decrease stock.
  await page.getByRole('button',{name:'العملاء',exact:true}).click();
@@ -76,11 +77,16 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();
  await page.getByRole('combobox',{name:'نوع الفاتورة'}).selectOption('order');
  await page.getByRole('combobox',{name:'الطلبية'}).selectOption(orderId);
+ await expect(page.getByText('ترشيح المهندس: 1e-22 (صيغة علمية)', {exact:false})).toBeVisible();
+ await page.getByRole('checkbox',{name:`بيع ${tinyProduct.name}`}).uncheck();
+ await expect(page.getByText('ترشيح المهندس: ٢٫١٢٣٤٥', {exact:false})).toBeVisible();
+ await page.getByRole('textbox',{name:`الكمية المباعة · ${p.name}`}).fill('2');
  await page.getByRole('textbox',{name:`سعر الوحدة · ${p.name} (ج.م)`}).fill('10');
  await saleForm.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(w.id);
  await saleForm.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('0');
  await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  await expect(page.getByRole('heading',{name:'راجع البيانات قبل الحفظ'})).toBeVisible();
+ await expect(page.getByLabel('مراجعة العملية')).toContainText('ترشيح المهندس: ٢٫١٢٣٤٥');
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
  await expect(page.getByRole('status')).toContainText('الفاتورة اتسجلت');
  const report=await (await page.request.get('/api/sales/overview',{headers})).json();

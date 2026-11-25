@@ -234,7 +234,7 @@ export default function App() {
   if (user.accessScope === 'warehouse') return <div className="app warehouse-app"><main className="content">
     <header className="topbar"><div><h1>المخازن</h1><p className="muted small">{user.name}</p></div>
       <button className="btn ghost sm" onClick={async () => { try { await logout(); } catch {} clearSession(); }}>خروج</button></header>
-    <Warehouses />
+    <Warehouses userId={user.id} />
   </main></div>;
 
   return (
@@ -397,7 +397,7 @@ export default function App() {
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
         {tab === 'products' && <Sales timezone={overview?.timezone} userId={user.id} />}
-        {tab === 'warehouses' && <Warehouses />}
+        {tab === 'warehouses' && <Warehouses userId={user.id} />}
         {tab === 'staff' && <Staff />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
         {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={setTab} timezone={overview?.timezone} />}

@@ -28,7 +28,7 @@ test('المخازن بأرصدة منفصلة وحساب المخازن معز�
   await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption({label:"صنف تجريبي للمخزون · شيكارة"});
   await page.getByLabel('الكمية').fill('0');
   await page.getByRole('button',{name:'حفظ الحركة'}).click();
-  await expect(stockRow).toContainText('0');
+  await expect(stockRow).toContainText('٠');
   await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption({label:'مخزن اختبار أول'});
   await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption({label:"صنف تجريبي للمخزون · شيكارة"});
   await page.getByLabel('الكمية').fill('5');
@@ -38,7 +38,7 @@ test('المخازن بأرصدة منفصلة وحساب المخازن معز�
   await page.getByLabel('إلى مخزن').selectOption({label:'مخزن اختبار تاني'});
   await page.getByLabel('الكمية').fill('2');
   await page.getByRole('button',{name:'حفظ الحركة'}).click();
-  await expect(page.locator('tr').filter({hasText:'صنف تجريبي للمخزون'}).first()).toContainText('3');
+  await expect(page.locator('tr').filter({hasText:'صنف تجريبي للمخزون'}).first()).toContainText('٣');
   await page.getByRole('button',{name:/المساعد الذكي/}).click();
   await expect(page.getByRole('heading',{name:'تحليل المبيعات والأداء'})).toBeVisible();
   await page.getByText('أولويات الشغل الحالية').click();
