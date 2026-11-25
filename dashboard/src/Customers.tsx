@@ -16,16 +16,16 @@ const messageOf = (error: unknown, fallback: string) => (error instanceof ApiErr
 
 export default function Customers(_props: { timezone?: string }) {
   const [book, setBook] = useState<AreaBook | null>(null);
-  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [result, setResult] = useState<{query:string; customers:Customer[]; hasMore:boolean} | null>(null);
   // The price list's headings: which column of it each customer buys at. Read here, edited in the
   // الأصناف screen — the book only records the choice.
   const [tiers, setTiers] = useState<PriceTier[]>([]);
   const [filters, setFilters] = useState({ q: '', includeInactive: false });
   const [page, setPage] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
   const requestNumber = useRef(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [editing, setEditing] = useState<Customer | 'new' | null>(null);
   const customerForm = useReveal<HTMLFormElement>();
   const [form, setForm] = useState(EMPTY_FORM);
@@ -44,25 +44,30 @@ export default function Customers(_props: { timezone?: string }) {
     return params.toString();
   }, [filters, page]);
 
+  const currentQuery = useRef(query); currentQuery.current = query;
+  const ready = result?.query === query;
+  const customers = ready ? result.customers : [];
+  const hasMore = ready ? result.hasMore : false;
+
   const load = useCallback(async () => {
+    if (currentQuery.current !== query) return;
     const request = ++requestNumber.current;
-    setLoading(true);
+    setLoading(true); setError(''); setResult(null);
     try {
       const [list, areas, kinds] = await Promise.all([
         api<{ customers: Customer[]; hasMore: boolean }>(`/api/customers?${query}`),
         api<AreaBook>('/api/customers/areas'),
         api<{ tiers: PriceTier[] }>('/api/price-tiers'),
       ]);
-      if (request !== requestNumber.current) return;
-      setCustomers(list.customers);
-      setHasMore(list.hasMore);
+      if (request !== requestNumber.current || currentQuery.current !== query) return;
+      setResult({query, customers:list.customers, hasMore:list.hasMore});
       setBook(areas);
       setTiers(kinds.tiers);
       setError('');
     } catch (e) {
-      if (request === requestNumber.current) setError(messageOf(e, 'تعذر تحميل قائمة العملاء.'));
+      if (request === requestNumber.current && currentQuery.current === query) setError(`تعذر تحميل قائمة العملاء. حدّث الصفحة قبل المحاولة مرة أخرى. ${messageOf(e, '')}`);
     } finally {
-      if (request === requestNumber.current) setLoading(false);
+      if (request === requestNumber.current && currentQuery.current === query) setLoading(false);
     }
   }, [query]);
 
@@ -72,7 +77,7 @@ export default function Customers(_props: { timezone?: string }) {
   const nameOf = (id: string | null) => (id ? engineers.find(rep => rep.id === id)?.name ?? 'مهندس محذوف' : 'من غير مهندس');
   function openCreate() {
     setForm({ ...EMPTY_FORM });
-    setFormError('');
+    setFormError(''); setMessage('');
     setEditing('new');
     customerForm.reveal();
   }
@@ -82,7 +87,7 @@ export default function Customers(_props: { timezone?: string }) {
       village: customer.village, notes: customer.notes, stage: customer.stage, lostReason: customer.lostReason,
       repId: customer.repId ?? POOL, priceTierId: customer.priceTierId ?? POOL,
     });
-    setFormError('');
+    setFormError(''); setMessage('');
     setEditing(customer);
     customerForm.reveal();
   }
@@ -121,6 +126,7 @@ export default function Customers(_props: { timezone?: string }) {
         if (target !== (current.repId ?? null)) await post(`/api/customers/${current.id}/assign`, { repId: target });
       }
       closeForm();
+      setMessage(current === 'new' ? 'العميل اتضاف.' : 'بيانات العميل اتحفظت.');
       await load();
     } catch (e) {
       // «اتحفظت لكن النقل اترفض» is only true once the row itself went in; saying it after a refused
@@ -135,10 +141,11 @@ export default function Customers(_props: { timezone?: string }) {
   }
 
   async function assign(customer: Customer, repId: string | null) {
-    setBusyRow(customer.id);
+    setBusyRow(customer.id); setMessage('');
     try {
       await post(`/api/customers/${customer.id}/assign`, { repId });
       setAssigning(null);
+      setMessage('تم تحديث مهندس العميل.');
       await load();
     } catch (e) {
       await load();
@@ -149,9 +156,10 @@ export default function Customers(_props: { timezone?: string }) {
   }
 
   async function setActive(customer: Customer, active: boolean) {
-    setBusyRow(customer.id);
+    setBusyRow(customer.id); setMessage('');
     try {
       await patch(`/api/customers/${customer.id}`, { active });
+      setMessage(active ? 'العميل اتفعّل.' : 'العميل اتوقف.');
       await load();
     } catch (e) {
       setError(messageOf(e, 'تعذر تغيير حالة العميل.'));
@@ -166,9 +174,10 @@ export default function Customers(_props: { timezone?: string }) {
    * ConfirmAction has no catch of its own — an escaping rejection would sit in the console.
    */
   async function remove(customer: Customer) {
-    setBusyRow(customer.id);
+    setBusyRow(customer.id); setMessage('');
     try {
       await del(`/api/customers/${customer.id}`);
+      setMessage('العميل اتحذف.');
       await load();
     } catch (e) {
       await load();
@@ -197,6 +206,7 @@ export default function Customers(_props: { timezone?: string }) {
       </div>
 
       {error && <p className="error banner" role="alert">{error}</p>}
+      {message && <p className="ok-text" role="status">{message}</p>}
 
       {editing && (
         <CustomerForm
@@ -213,7 +223,8 @@ export default function Customers(_props: { timezone?: string }) {
         />
       )}
 
-      <div className="panel">
+      {!ready && !error && <p role="status">جارٍ تحميل العملاء للبحث المختار…</p>}
+      {ready && <div className="panel">
         <h3 className="panel-title">
           العملاء في الصفحة · {formatNumber(customers.length)}
         </h3>
@@ -292,7 +303,7 @@ export default function Customers(_props: { timezone?: string }) {
           <span>صفحة {formatNumber(page + 1)}</span>
           <button className="btn ghost sm" disabled={loading || !hasMore} onClick={() => setPage(p => p + 1)}>التالي</button>
         </div>}
-      </div>
+      </div>}
     </section>
   );
 }

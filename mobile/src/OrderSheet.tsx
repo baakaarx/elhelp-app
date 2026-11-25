@@ -133,7 +133,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
                   const unavailable = !byProduct.has(line.productId);
                   return (
                     <View key={line.productId} style={[styles.lineRow, index > 0 && styles.lineBorder]}>
-                      <View style={{ flex: 1, gap: 2 }}>
+                      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                         <Text style={styles.lineName}>{product.name}</Text>
                         <Text style={styles.linePack}>{packText(product)}</Text>
                         {unavailable && <Text style={styles.error}>الصنف مش موجود دلوقتي — احذفه أو كلّم المكتب.</Text>}
@@ -243,7 +243,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', backgroundColor: colors.white,
   },
   stepText: { fontFamily: fonts.bold, fontSize: 17, color: colors.green700, lineHeight: 19 },
-  stepQty: { minWidth: 26, textAlign: 'center', fontFamily: fonts.bold, fontSize: 15.5, color: colors.ink },
+  stepQty: { width: 64, textAlign: 'center', fontFamily: fonts.bold, fontSize: 15.5, color: colors.ink },
   addBox: {
     minWidth: 46, alignItems: 'center', borderRadius: 11, backgroundColor: colors.green700,
     paddingHorizontal: 10, paddingVertical: 6,

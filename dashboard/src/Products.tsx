@@ -61,6 +61,7 @@ export default function Products(_props: { timezone?: string }) {
   const ready = result?.query === query;
 
   const load = useCallback(async () => {
+    if (currentQuery.current !== query) return;
     const id = ++requestId.current;
     setLoading(true); setResult(null); setError('');
     try {

@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { get, sendReport } from './api';
 import { captureOnce, locationIssueMessage, type Fix } from './location';
-import { parseNumberText } from './format';
+import { parseMoneyText } from './format';
 import { enqueueReport, flushOutbox } from './reports';
 import { shouldQueue } from './retry';
 import { randomUUID } from './tracking';
@@ -45,9 +45,9 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
   async function submit() {
     if (title.trim().length < 2) { setError('اكتب عنوانًا قصيرًا للتقرير.'); return; }
     setBusy(true); setError(''); setMessage('');
-    const parsedAmount = parseNumberText(amount);
-    if (amount.trim() !== '' && (parsedAmount === null || parsedAmount < 0)) {
-      setError('المبلغ غير صحيح — اكتب رقمًا (مثال: ٥٠٠ أو 500).'); setBusy(false); return;
+    const parsedAmount = parseMoneyText(amount);
+    if (amount.trim() !== '' && parsedAmount === null) {
+      setError('المبلغ غير صحيح — اكتب الجنيه والقرش بعلامة عشرية مثل ١٫٥٠، والفواصل للآلاف فقط.'); setBusy(false); return;
     }
     let fix: Fix | null = null;
     if (withLocation) {
