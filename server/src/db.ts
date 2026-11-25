@@ -164,7 +164,7 @@ export class Store {
         milli_qty INTEGER NOT NULL DEFAULT 0 CHECK(milli_qty >= 0),
         PRIMARY KEY (warehouse_id, product_id)
       );
-      CREATE TABLE IF NOT EXISTS stock_movements (
+      CREATE TABLE IF NOT EXISTS inventory_movements (
         id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('opening','in','out','transfer')),
         product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
         from_warehouse_id TEXT REFERENCES warehouses(id) ON DELETE RESTRICT,
@@ -173,7 +173,8 @@ export class Store {
         actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
         actor_name TEXT NOT NULL, created_at INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS stock_movements_time ON stock_movements(created_at DESC);
+      CREATE INDEX IF NOT EXISTS inventory_movements_time ON inventory_movements(created_at DESC);
+      CREATE TABLE IF NOT EXISTS inventory_migrations (name TEXT PRIMARY KEY);
 
       CREATE TABLE IF NOT EXISTS product_prices (
         product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
@@ -425,6 +426,17 @@ export class Store {
     ]) { try { this.db.exec(sql); } catch {} }
     if (!this.all('PRAGMA table_info(users)').some(column => column.name === 'access_scope')) {
       throw new Error('تعذر إضافة صلاحيات حساب المخازن؛ السيرفر لن يعمل قبل إصلاح قاعدة البيانات.');
+    }
+    // Older databases can contain an unrelated stock_movements table. Preserve it untouched.
+    // Only the previous version of this inventory feature has these exact columns; its movements
+    // can be copied once into the separate ledger without assuming old signed entries are balances.
+    const oldMovementColumns = new Set(this.all('PRAGMA table_info(stock_movements)').map(column => column.name));
+    const inventoryColumns = ['id','kind','product_id','from_warehouse_id','to_warehouse_id','milli_qty','note','actor_id','actor_name','created_at'];
+    if (inventoryColumns.every(column => oldMovementColumns.has(column)) && !this.get("SELECT 1 FROM inventory_migrations WHERE name='copy_v1_movements'")) {
+      this.transaction(() => {
+        this.db.exec(`INSERT INTO inventory_movements (${inventoryColumns.join(',')}) SELECT ${inventoryColumns.join(',')} FROM stock_movements`);
+        this.run("INSERT INTO inventory_migrations(name) VALUES ('copy_v1_movements')");
+      });
     }
     this.ensureIndexes();
     this.checkCatalogueLinks();

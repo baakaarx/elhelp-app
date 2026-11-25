@@ -513,3 +513,5 @@ input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
   .panel { padding: 14px; }
   .work-form .btn { width: 100%; }
 }
+
+.notice { background: #fff7e0; border: 1px solid #ecd89b; color: #624a0b; border-radius: 12px; padding: 10px 14px; }

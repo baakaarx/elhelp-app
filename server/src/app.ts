@@ -1802,7 +1802,7 @@ export function createApp(overrides: Partial<Config> = {}) {
 
   /** Deleting is only possible while nothing points at the item; otherwise it is stopped. */
   app.delete('/api/products/:id', adminOnly, (req, res) => {
-    if (store.get('SELECT 1 AS x FROM stock_movements WHERE product_id=? LIMIT 1', String(req.params.id)) || store.get('SELECT 1 AS x FROM warehouse_stock WHERE product_id=? LIMIT 1', String(req.params.id))) { res.status(409).json({ error: 'الصنف له سجل مخزون — وقّفه بدل الحذف للحفاظ على الحركات.', code: 'PRODUCT_HAS_STOCK' }); return; }
+    if (store.get('SELECT 1 AS x FROM inventory_movements WHERE product_id=? LIMIT 1', String(req.params.id)) || store.get('SELECT 1 AS x FROM warehouse_stock WHERE product_id=? LIMIT 1', String(req.params.id))) { res.status(409).json({ error: 'الصنف له سجل مخزون — وقّفه بدل الحذف للحفاظ على الحركات.', code: 'PRODUCT_HAS_STOCK' }); return; }
     const current = store.get('SELECT * FROM products WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
     if (!current) { res.status(404).json({ error: 'الصنف غير موجود.' }); return; }
     const holders = rowsHolding('products', current.id).filter(entry => entry.table !== 'product_prices');

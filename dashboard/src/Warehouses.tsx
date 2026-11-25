@@ -9,6 +9,7 @@ const parseQty = (value:string) => Number(value.trim().replace(/[٠-٩]/g, c => 
 
 export default function Warehouses() {
   const [warehouses,setWarehouses] = useState<Warehouse[]>([]);
+  const [legacyHistory,setLegacyHistory] = useState(false);
   const [warehouseId,setWarehouseId] = useState('');
   const [stock,setStock] = useState<Stock[]>([]);
   const [movements,setMovements] = useState<Movement[]>([]);
@@ -32,8 +33,9 @@ export default function Warehouses() {
   const [busy,setBusy] = useState(false);
   const requestId = useRef('');
   const loadWarehouses = useCallback(async () => {
-    const result = await api<{warehouses:Warehouse[]}>('/api/warehouse/warehouses');
+    const result = await api<{warehouses:Warehouse[]; legacyHistory:boolean}>('/api/warehouse/warehouses');
     setWarehouses(result.warehouses);
+    setLegacyHistory(result.legacyHistory);
     setWarehouseId(current => current || result.warehouses[0]?.id || '');
   }, []);
   const loadStock = useCallback(async () => {
@@ -82,6 +84,7 @@ export default function Warehouses() {
   const resetRequest = () => { requestId.current = ''; };
   return <section className="page">
     <header className="page-head"><div><h2>المخازن والأصناف</h2><p className="muted">لكل مخزن رصيد مستقل. سجّل الرصيد الافتتاحي قبل الإضافة أو الصرف أو النقل.</p></div></header>
+    {legacyHistory && <p className="notice">فيه حركات مخزون قديمة محفوظة بشكل منفصل، ومش داخلة في الأرصدة هنا. راجع الجرد وسجّل الأرصدة الافتتاحية.</p>}
     {error && <p className="error" role="alert">{error}</p>}{message && <p className="ok-text" role="status">{message}</p>}
     <div className="panel">
       <form className="filters warehouse-picker" onSubmit={addWarehouse}><label className="field inline"><span>اسم مخزن جديد</span><input value={newWarehouse} onChange={e=>setNewWarehouse(e.target.value)} minLength={2} maxLength={120} required /></label><button className="btn primary sm" disabled={busy}>إضافة مخزن</button></form>

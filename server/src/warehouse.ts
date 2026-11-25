@@ -16,6 +16,9 @@ export function createWarehouseRouter(store: Store) {
     if (res.locals.user.role !== 'admin') { res.status(403).json({ error: 'المخازن لحسابات المكتب والمخازن فقط.' }); return; }
     next();
   });
+  const warehouseColumns = new Set(store.all('PRAGMA table_info(warehouses)').map(column => column.name));
+  const legacyColumns = new Set(store.all('PRAGMA table_info(stock_movements)').map(column => column.name));
+  const legacyHistory = legacyColumns.size > 0 && !['id','kind','product_id','from_warehouse_id','to_warehouse_id','milli_qty','note','actor_id','actor_name','created_at'].every(column => legacyColumns.has(column)) && !!store.get('SELECT 1 FROM stock_movements LIMIT 1');
   const product = (productId: string) => store.get('SELECT id,name,category,unit,unit_size AS unitSize,active FROM products WHERE id=?', productId);
   router.get('/products', (_req, res) => {
     const products = store.all('SELECT id,name,category,unit,unit_size AS unitSize,active FROM products ORDER BY active DESC,name COLLATE NOCASE');
@@ -48,14 +51,16 @@ export function createWarehouseRouter(store: Store) {
     res.json({ product: product(String(current.id)) });
   });
   router.get('/warehouses', (_req, res) => {
-    res.json({ warehouses: store.all('SELECT id,name,created_at AS createdAt FROM warehouses ORDER BY name COLLATE NOCASE') });
+    res.json({ warehouses: store.all('SELECT id,name,created_at AS createdAt FROM warehouses ORDER BY name COLLATE NOCASE'), legacyHistory });
   });
   router.post('/warehouses', (req, res) => {
     const parsed = z.object({ name }).strict().safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'اكتب اسم المخزن.' }); return; }
     if (store.get('SELECT id FROM warehouses WHERE name=? COLLATE NOCASE', parsed.data.name)) { res.status(409).json({ error: 'اسم المخزن موجود بالفعل.' }); return; }
     const warehouseId = randomUUID();
-    store.run('INSERT INTO warehouses(id,name,created_at) VALUES (?,?,?)', warehouseId, parsed.data.name, Date.now());
+    const now = Date.now();
+    if (warehouseColumns.has('updated_at')) store.run('INSERT INTO warehouses(id,name,created_at,updated_at) VALUES (?,?,?,?)', warehouseId, parsed.data.name, now, now);
+    else store.run('INSERT INTO warehouses(id,name,created_at) VALUES (?,?,?)', warehouseId, parsed.data.name, now);
     store.audit(res.locals.user.id, 'warehouse.create', { warehouseId, name: parsed.data.name });
     res.status(201).json({ warehouse: store.get('SELECT id,name FROM warehouses WHERE id=?', warehouseId) });
   });
@@ -71,7 +76,7 @@ export function createWarehouseRouter(store: Store) {
     const where = warehouseId ? 'WHERE m.from_warehouse_id=? OR m.to_warehouse_id=?' : '';
     const rows = store.all(`SELECT m.id,m.kind,m.milli_qty AS milliQty,m.note,m.actor_name AS actorName,m.created_at AS createdAt,
       p.name AS productName,p.unit,p.unit_size AS unitSize,fw.name AS fromName,tw.name AS toName
-      FROM stock_movements m JOIN products p ON p.id=m.product_id
+      FROM inventory_movements m JOIN products p ON p.id=m.product_id
       LEFT JOIN warehouses fw ON fw.id=m.from_warehouse_id LEFT JOIN warehouses tw ON tw.id=m.to_warehouse_id
       ${where} ORDER BY m.created_at DESC,m.rowid DESC LIMIT 200`, ...(warehouseId ? [warehouseId, warehouseId] : []));
     res.json({ movements: rows.map(({ milliQty, ...r }) => ({ ...r, qty: Number(milliQty)/1000 })) });
@@ -85,7 +90,7 @@ export function createWarehouseRouter(store: Store) {
     if (Math.abs(scaled - milli) > 0.00001 || (m.kind !== 'opening' && milli < 1)) { res.status(400).json({ error: 'الكمية تقبل لحد ٣ أرقام بعد العلامة العشرية.' }); return; }
     const from = m.kind === 'in' || m.kind === 'opening' ? null : m.fromWarehouseId ?? null, to = m.kind === 'out' ? null : m.toWarehouseId ?? null;
     if ((m.kind !== 'in' && m.kind !== 'opening' && !from) || (m.kind !== 'out' && !to) || (from && to && from === to) || ((m.kind === 'in' || m.kind === 'opening') && m.fromWarehouseId) || (m.kind === 'out' && m.toWarehouseId)) { res.status(400).json({ error: 'اختار مخازن الحركة بشكل صحيح.' }); return; }
-    const existing = store.get('SELECT * FROM stock_movements WHERE id=?', m.id);
+    const existing = store.get('SELECT * FROM inventory_movements WHERE id=?', m.id);
     if (existing) {
       if (existing.actor_id !== res.locals.user.id || existing.kind !== m.kind || existing.product_id !== m.productId || existing.from_warehouse_id !== from || existing.to_warehouse_id !== to || Number(existing.milli_qty) !== milli || existing.note !== m.note) { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.' }); return; }
       res.json({ ok:true, duplicate:true }); return;
@@ -108,7 +113,7 @@ export function createWarehouseRouter(store: Store) {
           if (!result.changes) throw new Error('INSUFFICIENT_STOCK');
         }
         if (to && m.kind !== 'opening') store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES (?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET milli_qty=milli_qty+excluded.milli_qty', to, m.productId, milli);
-        store.run('INSERT INTO stock_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)', m.id,m.kind,m.productId,from,to,milli,m.note,res.locals.user.id,res.locals.user.name,Date.now());
+        store.run('INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)', m.id,m.kind,m.productId,from,to,milli,m.note,res.locals.user.id,res.locals.user.name,Date.now());
       });
     } catch (e) {
       if ((e as Error).message === 'STOCK_INITIALIZED') { res.status(409).json({ error: 'الرصيد الافتتاحي اتسجل قبل كده.' }); return; }
