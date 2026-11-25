@@ -282,7 +282,7 @@ export default function App() {
               <Stat label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
               <Stat label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
               <Stat label="إجمالي مسافة اليوم" value={`${formatNumber(totalKm / 1000)} كم`} hint="تقديري بعد استبعاد النقاط الضعيفة" />
-              <Stat label="طلبيات مستنية" value={formatNumber(overview?.sentOrders ?? 0)} hint="بانتظار المكتب" />
+              <Stat label="طلبيات مستنية" value={formatNumber(overview?.sentOrders ?? 0)} hint="بانتظار تسجيل فاتورة" />
             </div>
             <div className="live-grid">
               <div className="panel map-panel">

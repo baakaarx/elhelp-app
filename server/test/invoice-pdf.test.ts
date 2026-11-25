@@ -34,6 +34,7 @@ test('invoice PDF is private, valid, contains all rows, accurate numbers and spa
  }
  const all=pages.flat().join(' ');
  for(let i=1;i<=40;i++)assert.ok(all.includes(`ACME-${i}`),`missing or reversed product code ACME-${i}`);
+ assert.ok(all.includes('فاتورة معتمدة من مجموعة الهلب جروب'));assert.ok(!all.includes('ليست فاتورة'));
  assert.ok(all.includes('1.5'), 'pack size is not reversed');assert.ok(all.includes('1,234.50'));assert.ok(all.includes('-38'));assert.ok(all.includes('2,000.00'));assert.ok(all.includes('1,990.00'));assert.equal(d.record.invoiceNumber,1);assert.ok(!all.replace(/\s/g,'').includes(id));
  const ops=await (await doc.getPage(1)).getOperatorList();assert.ok(ops.fnArray.includes(85)||ops.fnArray.includes(82),'company logo is embedded as an image');
  assert.equal((await client.get(pdfUrl(d.version))).status,401);assert.equal((await client.get('/api/sales/invoice/not-an-id/pdf').set(auth)).status,404);

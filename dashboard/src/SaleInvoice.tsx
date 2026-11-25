@@ -39,12 +39,12 @@ export default function SaleInvoice({detail,timezone,onBack,onRefresh}:{detail:D
   {!detail.snapshot&&<p className="notice">للمكتب: بيانات العميل المعروضة هي البيانات الحالية لأن النسخة وقت البيع غير محفوظة. راجعها قبل تسليم الفاتورة.</p>}
   {error&&<p className="error" role="alert">{error}</p>}{stale&&<button className="btn ghost" disabled={busy} onClick={()=>void refresh()}>تحديث الفاتورة ومراجعتها</button>}
   <article className="panel invoice-print" dir="rtl">
-  <header className="invoice-brand"><div className="invoice-title"><h2>الهلب جروب</h2><h3>فاتورة بيع</h3><p>ليست فاتورة ضريبية إلكترونية</p></div><div className="invoice-logo"><img src="/elhelb-logo.png" alt="شعار الهلب جروب" /></div></header>
+  <header className="invoice-brand"><div className="invoice-title"><h2>الهلب جروب</h2><h3>فاتورة بيع</h3><p>فاتورة معتمدة من مجموعة الهلب جروب</p></div><div className="invoice-logo"><img src="/elhelb-logo.png" alt="شعار الهلب جروب" /></div></header>
   {detail.events.length>0&&<p className="notice"><strong>البيعة عليها تصحيحات — التفاصيل بالأسفل.</strong></p>}
   <div className="invoice-meta"><p>رقم الفاتورة: <strong>{r.invoiceNumber}</strong></p><p>تاريخ البيع: {dateTimeText(r.createdAt,timezone)}</p>
   <p>{detail.snapshot?'العميل':'العميل (البيانات الحالية)'}: <strong>{c.customerName}</strong> {c.phone}</p><p>{[c.governorate,c.district,c.village].filter(Boolean).join(' · ')}</p></div>
   <div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف</th><th>{detail.events.length?'الكمية قبل التصحيح':'الكمية'}</th><th>سعر الوحدة</th><th>{detail.events.length?'القيمة قبل التصحيح':'القيمة'}</th></tr></thead><tbody>{detail.lines.map(l=><tr key={l.id}><td>{l.name} · {l.unit} {l.unitSize}</td><td>{qtyM(l.qty)}</td><td>{cashP(l.price)}</td><td>{cashP(l.amount)}</td></tr>)}</tbody></table></div>
-  <p><strong>{detail.events.length?'الإجمالي قبل التصحيح':'الإجمالي'}: {cashP(r.total??0)} · المدفوع وقت البيع: {cashP(r.paid)} · الباقي وقت البيع: {cashP((r.total??0)-r.paid)}</strong></p>
+  <div className="invoice-totals"><div className="invoice-total"><span>{detail.events.length?'الإجمالي قبل التصحيح':'إجمالي الفاتورة'}</span><strong>{cashP(r.total??0)}</strong></div><div className="invoice-total"><span>المدفوع وقت البيع</span><strong>{cashP(r.paid)}</strong></div><div className="invoice-total"><span>الباقي وقت البيع</span><strong>{cashP((r.total??0)-r.paid)}</strong></div></div>
   <p>المبالغ تخص وقت البيع؛ الدفعات اللاحقة تُراجع في كشف حساب العميل.</p>
   <CorrectionHistory detail={detail} timezone={timezone} />
   {detail.events.length>0&&<p><strong>قيمة البيعة الحالية بعد تصحيح الأصناف: {cashP((r.total??0)-detail.lines.reduce((sum,l)=>sum+l.correctedAmount,0))}</strong></p>}

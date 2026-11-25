@@ -82,7 +82,7 @@ export function invoicePdf(data:InvoicePdfData,timezone:string,generatedAt:numbe
     {table:{widths:[74],body:[[{image:logo,fit:[70,72],alignment:'center',margin:[2,4,2,4]}]]},layout:{defaultBorder:false,fillColor:()=> '#0a1b27'},width:82},
     {stack:[text('الهلب جروب',380,{fontSize:18,bold:true,color:'#153d53'}),
       text('فاتورة بيع',380,{fontSize:16,bold:true,color:'#153d53',margin:[0,3,0,2]}),
-      text('ليست فاتورة ضريبية إلكترونية',380,{fontSize:9,color:'#597469'})],width:'*'}
+      text('فاتورة معتمدة من مجموعة الهلب جروب',380,{fontSize:9,color:'#597469'})],width:'*'}
   ],columnGap:12,margin:[0,0,0,12]},
   ...(data.events.length?[text('تنبيه: سُجّلت تصحيحات على هذه البيعة، وتفاصيلها بالأسفل.',480,{bold:true,color:'#9b381b',margin:[0,0,0,5]})]:[]),
   section('بيانات الفاتورة'),
@@ -114,7 +114,7 @@ export function invoicePdf(data:InvoicePdfData,timezone:string,generatedAt:numbe
  // Generated time is not presented as a sale time; the sale date above is authoritative.
  void generatedAt;
  const doc:TDocumentDefinitions={pageSize:'A4',pageMargins:[38,30,38,42],defaultStyle:{font:'Cairo',fontSize:10,lineHeight:1.15},
-  info:{title:`Invoice ${String(r.invoiceNumber)}`,subject:'Sales invoice - not an electronic tax invoice'},
+  info:{title:`Invoice ${String(r.invoiceNumber)}`,subject:'Company sales invoice'},
   footer:(page:number,pages:number)=>({text:`${page} / ${pages}`,alignment:'center',fontSize:9,color:'#71857a',margin:[0,12,0,0]}),content};
  return new Promise((resolve,reject)=>{
   const stream=printer.createPdfKitDocument(doc),chunks:Buffer[]=[];

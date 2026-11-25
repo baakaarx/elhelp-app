@@ -34,11 +34,11 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
   };
   const fail = (code:string) => {
     const errors:Record<string,string> = {
-      CUSTOMER:'اختار عميل شغال من القائمة.', WAREHOUSE:'اختار مخزن صحيح.', ORDER:'الطلبية مش مرسلة للمكتب أو تخص عميل تاني.', ORDER_CHANGED:'الطلبية اتسعّرت أو اتغيّرت. حدّث البيانات وراجع البيعة من جديد.', ORDER_LINES:'اختار أصناف من الطلبية واكتب الكمية الفعلية وسعر المكتب.',
-      ORDER_SOLD:'الطلبية دي اتسجّلت كبيعة قبل كده.', REP:'المهندس المختار غير موجود أو موقوف.', ORDER_TOTAL:'إجمالي الطلبية المتسعّرة مختلف عن حساب البيعة بالقرش. راجع المسؤول قبل التسجيل.', PRODUCT:'الصنف غير موجود أو موقوف.',
+      CUSTOMER:'اختار عميل شغال من القائمة.', WAREHOUSE:'اختار مخزن صحيح.', ORDER:'الطلبية مش مرسلة للمكتب أو تخص عميل تاني.', ORDER_CHANGED:'الطلبية اتغيرت. حدّث البيانات وراجع الفاتورة من جديد.', ORDER_LINES:'اختار أصناف من الطلبية واكتب الكمية الفعلية وسعر المكتب.',
+      ORDER_SOLD:'الطلبية دي اتسجّلت لها فاتورة قبل كده.', REP:'المهندس المختار غير موجود أو موقوف.', ORDER_TOTAL:'الطلبية القديمة فيها اختلاف في الإجمالي. افتحها من شاشة الفاتورة وراجع الكميات والأسعار.', PRODUCT:'الصنف غير موجود أو موقوف.',
       DUPLICATE_PRODUCT:'اختار كل صنف مرة واحدة.', PRECISION:'الكمية تقبل ٣ أرقام عشرية والسعر رقمين عشريين.',
-      NO_OPENING:'سجّل الرصيد الافتتاحي للصنف في المخزن الأول.', SHORT:'الكمية المطلوبة أكبر من رصيد المخزن.',
-      PAID:'المبلغ المدفوع أكبر من إجمالي البيعة.', BIG:'إجمالي البيعة أكبر من المسموح.',
+      NO_OPENING:'خلّي المخازن تسجّل الرصيد الافتتاحي للصنف الأول.', SHORT:'الكمية المطلوبة أكبر من رصيد المخزن.',
+      PAID:'المبلغ المدفوع أكبر من إجمالي الفاتورة.', BIG:'إجمالي الفاتورة أكبر من المسموح.',
       OPENING:'المديونية القديمة للعميل اتسجلت قبل كده.', PAYMENT:'الدفعة أكبر من المبلغ المتبقي على العميل.',
     };
     return errors[code] || 'تعذر تسجيل العملية.';
@@ -205,14 +205,13 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
           if(store.get('SELECT id FROM office_sales_v1 WHERE order_id=?',data.orderId)) throw Error('ORDER_SOLD');
           saleRep={id:String(order.user_id),name:String(order.rep_name)};
           const recommended=store.all('SELECT product_id AS productId,qty,price,product_name AS name,unit,unit_size AS unitSize FROM order_lines WHERE order_id=? ORDER BY position',data.orderId);
-          if(order.status==='priced') {
+          if(order.status==='priced' && !data.lines.length) {
             // Older office-priced orders remain frozen; never silently overwrite their agreement.
-            if(data.lines.length)throw Error('ORDER_CHANGED');
             if(typeof order.total!=='number' || !Number.isFinite(order.total) || !exact(order.total,100)) throw Error('ORDER_TOTAL');
             pricedOrderTotal=cents(order.total);
             lines=recommended as typeof lines;
           } else {
-            // Field quantities are recommendations. The office explicitly confirms actual sold
+            // Field quantities are recommendations, including historical priced orders. The office confirms sold
             // quantities and prices, without altering the original order or adding other products.
             if(!data.lines.length || new Set(data.lines.map(l=>l.productId)).size!==data.lines.length)throw Error('ORDER_LINES');
             const byId=new Map(recommended.map(line=>[String(line.productId),line]));

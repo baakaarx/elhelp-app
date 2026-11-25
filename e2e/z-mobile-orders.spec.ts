@@ -10,7 +10,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   const managerTab = manager.locator('button.nav-item').filter({ hasText: 'الزيارات والطلبيات' });
   await managerTab.click();
   await manager.getByRole('tab', { name: /الطلبيات/ }).click();
-  await expect(manager.getByText(/مفيش طلبية مستنية المكتب/)).toBeVisible();
+  await expect(manager.locator('.order-card').filter({hasText:'عميل اختبار الطلبية'})).toBeVisible();
   await page.setViewportSize({ width: 420, height: 850 });
   await page.goto(`${E2E_API}/app/`);
   await page.getByPlaceholder('rep@company.com').fill(E2E_REPS[0].email);
@@ -36,8 +36,8 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   expect(body.order.lines[0].qty).toBe(3);
   expect(body.order.lines[0]).not.toHaveProperty('price');
   expect(body.order).not.toHaveProperty('total');
-  await expect(managerTab.locator('em.badge')).toHaveText('١');
-  await expect(manager.locator('.orders-table tbody tr').filter({ hasText: 'مزرعة النور' })).toBeVisible();
+  await expect(managerTab.locator('em.badge')).toHaveText('٢');
+  await expect(manager.locator('.order-card').filter({ hasText: 'مزرعة النور' })).toBeVisible();
   await page.getByRole('tab', { name: 'حسابي' }).click();
   await expect(page.getByText(/الطلبيات تفضل محفوظة لحد حذف الحساب/)).toBeVisible();
   await manager.close();

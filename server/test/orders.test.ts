@@ -80,7 +80,7 @@ test('the engineer writes the order against his own customer and the office queu
   const queue = await client.get('/api/orders?status=sent').set(admin);
   assert.equal(queue.body.orders.length, 1);
   assert.equal(queue.body.orders[0].repName, repA.name);
-  assert.equal(queue.body.orders[0].lines[0].suggestedPrice, 120, 'the queue prefills the customer\'s list price');
+  assert.equal('suggestedPrice' in queue.body.orders[0].lines[0],false,'order recommendations never show prices');
   assert.equal(queue.body.orders[0].customerTierName, wholesale.name);
   const overview = await client.get('/api/overview').set(admin);
   assert.equal(overview.body.sentOrders, 1, 'the badge counts what waits');
@@ -174,53 +174,27 @@ test('an order held through the night arrives marked, an older one does not arri
   assert.equal(future.status, 422, 'the phone clock may be wrong but it may not lead');
 });
 
-test('pricing is the office\'s half, and one press closes the order', async () => {
-  const order = await createOrder(repA, { lines: [{ productId: urea, qty: 2 }, { productId: dap, qty: 1 }] });
-  const orderId = order.body.order.id as string;
-  const before = (await client.get('/api/overview').set(admin)).body.sentOrders as number;
-  const byPhone = await client.post(`/api/orders/${orderId}/price`).set(repA.auth).send({ lines: [{ productId: urea, price: 1 }, { productId: dap, price: 1 }] });
-  assert.equal(byPhone.status, 403, 'the engineer has no door to a price');
-  const half = await client.post(`/api/orders/${orderId}/price`).set(admin).send({ lines: [{ productId: urea, price: 120 }] });
-  assert.equal(half.status, 400);
-  assert.equal(half.body.code, 'PRICE_REQUIRED');
-  assert.match(half.body.error, /داب/, 'the message names the line that has no number');
-  const liar = await client.post(`/api/orders/${orderId}/price`).set(admin).send({ lines: [{ productId: urea, price: 90, tierId: wholesale.id }, { productId: dap, price: 150 }] });
-  assert.equal(liar.status, 400);
-  assert.equal(liar.body.code, 'TIER_PRICE_MISMATCH', 'a number wearing a list type it disagrees with is refused, not guessed at');
-  const ok = await client.post(`/api/orders/${orderId}/price`).set(admin).send({
-    lines: [{ productId: urea, price: 120, tierId: wholesale.id }, { productId: dap, price: 140 }],
-  });
-  assert.equal(ok.status, 200, JSON.stringify(ok.body));
-  assert.equal(ok.body.order.status, 'priced');
-  assert.equal(ok.body.order.total, 380, '2×120 from the list, 1×140 by hand');
-  assert.ok(!('code' in ok.body) || ok.body.code === undefined);
-  const lines = store.all('SELECT product_id AS productId, price, tier_id AS tierId FROM order_lines WHERE order_id=? ORDER BY product_id', orderId) as Array<Record<string, any>>;
-  const ureaLine = lines.find(l => l.productId === urea)!;
-  assert.equal(ureaLine.price, 120, 'the column it was taken from is on the line');
-  assert.equal(ureaLine.tierId, wholesale.id);
-  assert.equal(lines.find(l => l.productId === dap).tierId, null, 'a hand-typed price leaves no tier behind');
-  const again = await client.post(`/api/orders/${orderId}/price`).set(admin).send({ lines: [{ productId: urea, price: 1 }, { productId: dap, price: 1 }] });
-  assert.equal(again.status, 409);
-  assert.equal(again.body.code, 'ORDER_PRICED', 'the book was written once');
-  const phoneView = await client.get('/api/orders?limit=300').set(repA.auth);
-  const seen = phoneView.body.orders.find((o: any) => o.id === orderId);
-  assert.equal(seen.status, 'priced', 'the engineer may know the office closed it');
-  assert.equal('total' in seen, false, 'the closing itself carries no number back to his pocket');
-  assert.equal('price' in seen.lines[0], false);
-  const overview = await client.get('/api/overview').set(admin);
-  assert.equal(overview.body.sentOrders, before - 1, 'the closed order left the queue; the others still wait');
+test('order pricing is disabled for all roles; recommendation stays unchanged', async () => {
+  const order=await createOrder(repA,{lines:[{productId:urea,qty:2},{productId:dap,qty:1}]});
+  const orderId=order.body.order.id as string;
+  const before=(await client.get('/api/overview').set(admin)).body.sentOrders;
+  const byPhone=await client.post(`/api/orders/${orderId}/price`).set(repA.auth).send({lines:[{productId:urea,price:120}]});
+  assert.equal(byPhone.status,403);
+  for(const body of [{lines:[]},{lines:[{productId:urea,price:120},{productId:dap,price:140}]}]){
+    const r=await client.post(`/api/orders/${orderId}/price`).set(admin).send(body);
+    assert.equal(r.status,410);assert.equal(r.body.code,'ORDER_PRICING_DISABLED');
+  }
+  const lines=store.all('SELECT qty,price,tier_id AS tierId FROM order_lines WHERE order_id=? ORDER BY position',orderId);
+  assert.deepEqual(lines.map(l=>l.qty),[2,1]);assert.ok(lines.every(l=>l.price===null&&l.tierId===null));
+  assert.equal((await client.get('/api/overview').set(admin)).body.sentOrders,before);
+  const phoneView=await client.get('/api/orders?limit=300').set(repA.auth);
+  const seen=phoneView.body.orders.find((o:any)=>o.id===orderId);assert.equal(seen.status,'sent');assert.equal('total' in seen,false);assert.equal('price' in seen.lines[0],false);
 });
 
-test('a customer with no price type is priced by hand and says so', async () => {
-  const noTier = await bookCustomer(repA.id, 'عميل باليد', null);
-  const order = await createOrder(repA, { customerId: noTier });
-  const queue = await client.get(`/api/orders?repId=${repA.id}&limit=300`).set(admin);
-  const mine = queue.body.orders.find((o: any) => o.id === order.body.order.id);
-  assert.equal(mine.customerTierName, '', 'the office reads «من غير تحديد» as «باليد», and the row confirms it');
-  assert.equal(mine.lines[0].suggestedPrice, null);
-  const priced = await client.post(`/api/orders/${order.body.order.id}/price`).set(admin).send({ lines: [{ productId: urea, price: 135 }] });
-  assert.equal(priced.status, 200);
-  assert.equal(priced.body.order.total, 405);
+test('customer tier never adds a price to the office recommendation',async()=>{
+ const noTier=await bookCustomer(repA.id,'عميل بدون نوع',null);const order=await createOrder(repA,{customerId:noTier});
+ const queue=await client.get(`/api/orders?repId=${repA.id}&limit=300`).set(admin);const mine=queue.body.orders.find((o:any)=>o.id===order.body.order.id);
+ assert.equal('suggestedPrice' in mine.lines[0],false);assert.equal('price' in mine.lines[0],false);assert.equal('total' in mine,false);
 });
 
 test('the visit is a link, not a parent', async () => {

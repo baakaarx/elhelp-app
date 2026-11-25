@@ -227,15 +227,6 @@ const patchOrder = z.object({
   // that thinks it knows a line the server has never seen.
   lines: z.array(orderLineInput).min(1, 'الطلبية محتاجة صنف واحد على الأقل.').max(100).optional(),
 }).strict();
-const priceOrder = z.object({
-  lines: z.array(z.object({
-    productId: z.uuid(),
-    price: z.number().nonnegative('السعر ما يقلش عن صفر.').lte(1_000_000_000, 'الرقم ده مش سعر وحدة.'),
-    // Which price-list column the office used, when they used one: stored, never trusted — the route
-    // re-reads the list and refuses a number that disagrees with the type it claims.
-    tierId: z.uuid().optional(),
-  }).strict()).min(1).max(100),
-}).strict();
 const sendOrder = z.object({
   /** Same offline window as creating: a replayed send carries the minute the press happened. */
   recordedAt: z.number().int().nonnegative().optional(),
@@ -305,8 +296,8 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.get('/api/work-priorities', adminOnly, (_req, res) => {
     const waitingOrders = store.all(`SELECT o.id,c.name AS customerName,u.name AS repName,o.sent_at AS sentAt
       FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id
-      WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.sent_at,o.id LIMIT 10`);
-    const orderCount = Number(store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c || 0);
+      WHERE o.status IN ('sent','priced') AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.sent_at,o.id LIMIT 10`);
+    const orderCount = Number(store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status IN ('sent','priced') AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c || 0);
     const unassignedCustomers = Number(store.get('SELECT COUNT(*) AS c FROM customers WHERE active=1 AND rep_id IS NULL')?.c || 0);
     const openVisits = store.all(`SELECT v.id,v.customer_name AS customerName,u.name AS repName,v.checked_in_at AS checkedInAt
       FROM visits v JOIN users u ON u.id=v.user_id WHERE v.status='open' ORDER BY v.checked_in_at LIMIT 10`);
@@ -511,7 +502,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   function overview() {
     const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY created_at, name").map(repSnapshot);
     // The orders tab's badge: what the field sent and the office has not opened yet.
-    const sentOrders = (store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c as number) || 0;
+    const sentOrders = (store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status IN ('sent','priced') AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c as number) || 0;
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
     // The dashboard needs the same staleness threshold the alerts use, otherwise the map and
@@ -2103,14 +2094,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
   });
-  /* ----------------------------------------------------------------- الطلبيات: الميدان يسجلها، المكتب يسعّرها
-   *
-   * The workflow is two moves and nothing else: the engineer writes «what the farm took» against one
-   * of his own customers and presses send, the office's queue lights up, and somebody at a desk puts
-   * the prices on it. Each side can only write its half — the phone has no price field to fill, and
-   * the office cannot move a line — and each side never sees the other's private part: no price
-   * travels back to a device that stands in front of the farmer.
-   */
+  /* The field sends quantities only. Prices belong to a sales invoice, never to the recommendation. */
   const ORDER_SELECT = `SELECT o.id, o.customer_id AS customerId, o.visit_id AS visitId, o.user_id AS userId,
       c.name AS customerName, c.phone AS customerPhone, c.price_tier_id AS customerTierId, t.name AS customerTierName,
       u.name AS repName, u.color AS repColor,
@@ -2136,7 +2120,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       id: row.id, customerId: row.customerId, status: row.status, sold:Boolean(row.sold), notes: row.notes,
       customerName: row.customerName, recordedOffline: Boolean(row.recordedOffline),
       createdAt: row.createdAt, sentAt: row.sentAt ?? null,
-      lines: orderLineRows(id, withPrices),
+      lines: orderLineRows(id, false),
     };
     if (withPrices) {
       shaped.visitId = row.visitId ?? null;
@@ -2144,9 +2128,6 @@ export function createApp(overrides: Partial<Config> = {}) {
       shaped.customerTierId = row.customerTierId ?? null;
       shaped.customerTierName = row.customerTierName ?? '';
       shaped.repName = row.repName; shaped.repColor = row.repColor;
-      shaped.total = row.total ?? null;
-      shaped.pricedAt = row.pricedAt ?? null;
-      shaped.pricedByName = row.pricedByName ?? null;
     }
     return shaped;
   }
@@ -2318,8 +2299,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (isAdmin) where.push("o.status<>'draft'");
     const status = req.query.status === undefined ? '' : String(req.query.status);
     if (status && !['draft', 'sent', 'priced'].includes(status)) { res.status(400).json({ error: 'حالة الطلبية غير صحيحة.' }); return; }
-    if (status) { where.push('o.status=?'); params.push(status); }
-    if (isAdmin && status==='sent') where.push('NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)');
+    if (isAdmin && status==='sent') {
+      where.push("o.status IN ('sent','priced')");
+      where.push('NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)');
+    } else if (status) { where.push('o.status=?'); params.push(status); }
     if (isAdmin && typeof req.query.repId === 'string' && req.query.repId) { where.push('o.user_id=?'); params.push(String(req.query.repId)); }
     const rawLimit = req.query.limit === undefined ? '100' : String(req.query.limit);
     const rawOffset = req.query.offset === undefined ? '0' : String(req.query.offset);
@@ -2334,82 +2317,14 @@ export function createApp(overrides: Partial<Config> = {}) {
     const hasMore = rows.length > limit;
     if (hasMore) rows.pop();
     res.setHeader('Cache-Control', 'private, no-store');
-    const orders = rows.map(row => {
-      const shaped = orderRow(String(row.id), isAdmin ? 'office' : 'rep')!;
-      if (isAdmin) {
-        // The queue prefills itself: the office sees the list price for this customer's type next to
-        // an empty box, and typing over it is the deliberate «باليد» that leaves no tier behind.
-        const prices = shaped.lines.length && row.customerTierId
-          ? store.all('SELECT product_id AS productId, price FROM product_prices WHERE tier_id=?', String(row.customerTierId)) as Array<Record<string, any>>
-          : [];
-        const suggested = new Map(prices.map(price => [String(price.productId), Number(price.price)]));
-        for (const line of shaped.lines) line.suggestedPrice = suggested.get(String(line.productId)) ?? null;
-      }
-      return shaped;
-    });
+    const orders = rows.map(row => orderRow(String(row.id), isAdmin ? 'office' : 'rep')!);
     res.json({ orders, hasMore });
   });
 
-  /**
-   * The office puts the numbers on an order. This is the only door to a price, it is closed twice on
-   * purpose (the order must be sent, and after it is priced nothing touches it again), and it prices
-   * the whole order in one press: half a priced order is how a total stops meaning anything.
-   */
-  app.post('/api/orders/:id/price', adminOnly, (req, res) => {
-    const parsed = priceOrder.safeParse(req.body ?? {});
-    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'أسعار الطلبية غير صحيحة.' }); return; }
-    const order = store.get(`SELECT o.id, o.status, o.customer_id AS customerId, c.price_tier_id AS customerTierId, c.name AS customerName
-      FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`, String(req.params.id)) as Record<string, any> | undefined;
-    if (!order) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
-    if(store.get('SELECT 1 FROM office_sales_v1 WHERE order_id=?',order.id)){res.status(409).json({error:'الطلبية اتسجّلت كبيعة قبل كده؛ راجع حساب العميل.',code:'ORDER_SOLD'});return;}
-    if (order.status === 'priced') { res.status(409).json({ error: 'الطلبية متسعّرة ومقفولة — الرقم اتكتب في الدفتر مرة واحدة. لو فيها غلط، بلّغ المسؤول.', code: 'ORDER_PRICED' }); return; }
-    if (order.status !== 'sent') { res.status(409).json({ error: 'الطلبية لسه ما اتبعتتش من الميدان.', code: 'ORDER_NOT_SENT' }); return; }
-    const stored = orderLineRows(order.id, false);
-    const byProduct = new Map(parsed.data.lines.map(line => [line.productId, line]));
-    if (byProduct.size !== parsed.data.lines.length) { res.status(400).json({ error: 'صنف متكرر في التسعير — صنف واحد = سطر واحد.' }); return; }
-    const unknown = [...byProduct.keys()].filter(id => !stored.some(line => String(line.productId) === id));
-    if (unknown.length) { res.status(400).json({ error: 'في صنف في التسعير مش موجود في الطلبية دي.', code: 'ORDER_LINE_MISMATCH' }); return; }
-    const missing = stored.filter(line => !byProduct.has(String(line.productId)));
-    if (missing.length) {
-      const names = missing.map(line => `«${line.productName}»`).join('، ');
-      res.status(400).json({ error: `لازم كل سطر ياخد سعره — ${names} لسه من غير سعر.`, code: 'PRICE_REQUIRED' }); return;
-    }
-    let total = 0;
-    for (const line of stored) {
-      const edit = byProduct.get(String(line.productId))!;
-      if (edit.tierId !== undefined) {
-        const tier = store.get('SELECT id, name FROM price_tiers WHERE id=?', edit.tierId) as { id: string; name: string } | undefined;
-        if (!tier) { res.status(404).json({ error: 'نوع السعر ده مش في القائمة.', code: 'TIER_NOT_FOUND' }); return; }
-        const listed = store.get('SELECT price FROM product_prices WHERE product_id=? AND tier_id=?', line.productId, edit.tierId) as { price: number } | undefined;
-        if (!listed) { res.status(400).json({ error: `«${line.productName}» من غير سعر مسجّل لـ «${tier.name}» — كمّل اللوحة، أو ختم السعر باليد من غير اختيار نوع.`, code: 'TIER_PRICE_MISSING' }); return; }
-        // A number that contradicts the type it claims is either a stale sheet or a re-typed price
-        // with the wrong label; both are answered by naming the list, not by guessing.
-        if (Number(listed.price) !== edit.price) { res.status(400).json({ error: `السعر في اللوحة لـ «${line.productName} / ${tier.name}» هو ${listed.price} — لو ده الفعلي، عدّل اللوحة الأول أو امسح اختيار النوع وخليه باليد.`, code: 'TIER_PRICE_MISMATCH' }); return; }
-      }
-      total += Number(line.qty) * edit.price;
-    }
-    total = Math.round(total * 100) / 100;
-    const now = Date.now();
-    try { store.transaction(() => {
-      // A sale and a price stamp can race from different office screens. The check
-      // belongs inside the same transaction as the price writes.
-      if(store.get('SELECT 1 FROM office_sales_v1 WHERE order_id=?',order.id)) throw Error('ORDER_SOLD');
-      for (const line of stored) {
-        const edit = byProduct.get(String(line.productId))!;
-        store.run('UPDATE order_lines SET price=?, tier_id=? WHERE id=?', edit.price, edit.tierId ?? null, line.id);
-      }
-      const closed = store.run(`UPDATE orders SET status='priced', total=?, priced_at=?, priced_by=?, updated_at=? WHERE id=? AND status='sent'`,
-        total, now, res.locals.user.id, now, order.id);
-      if (!Number(closed.changes || 0)) throw Error('DOUBLE_CLOSE');
-    }); } catch(e) {
-      const code=(e as Error).message;
-      if(code==='ORDER_SOLD'||code==='DOUBLE_CLOSE'){res.status(409).json({error:code==='ORDER_SOLD'?'الطلبية اتسجّلت كبيعة قبل كده؛ راجع حساب العميل.':'الطلبية اتسعّرت قبل كده؛ حدّث البيانات.',code});return;}
-      throw e;
-    }
-    store.audit(res.locals.user.id, 'order.price', { orderId: order.id, customerName: order.customerName, lines: stored.length, total });
-    io.to('admins').emit('order', orderRow(order.id, 'office'));
-    invalidateKpis(); broadcast();
-    res.json({ order: orderRow(order.id, 'office') });
+  // Keep the old endpoint as an explicit rejection so cached office clients cannot price an order.
+  // Previously recorded prices remain untouched for audit and old pending sale retries.
+  app.post('/api/orders/:id/price', adminOnly, (_req, res) => {
+    res.status(410).json({error:'تسعير الطلبية متوقف. فريق المبيعات يكتب السعر عند تسجيل الفاتورة.',code:'ORDER_PRICING_DISABLED'});
   });
 
   /**
@@ -2670,10 +2585,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
     // An order that waits is an agreement nobody wrote up: warn level, because a day of these is a
     // week of invoices the accounting team will chase by phone.
-    const orderQueue = store.get("SELECT COUNT(*) AS c, MIN(o.sent_at) AS oldest FROM orders o WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)") as { c: number; oldest: number | null } | undefined;
+    const orderQueue = store.get("SELECT COUNT(*) AS c, MIN(o.sent_at) AS oldest FROM orders o WHERE o.status IN ('sent','priced') AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)") as { c: number; oldest: number | null } | undefined;
     if (Number(orderQueue?.c || 0) > 0) {
       alerts.push({ id: 'orders:queue', level: 'warn', code: 'orders_awaiting_pricing',
-        title: 'طلبيات مستنية المكتب', detail: `${Number(orderQueue!.c)} طلبية اتبعتت من الميدان ولسه ما اتسعّرتش ولا اتسجلت كبيعة.`, at: Number(orderQueue!.oldest ?? now) });
+        title: 'طلبيات مستنية فاتورة', detail: `${Number(orderQueue!.c)} طلبية اتبعتت من الميدان ولسه ما اتسجلتش لها فاتورة.`, at: Number(orderQueue!.oldest ?? now) });
     }
     const staleReviews = store.get('SELECT COUNT(*) AS c FROM reports WHERE status=? AND created_at<?', 'new', now - 24 * 3600000)!;
     if (Number(staleReviews.c) > 0) {

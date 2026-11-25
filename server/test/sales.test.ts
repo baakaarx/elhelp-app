@@ -57,9 +57,9 @@ test('pricing an order is not a sale; confirming it deducts stock once',async()=
  const repAuth={Authorization:`Bearer ${(await client.post('/api/auth/login').send({email:'field@sales.test',password:'Password12345!'})).body.token}`};
  const orderId=randomUUID();
  assert.equal((await client.post('/api/orders').set(repAuth).send({id:orderId,customerId:customer,lines:[{productId:prod,qty:1}],send:true})).status,201);
- assert.equal((await client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:9}]})).status,200);
+ assert.equal((await client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:9}]})).status,410);
  assert.equal((await overview()).sales,25.63);
- const input={id:randomUUID(),orderId,customerId:customer,warehouseId:wh,paid:0};
+ const input={id:randomUUID(),orderId,customerId:customer,warehouseId:wh,paid:0,lines:[{productId:prod,qty:1,price:9}]};
  assert.equal((await client.post('/api/sales').set(auth).send(input)).status,201);
  assert.equal((await client.post('/api/sales').set(auth).send({...input,id:randomUUID()})).status,409);
  assert.equal((await overview()).sales,34.63);assert.equal(await stock(),6.5);
@@ -70,6 +70,8 @@ test('warehouse account and engineer cannot see financial data or record sales',
  const token=(await client.post('/api/auth/login').send({email:'wh@sales.test',password:'Warehouse12345!'})).body.token;
  for(const path of ['/api/sales/options','/api/sales/overview'])assert.equal((await client.get(path).set('Authorization',`Bearer ${token}`)).status,403);
  assert.equal((await client.post('/api/sales').set('Authorization',`Bearer ${token}`).send({})).status,403);
+ assert.equal((await client.put(`/api/products/${prod}/prices`).set('Authorization',`Bearer ${token}`).send({prices:[]})).status,403);
+ assert.equal((await client.post(`/api/orders/${randomUUID()}/price`).set('Authorization',`Bearer ${token}`).send({lines:[]})).status,403);
 });
 
 test('removing an engineer preserves the customer and confirmed financial history',async()=>{
@@ -107,8 +109,9 @@ test('a priced order whose rounded total differs is not silently changed into a 
  const repAuth={Authorization:`Bearer ${(await client.post('/api/auth/login').send({email:'round@sales.test',password:'Password12345!'})).body.token}`};
  const orderId=randomUUID();
  assert.equal((await client.post('/api/orders').set(repAuth).send({id:orderId,customerId:cust,lines:[{productId:prod,qty:0.005},{productId:second,qty:0.005}],send:true})).status,201);
- const priced=await client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:1},{productId:second,price:1}]});
- assert.equal(priced.body.order.total,0.01);
+ // Simulate an immutable historical priced order from before order pricing was disabled.
+ app.store.run("UPDATE orders SET status='priced',total=0.01 WHERE id=?",orderId);
+ app.store.run('UPDATE order_lines SET price=1 WHERE order_id=?',orderId);
  const before=await stock();const sale=await client.post('/api/sales').set(auth).send({id:randomUUID(),orderId,customerId:cust,warehouseId:wh,paid:0});
  assert.equal(sale.status,409);assert.equal(sale.body.code,'ORDER_TOTAL');assert.equal(await stock(),before);
  assert.equal((await client.get(`/api/sales/statement/${cust}`).set(auth)).body.sales.length,0);
@@ -142,7 +145,7 @@ test('sent recommendations become one sale with office quantities, preserving th
  const results=await Promise.all([client.post('/api/sales').set(auth).send(base),client.post('/api/sales').set(auth).send(base)]);
  assert.deepEqual(results.map(r=>r.status).sort(),[200,201]);
  assert.equal((await client.post('/api/sales').set(auth).send({...base,id:randomUUID()})).body.code,'ORDER_SOLD');
- assert.equal((await client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:1},{productId:second,price:1}]})).body.code,'ORDER_SOLD');
+ assert.equal((await client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:1},{productId:second,price:1}]})).body.code,'ORDER_PRICING_DISABLED');
  assert.equal(await stock(),before-1.5);
  const statement=(await client.get(`/api/sales/statement/${cust}`).set(auth)).body;
  assert.equal(statement.sales.length,1);assert.equal(statement.sales[0].repName,'مهندس ترشيح');assert.equal(statement.sales[0].total,6.38);assert.equal(statement.due,4.38);assert.equal(statement.sales[0].lines[0].qty,1.5);
@@ -163,8 +166,8 @@ test('pricing and selling the same unpriced order cannot both commit',async()=>{
   client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:20}]}),
   client.post('/api/sales').set(auth).send({id:randomUUID(),orderId,customerId:cust,warehouseId:wh,paid:0,lines:[{productId:prod,qty:1,price:10}]})
  ]);
- assert.ok((price.status===200&&sale.status===409&&sale.body.code==='ORDER_CHANGED')||(sale.status===201&&price.status===409&&price.body.code==='ORDER_SOLD'));
- assert.equal(await stock(),before-(sale.status===201?1:0));
+ assert.equal(price.status,410);assert.equal(price.body.code,'ORDER_PRICING_DISABLED');assert.equal(sale.status,201);
+ assert.equal(await stock(),before-1);
 });
 
 test('competing sale IDs for the same recommendation deduct stock only once',async()=>{
@@ -176,4 +179,19 @@ test('competing sale IDs for the same recommendation deduct stock only once',asy
  const results=await Promise.all([client.post('/api/sales').set(auth).send({...body,id:randomUUID()}),client.post('/api/sales').set(auth).send({...body,id:randomUUID()})]);
  assert.deepEqual(results.map(r=>r.status).sort(),[201,409]);assert.equal(results.find(r=>r.status===409)?.body.code,'ORDER_SOLD');
  assert.equal(await stock(),before-1);assert.equal((await client.get(`/api/sales/statement/${cust}`).set(auth)).body.sales.length,1);
+});
+
+test('historical priced recommendations can be invoiced with new quantities and prices without altering the old record',async()=>{
+ const rep=(await client.post('/api/reps').set(auth).send({name:'مهندس طلبية قديمة',email:'old-recommend@sales.test',password:'Password12345!',region:'طنطا'})).body.user.id;
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل طلبية قديمة',repId:rep})).body.customer.id;
+ const repAuth={Authorization:`Bearer ${(await client.post('/api/auth/login').send({email:'old-recommend@sales.test',password:'Password12345!'})).body.token}`};
+ const orderId=randomUUID();await client.post('/api/orders').set(repAuth).send({id:orderId,customerId:cust,lines:[{productId:prod,qty:2}],send:true});
+ app.store.run("UPDATE orders SET status='priced',total=40 WHERE id=?",orderId);app.store.run('UPDATE order_lines SET price=20 WHERE order_id=?',orderId);
+ const queue=await client.get('/api/orders?status=sent').set(auth);assert.ok(queue.body.orders.some((o:any)=>o.id===orderId));
+ const before=await stock();const input={id:randomUUID(),orderId,customerId:cust,warehouseId:wh,paid:0,lines:[{productId:prod,qty:1,price:7}]};
+ const result=await client.post('/api/sales').set(auth).send(input);assert.equal(result.status,201,JSON.stringify(result.body));
+ assert.equal((await client.post('/api/sales').set(auth).send(input)).body.duplicate,true);assert.equal(await stock(),before-1);
+ const original=app.store.get('SELECT qty,price FROM order_lines WHERE order_id=?',orderId);assert.equal(original?.qty,2);assert.equal(original?.price,20);
+ const statement=(await client.get(`/api/sales/statement/${cust}`).set(auth)).body;assert.equal(statement.sales[0].total,7);assert.equal(statement.sales[0].lines[0].qty,1);
+ assert.ok(!(await client.get('/api/orders?status=sent').set(auth)).body.orders.some((o:any)=>o.id===orderId));
 });

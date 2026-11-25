@@ -30,12 +30,12 @@ test('simulation: order and pricing alone are not confirmed sales',async()=>{
  await post('/api/shifts/start',{consentVersion:'1.0',deviceId:'test-phone-analysis',location:{lat:31.2,lng:29.9,accuracy:8}},repAuth);
  await post('/api/visits/check-in',{id:randomUUID(),customerId:customerA.id,purpose:'visit',location:{lat:31.2,lng:29.9,accuracy:8}},repAuth);
  orderId=randomUUID();await post('/api/orders',{id:orderId,customerId:customerA.id,lines:[{productId:itemA.id,qty:2},{productId:itemB.id,qty:1}],send:true},repAuth);
- await post(`/api/orders/${orderId}/price`,{lines:[{productId:itemA.id,price:10},{productId:itemB.id,price:20}]});
+ assert.equal((await client.post(`/api/orders/${orderId}/price`).set(admin).send({lines:[{productId:itemA.id,price:10},{productId:itemB.id,price:20}]})).status,410);
  const r=await get();assert.equal(r.sales,0);assert.equal(r.salesCount,0);assert.equal(r.reps.find((x:any)=>x.id===repA.id).orders,1);assert.equal(r.reps.find((x:any)=>x.id===repA.id).visits,1);
 });
 
 test('simulation: sales, collections, stock, top customers and products reconcile exactly',async()=>{
- saleId=randomUUID();const sale={id:saleId,orderId,customerId:customerA.id,warehouseId:warehouse.id,paid:15};
+ saleId=randomUUID();const sale={id:saleId,orderId,customerId:customerA.id,warehouseId:warehouse.id,paid:15,lines:[{productId:itemA.id,qty:2,price:10},{productId:itemB.id,qty:1,price:20}]};
  await post('/api/sales',sale);assert.equal((await client.post('/api/sales').set(admin).send(sale)).body.duplicate,true);
  assert.equal((await client.post('/api/sales').set(admin).send({...sale,id:randomUUID()})).status,409);
  await post('/api/sales/opening',{id:randomUUID(),customerId:customerA.id,amount:50});
@@ -60,7 +60,7 @@ test('simulation: sales, collections, stock, top customers and products reconcil
 
 test('existing order-backed history falls back to its surviving order; deleted engineer becomes unassigned',async()=>{
  instance.store.run('DELETE FROM office_sale_rep_v1 WHERE sale_id=?',saleId); // simulate sales written before this migration
- const replay=await client.post('/api/sales').set(admin).send({id:saleId,orderId,customerId:customerA.id,warehouseId:warehouse.id,paid:15});
+ const replay=await client.post('/api/sales').set(admin).send({id:saleId,orderId,customerId:customerA.id,warehouseId:warehouse.id,paid:15,lines:[{productId:itemA.id,qty:2,price:10},{productId:itemB.id,qty:1,price:20}]});
  assert.equal(replay.status,200);assert.equal(replay.body.duplicate,true); // old request shape remains replayable
  let r=await get();assert.equal(r.reps.find((x:any)=>x.id===repA.id).sales,40);assert.equal(r.legacyOrders,1);
  const gone=await client.delete(`/api/reps/${repA.id}`).set(admin).send({confirm:true});assert.equal(gone.status,200,JSON.stringify(gone.body));

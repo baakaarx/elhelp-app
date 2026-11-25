@@ -24,8 +24,8 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await page.getByRole('button',{name:'حفظ السعر'}).click();
  await expect(page.getByRole('status')).toContainText('السعر اتحفظ');
  await page.getByRole('button',{name:'رجوع للملخص'}).click();
- await page.getByRole('button',{name:'تسجيل بيعة',exact:true}).click();
- const saleForm=page.locator('form').filter({has:page.getByRole('heading',{name:'تسجيل بيعة'})});
+ await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();
+ const saleForm=page.locator('form').filter({has:page.getByRole('heading',{name:'تسجيل فاتورة'})});
  await saleForm.getByRole('combobox',{name:'العميل',exact:true}).selectOption(c.id);
  await saleForm.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(w.id);
  await saleForm.getByRole('combobox',{name:'المهندس المسؤول'}).selectOption(rep.id);
@@ -33,10 +33,10 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await saleForm.getByRole('textbox',{name:'الكمية',exact:true}).fill('٢٫٥');
  await saleForm.getByRole('textbox',{name:'سعر الوحدة (ج.م)'}).fill('10');
  await saleForm.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('5');
- await page.getByRole('button',{name:'مراجعة البيعة'}).click();
+ await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  await expect(page.getByRole('heading',{name:'راجع البيانات قبل الحفظ'})).toBeVisible();
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
- await expect(page.getByRole('status')).toContainText('البيعة اتسجلت');
+ await expect(page.getByRole('status')).toContainText('الفاتورة اتسجلت');
  const debtor=page.locator('tr').filter({hasText:c.name}).filter({has:page.getByRole('button',{name:'تسجيل دفعة'})});
  await expect(debtor).toContainText('٢٠');
  await debtor.getByRole('button',{name:'تسجيل دفعة'}).click();
@@ -68,20 +68,21 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  const login=await send('/api/auth/login',{email:E2E_REPS[0].email,password:E2E_REP_PASSWORD},{} as typeof headers);
  const repHeaders={'Authorization':`Bearer ${login.token}`,'X-Mandoub-Client':'rep'};
  const orderId=randomUUID();await send('/api/orders',{id:orderId,customerId:c.id,lines:[{productId:p.id,qty:2}],send:true},repHeaders as typeof headers);
- await send(`/api/orders/${orderId}/price`,{lines:[{productId:p.id,price:10}]});
+
  // Reload the summary; a priced order alone does not increase sales or decrease stock.
  await page.getByRole('button',{name:'العملاء',exact:true}).click();
  await page.getByRole('button',{name:'المبيعات',exact:true}).click();
  const before=await (await page.request.get('/api/sales/overview',{headers})).json();expect(before.sales).toBe(25);
- await page.getByRole('button',{name:'تسجيل بيعة',exact:true}).click();
- await page.getByRole('combobox',{name:'طريقة البيع'}).selectOption('order');
+ await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();
+ await page.getByRole('combobox',{name:'نوع الفاتورة'}).selectOption('order');
  await page.getByRole('combobox',{name:'الطلبية'}).selectOption(orderId);
+ await page.getByRole('textbox',{name:`سعر الوحدة · ${p.name} (ج.م)`}).fill('10');
  await saleForm.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(w.id);
  await saleForm.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('0');
- await page.getByRole('button',{name:'مراجعة البيعة'}).click();
+ await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  await expect(page.getByRole('heading',{name:'راجع البيانات قبل الحفظ'})).toBeVisible();
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
- await expect(page.getByRole('status')).toContainText('البيعة اتسجلت');
+ await expect(page.getByRole('status')).toContainText('الفاتورة اتسجلت');
  const report=await (await page.request.get('/api/sales/overview',{headers})).json();
  expect(report.sales).toBe(45);expect(report.collected).toBe(13);expect(report.due).toBe(35);
  expect(report.stock.find((x:{warehouseId:string;productId:string})=>x.warehouseId===w.id&&x.productId===p.id).qty).toBe(5.5);
@@ -116,8 +117,8 @@ test('المراجعة تمنع الحفظ بالخطأ والتبويبان ي�
  await page.getByRole('button',{name:'المبيعات',exact:true}).click();
  const second=await context.newPage();await second.goto('/');await second.getByRole('button',{name:'المبيعات',exact:true}).click();
  await expect(second.getByRole('heading',{name:'المبيعات والمخزون'})).toBeVisible();
- await page.getByRole('button',{name:'تسجيل بيعة',exact:true}).click();
- const form=page.locator('form').filter({has:page.getByRole('heading',{name:'تسجيل بيعة'})});
+ await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();
+ const form=page.locator('form').filter({has:page.getByRole('heading',{name:'تسجيل فاتورة'})});
  await page.getByRole('combobox',{name:'الصنف ١'}).selectOption(p.id);
  await form.getByRole('textbox',{name:'سعر الوحدة (ج.م)'}).fill('10');
  await form.getByRole('combobox',{name:'العميل',exact:true}).selectOption(c.id);
@@ -125,11 +126,11 @@ test('المراجعة تمنع الحفظ بالخطأ والتبويبان ي�
  await form.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(w.id);
  await form.getByRole('combobox',{name:'المهندس المسؤول'}).selectOption('none');
  await form.getByRole('textbox',{name:'الكمية'}).fill('1');await form.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('2');
- await page.getByRole('button',{name:'مراجعة البيعة'}).click();
+ await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  const review=page.getByLabel('مراجعة العملية');await expect(review).toContainText(c.name);await expect(review).toContainText(w.name);await expect(review).toContainText(p.name);
  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width+1);
  let report=await (await page.request.get('/api/sales/overview',{headers})).json();expect(report.latest.some((x:{customerName:string})=>x.customerName===c.name)).toBe(false);
- await page.getByRole('button',{name:'رجوع للتعديل'}).click();await page.getByRole('button',{name:'مراجعة البيعة'}).click();
+ await page.getByRole('button',{name:'رجوع للتعديل'}).click();await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  const ids:string[]=[];await page.route('**/api/sales',async route=>{if(route.request().method()!=='POST')return route.continue();ids.push(route.request().postDataJSON().id);await route.fetch();await route.abort('failed');});
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
  await expect(page.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();
@@ -160,7 +161,7 @@ test('لو تحديث الأرقام فشل بعد الحفظ يتوقف الت�
  let block=true;await page.route('**/api/sales/options',async route=>{if(block)await route.abort('failed');else await route.continue();});
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
  await expect(page.getByRole('heading',{name:'لازم نحدّث الأرقام الأول'})).toBeVisible();
- await expect(page.getByRole('button',{name:'تسجيل بيعة',exact:true})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'تسجيل فاتورة',exact:true})).toHaveCount(0);
  const statement=await (await page.request.get(`/api/sales/statement/${c.id}`,{headers})).json();expect(statement.receipts).toHaveLength(1);expect(statement.due).toBe(20);
  block=false;await page.getByRole('button',{name:'تحديث الأرقام'}).click();
  await expect(page.getByRole('heading',{name:'لازم نحدّث الأرقام الأول'})).toHaveCount(0);await expect(debtor).toContainText('٢٠');
@@ -197,7 +198,8 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  await page.getByRole('button',{name:'عرض الحساب'}).click();
  const statement=page.getByLabel('حساب العميل');await statement.locator('summary').first().click();
  await statement.getByRole('button',{name:'عرض الفاتورة'}).click();
- const invoice=page.locator('.invoice-print');await expect(invoice).toContainText('ليست فاتورة ضريبية إلكترونية');await expect(invoice).toContainText('رقم الفاتورة');await expect(invoice).not.toContainText(sale);await expect(invoice.getByRole('img',{name:'شعار الهلب جروب'})).toBeVisible();await expect(invoice).toContainText(p.name);
+ const invoice=page.locator('.invoice-print');await expect(invoice).toContainText('فاتورة معتمدة من مجموعة الهلب جروب');await expect(invoice).toContainText('رقم الفاتورة');await expect(invoice).not.toContainText(sale);await expect(invoice.getByRole('img',{name:'شعار الهلب جروب'})).toBeVisible();await expect(invoice).toContainText(p.name);
+ await expect(invoice.locator('.invoice-total')).toHaveCount(3);await page.setViewportSize({width:390,height:844});const bounds=await invoice.locator('.kpi-table').evaluate(el=>({table:el.getBoundingClientRect().width,container:el.parentElement!.getBoundingClientRect().width}));expect(bounds.table).toBeLessThanOrEqual(bounds.container+1);
  await page.emulateMedia({media:'print'});await expect(invoice).toHaveCSS('visibility','visible');await expect(page.locator('.page-head')).toHaveCSS('visibility','hidden');const pdf=await page.pdf({format:'A4',printBackground:true,preferCSSPageSize:true,displayHeaderFooter:true,footerTemplate:'<span>TEST_BROWSER_ADDRESS</span>'});expect(pdf.length).toBeGreaterThan(1000);
  const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');const pdfDoc=await getDocument({data:new Uint8Array(pdf),useSystemFonts:true}).promise;const text=await (await pdfDoc.getPage(1)).getTextContent();expect(text.items.map(x=>'str' in x?x.str:'').join(' ')).not.toContain('TEST_BROWSER_ADDRESS');expect((pdf.toString('latin1').match(/\/Type\s*\/Page\b/g)||[]).length).toBe(1);await page.emulateMedia({media:'screen'});
  await page.getByRole('button',{name:'رجوع للحساب'}).click();await statement.locator('summary').first().click();await statement.getByRole('button',{name:'تصحيح أو تسجيل مرتجع'}).click();
@@ -291,8 +293,8 @@ test('بيع من ترشيح مرسل بكميات وأسعار المكتب م�
  const repHeaders={'Authorization':`Bearer ${login.token}`,'X-Mandoub-Client':'rep'};
  const orderId=randomUUID();await send('/api/orders',{id:orderId,customerId:customer.id,notes:'ملاحظة ترشيح',lines:[{productId:p.id,qty:3},{productId:excluded.id,qty:4}],send:true},repHeaders);
  await page.getByRole('button',{name:'المبيعات',exact:true}).click();
- await page.getByRole('button',{name:'تسجيل بيعة',exact:true}).click();
- await page.getByRole('combobox',{name:'طريقة البيع'}).selectOption('order');
+ await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();
+ await page.getByRole('combobox',{name:'نوع الفاتورة'}).selectOption('order');
  await page.getByRole('combobox',{name:'الطلبية'}).selectOption(orderId);
  await expect(page.getByText('ترشيح المهندس: ٣ عبوة')).toBeVisible();
  await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(warehouse.id);
@@ -300,7 +302,7 @@ test('بيع من ترشيح مرسل بكميات وأسعار المكتب م�
  await page.getByRole('textbox',{name:`الكمية المباعة · ${p.name}`}).fill('1.5');
  await page.getByRole('textbox',{name:`سعر الوحدة · ${p.name} (ج.م)`}).fill('4.25');
  await page.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('2');
- await page.getByRole('button',{name:'مراجعة البيعة'}).click();
+ await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  const review=page.getByLabel('مراجعة العملية');await expect(review).toContainText('ترشيح المهندس: ٣');await expect(review).toContainText(excluded.name);await expect(review).toContainText('٦٫٣٨');
  let dropped=false;const ids:string[]=[];
  await page.route('**/api/sales',async route=>{if(route.request().method()!=='POST')return route.continue();ids.push(route.request().postDataJSON().id);if(!dropped){dropped=true;await route.fetch();await route.abort('failed');}else await route.continue();});

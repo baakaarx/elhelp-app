@@ -203,12 +203,12 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
         <Text style={styles.label}>طلبياتك السابقة</Text>
         {historyError ? <Text style={styles.notice}>{historyError}</Text> : null}
         {history.slice(0, 10).map(order => <Card key={order.id} tone="plain">
-          <Text style={styles.lineName}>{order.customerName} · {order.sold ? 'اتسجلت كبيعة' : order.status === 'priced' ? 'اتسعّرت'  : order.status === 'sent' ? 'اتبعتت للمكتب' : 'مسودة'}</Text>
+          <Text style={styles.lineName}>{order.customerName} · {order.sold ? 'اتسجلت لها فاتورة' : order.status === 'draft' ? 'مسودة' : 'اتبعتت للمكتب'}</Text>
           <Text style={styles.linePack}>{order.lines.map(line => `${line.productName}: ${line.qty} ${line.unit}`).join(' · ')}</Text>
         </Card>)}
       </View>
       <Body muted style={{ fontSize: 11.5 }}>
-        الأسعار والتسعير عند المكتب وحده — اللي يوصلك هنا هو «اتقفلت» وخلاص. الكمية بتُعدّ بالوحدة المكتوبة تحت اسم الصنف (شيكارة / عبوة / جركن).
+        دورك ترشيح الأصناف والكميات فقط؛ فريق المبيعات يحدد الأسعار في الفاتورة. الكمية بتُعدّ بالوحدة المكتوبة تحت اسم الصنف (شيكارة / عبوة / جركن).
       </Body>
       <Body muted style={{ fontSize: 11.5 }}>
         لو الشبكة قطعت، الطلبية بتتحفظ على الموبايل وإرسالها بيتحاول تلقائيًا لما ترجع. لو السيرفر رفضها هتظهر رسالة بالمشكلة — ما تكررش الطلبية من شاشة تانية.

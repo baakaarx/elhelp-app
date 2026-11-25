@@ -217,7 +217,7 @@ const replayed = await post('/api/orders', rep, orderOne.body?.order ? { id: Str
 check('an offline queue that replays the send does not double the order', replayed.status === 200 && replayed.body?.duplicate === true, `${replayed.status} ${JSON.stringify(replayed.body).slice(0, 80)}`);
 const officeQueue = (await get('/api/orders?status=sent', admin)).body?.orders || [];
 const queuedOrder = officeQueue.find(row => row.id === orderOne.body?.order?.id);
-check('the office queue holds it with the rep and the list price beside every line', queuedOrder?.repName && queuedOrder?.lines?.[0]?.suggestedPrice === 750, JSON.stringify(queuedOrder || {}).slice(0, 140));
+check('the office queue holds the recommendation with no prices', queuedOrder?.repName && !('price' in (queuedOrder?.lines?.[0] || {})) && !('suggestedPrice' in (queuedOrder?.lines?.[0] || {})), JSON.stringify(queuedOrder || {}).slice(0, 140));
 const badgeAfterSend = await get('/api/overview', admin);
 check('the badge counts what waits', Number(badgeAfterSend.body?.sentOrders) >= 1, String(badgeAfterSend.body?.sentOrders));
 const alertsAfterSend = (await get('/api/alerts', admin)).body?.alerts || [];
@@ -237,15 +237,15 @@ check('until he sends it — then the office owns it', sentDraft.status === 200 
 check('a sent order refuses its author\'s pen', (await patch(`/api/orders/${draftId}`, rep, { notes: 'غيّرت رأيي' }, 'rep')).status === 409);
 const orderImpact = await get(`/api/reps/${repId}/impact`, admin);
 check('the deletion warning counts the engineer’s orders', Number(orderImpact.body?.orders) >= 2);
-check('the office cannot price half a sheet and stamp it closed', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [] })).status === 400);
-check('a number that contradicts the buyer type it claims is asked about, not guessed at', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 700, tierId: orderTierId }] })).status === 400);
-const priced = await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 750, tierId: orderTierId }] });
-check('the matching price closes it with a total the list can vouch for', priced.status === 200 && priced.body?.order?.total === 2250 && priced.body?.order?.status === 'priced', JSON.stringify(priced.body).slice(0, 120));
+check('pricing an order is disabled even for the office', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, {lines:[]})).status === 410);
+check('the engineer cannot price a recommendation', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, rep, {lines:[{productId:orderProductId,price:1}]}, 'rep')).status === 403);
+const priced = await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, {lines:[{productId:orderProductId,price:750}]});
+check('the old pricing endpoint rejects even a valid request', priced.status === 410 && priced.body?.code === 'ORDER_PRICING_DISABLED');
 const repView = (await get('/api/orders?limit=300', rep, 'rep')).body?.orders || [];
 const closedSeen = repView.find(row => row.id === orderOne.body?.order?.id);
-check('the phone learns it closed — and still no number', closedSeen?.status === 'priced' && !('total' in (closedSeen || {})) && !('price' in (closedSeen?.lines?.[0] || {})), JSON.stringify(closedSeen || {}).slice(0, 120));
-check('a priced order is a written page: nothing re-prices it', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, { lines: [{ productId: orderProductId, price: 1 }] })).status === 409);
-check('and the item it was priced against cannot be deleted under it', (await del(`/api/products/${orderProductId}`, admin)).status === 409);
+check('the phone still sees a sent recommendation without money', closedSeen?.status === 'sent' && !('total' in (closedSeen || {})) && !('price' in (closedSeen?.lines?.[0] || {})), JSON.stringify(closedSeen || {}).slice(0, 120));
+check('a cached office cannot price the order', (await post(`/api/orders/${orderOne.body?.order?.id}/price`, admin, {lines:[{productId:orderProductId,price:1}]})).status === 410);
+check('the item used in a recommendation cannot be deleted', (await del(`/api/products/${orderProductId}`, admin)).status === 409);
 check('same for the customer the order was booked on', (await del(`/api/customers/${bookCustomerId}`, admin)).status === 409);
 check('a stopped item cannot enter a new order, but the old line stays readable',
   (await patch(`/api/products/${orderProductId}`, admin, { active: false })).status === 200
