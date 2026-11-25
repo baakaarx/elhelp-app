@@ -96,6 +96,8 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  const customersPanel=page.locator('.panel').filter({has:page.getByRole('heading',{name:'أعلى العملاء شراءً بالقيمة'})});
  await expect(customersPanel).toContainText(c.name);await customersPanel.locator('summary').filter({hasText:c.name}).click();await expect(customersPanel).toContainText(p.name);
  await expect(page.getByRole('heading',{name:'الأصناف الأعلى مبيعًا بالقيمة'})).toBeVisible();
+ const topProducts=page.locator('.panel').filter({has:page.getByRole('heading',{name:'الأصناف الأعلى مبيعًا بالقيمة'})});
+ await topProducts.locator('summary').filter({hasText:p.name}).click();await expect(topProducts).toContainText(c.name);
  await expect(page.getByText('ما بنحسبش الربح', {exact:false})).toBeVisible();
  await page.setViewportSize({width:390,height:844});
  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width+1);

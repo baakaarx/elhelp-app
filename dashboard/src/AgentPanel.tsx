@@ -10,7 +10,7 @@ type Priorities = {
   openVisits:{id:string;customerName:string;repName:string;checkedInAt:number}[];
   emptyStock:{warehouseName:string;productName:string;unit:string;unitSize:string}[];
 };
-type Product = {id:string;name:string;unit:string;unitSize:string;qty:number;amount:number};
+type Product = {id:string;name:string;unit:string;unitSize:string;qty:number;amount:number;consumers?:{id:string;name:string;phone:string;qty:number;amount:number}[]};
 type Insights = {
   from:string;to:string;timezone:string;salesCount:number;customerCount:number;sales:number;unassignedCount:number;unassignedSales:number;legacyOrders:number;
   reps:{id:string;name:string;region:string;active:boolean;visits:number;orders:number;salesCount:number;sales:number;legacyOrders:number}[];
@@ -51,7 +51,7 @@ export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:Ma
         <p className="muted small">بيعة الطلبية للمهندس اللي سجّلها؛ البيعة المباشرة للمهندس المختار وقت البيع. {data.legacyOrders>0?`${formatNumber(data.legacyOrders)} بيعة قديمة نُسبت لمهندس الطلبية المحفوظة. `:''}البيعات من غير مهندس، أو اللي فقدت بيانات المهندس القديم، ظاهرة في الإجمالي غير المنسوب. الزيارات المتاحة حسب مدة الاحتفاظ.</p></div>
       <div className="panel"><h3>أعلى العملاء شراءً بالقيمة</h3><p className="muted small">افتح العميل لتشوف الكمية المباعة من كل صنف؛ ما بنجمعش وحدات مختلفة كأنها وحدة واحدة.</p>
         {data.customers.length===0?<p className="muted">مفيش بيعات مؤكدة في الفترة.</p>:data.customers.map(c=><details key={c.id} className="insight-customer"><summary>{c.name}{c.phone?` · ${c.phone}`:''} · رقم {c.id.slice(-6)} · {cash(c.amount)} · {formatNumber(c.count)} بيعة</summary><ul className="sale-order-lines">{c.items.map(p=><li key={`${p.id}:${p.unit}:${p.unitSize}`}>{p.name} · {quantity(p.qty)} {p.unit} {p.unitSize} · {cash(p.amount)}</li>)}</ul><p className="muted small">أعلى ١٠ أصناف للعميل حسب القيمة.</p></details>)}</div>
-      <ProductTable title="الأصناف الأعلى مبيعًا بالقيمة" rows={data.productsByValue} />
+      <ProductTable title="الأصناف الأعلى مبيعًا بالقيمة" rows={data.productsByValue} note="افتح أي صنف لتشوف العملاء الأكثر شراءً له بالكمية." />
       <ProductTable title="الأصناف الأعلى مبيعًا بعدد العبوات" rows={data.productsByQty} note="الترتيب بعدد الوحدات المسجلة لكل صنف؛ حجم ونوع العبوة قد يختلفان من صنف لآخر." />
     </>}
     <details className="panel"><summary><strong>أولويات الشغل الحالية</strong></summary>{priorityError&&<p className="error">{priorityError}</p>}{!priorities?<p className="muted">جارٍ تحميل الأولويات…</p>:<>
@@ -67,5 +67,5 @@ export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:Ma
   </section>;
 }
 function ProductTable({title,rows,note}:{title:string;rows:Product[];note?:string}) {
-  return <div className="panel"><h3>{title}</h3>{note&&<p className="muted small">{note}</p>}{rows.length===0?<p className="muted">مفيش بيعات مؤكدة في الفترة.</p>:<div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف والعبوة</th><th>الكمية</th><th>قيمة البيع</th></tr></thead><tbody>{rows.map(p=><tr key={`${p.id}:${p.unit}:${p.unitSize}`}><td>{p.name} · {p.unit} {p.unitSize}</td><td>{quantity(p.qty)} {p.unit}</td><td>{cash(p.amount)}</td></tr>)}</tbody></table></div>}</div>;
+  return <div className="panel"><h3>{title}</h3>{note&&<p className="muted small">{note}</p>}{rows.length===0?<p className="muted">مفيش بيعات مؤكدة في الفترة.</p>:<div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف والعبوة</th><th>الكمية</th><th>قيمة البيع</th></tr></thead><tbody>{rows.map(p=><tr key={`${p.id}:${p.unit}:${p.unitSize}`}><td><details><summary>{p.name} · {p.unit} {p.unitSize}</summary><p className="muted small">أعلى العملاء استهلاكًا للصنف:</p><ul>{p.consumers?.map(c=><li key={c.id}>{c.name}{c.phone?` · ${c.phone}`:''} · رقم {c.id.slice(-6)} · {quantity(c.qty)} {p.unit} · {cash(c.amount)}</li>)}</ul></details></td><td>{quantity(p.qty)} {p.unit}</td><td>{cash(p.amount)}</td></tr>)}</tbody></table></div>}</div>;
 }

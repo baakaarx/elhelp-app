@@ -22,8 +22,17 @@ export function createInsightsRouter(store:Store, timezone:string) {
       WHERE s.created_at>=? AND s.created_at<? GROUP BY p.id,p.name,l.unit,l.unit_size`,...params);
     // Quantity and revenue are intentionally separate rankings; units across products aren't interchangeable.
     const shapeProduct=(p:Record<string,any>)=>({...p,qty:Number(p.qty)/1000,amount:Number(p.amount)/100});
-    const productsByValue=[...productRows].sort((a,b)=>Number(b.amount)-Number(a.amount)||String(a.name).localeCompare(String(b.name),'ar')||String(a.id).localeCompare(String(b.id))).slice(0,10).map(shapeProduct);
-    const productsByQty=[...productRows].sort((a,b)=>Number(b.qty)-Number(a.qty)||String(a.name).localeCompare(String(b.name),'ar')||String(a.id).localeCompare(String(b.id))).slice(0,10).map(shapeProduct);
+    // A customer cannot be ranked by a sum of sacks + litres. Rank consumption separately per pack.
+    const consumers=store.all(`WITH client_totals AS (
+      SELECT l.product_id AS productId,l.unit,l.unit_size AS unitSize,c.id,c.name,c.phone,SUM(l.milli_qty) AS qty,SUM(l.line_piasters) AS amount
+      FROM office_sales_lines_v1 l JOIN office_sales_v1 s ON s.id=l.sale_id JOIN customers c ON c.id=s.customer_id
+      WHERE s.created_at>=? AND s.created_at<? GROUP BY l.product_id,l.unit,l.unit_size,c.id,c.name,c.phone
+    ), ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY productId,unit,unitSize ORDER BY qty DESC,amount DESC,name COLLATE NOCASE,id) AS pos FROM client_totals)
+      SELECT * FROM ranked WHERE pos<=10 ORDER BY productId,unit,unitSize,pos`,...params);
+    const enrich=(p:Record<string,any>)=>({...shapeProduct(p),consumers:consumers.filter(c=>c.productId===p.id&&c.unit===p.unit&&c.unitSize===p.unitSize)
+      .map(c=>({id:c.id,name:c.name,phone:c.phone,qty:Number(c.qty)/1000,amount:Number(c.amount)/100}))});
+    const productsByValue=[...productRows].sort((a,b)=>Number(b.amount)-Number(a.amount)||String(a.name).localeCompare(String(b.name),'ar')||String(a.id).localeCompare(String(b.id))).slice(0,10).map(enrich);
+    const productsByQty=[...productRows].sort((a,b)=>Number(b.qty)-Number(a.qty)||String(a.name).localeCompare(String(b.name),'ar')||String(a.id).localeCompare(String(b.id))).slice(0,10).map(enrich);
     const visitRows=store.all('SELECT user_id AS id,COUNT(*) AS n FROM visits WHERE checked_in_at>=? AND checked_in_at<? GROUP BY user_id',...params);
     const orderRows=store.all("SELECT user_id AS id,COUNT(*) AS n FROM orders WHERE status IN ('sent','priced') AND sent_at>=? AND sent_at<? GROUP BY user_id",...params);
     // Existing order-backed sales can be attributed to their actual order author if that order survives.

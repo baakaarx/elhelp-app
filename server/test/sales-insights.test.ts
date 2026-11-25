@@ -49,6 +49,7 @@ test('simulation: sales, collections, stock, top customers and products reconcil
  assert.equal(r.customers[0].id,customerB.id);assert.equal(r.customers[0].amount,61);assert.equal(r.customers[1].amount,40);
  assert.equal(r.customers[0].items.find((x:any)=>x.id===itemB.id).qty,5);
  assert.equal(r.productsByValue[0].id,itemA.id);assert.equal(r.productsByValue[0].amount,56);assert.equal(r.productsByValue[0].qty,5);
+ assert.equal(r.productsByValue[0].consumers[0].id,customerB.id);assert.equal(r.productsByValue[0].consumers[0].qty,3);assert.equal(r.productsByValue[0].consumers[1].id,customerA.id);
  assert.equal(r.productsByQty[0].id,itemB.id);assert.equal(r.productsByQty[0].qty,6);assert.equal(r.productsByQty[0].amount,45);
  const stock=(await client.get(`/api/warehouse/stock?warehouseId=${warehouse.id}`).set(admin)).body.stock;
  assert.equal(stock.find((x:any)=>x.id===itemA.id).qty,95);assert.equal(stock.find((x:any)=>x.id===itemB.id).qty,94);
