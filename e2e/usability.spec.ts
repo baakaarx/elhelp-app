@@ -141,3 +141,116 @@ test('التصميم الجديد يحافظ على تنقل الموبايل و
   const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
   expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width+1);
 });
+
+test('أزرار التعديل وكلمة المرور تفتح النماذج في الشاشة على الموبايل', async ({page}) => {
+  await page.setViewportSize({width:390,height:844});
+  await signIn(page);
+  const headers={'X-Mandoub-Token':token,'X-Mandoub-Client':'admin'};
+  const send=async(path:string,data:object)=>{const r=await page.request.post(path,{headers,data});expect(r.ok(),await r.text()).toBeTruthy();return r.json();};
+  const customer=(await send('/api/customers',{name:`عميل فتح نموذج ${Date.now()}`})).customer;
+  const warehouse=(await send('/api/warehouse/warehouses',{name:`مخزن فتح نموذج ${Date.now()}`})).warehouse;
+  const product=(await send('/api/warehouse/products',{name:`صنف فتح نموذج ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+  const staff=(await send('/api/staff',{name:'حساب فتح نموذج',email:`staff-open-${Date.now()}@test.example`,password:'WarehousePassword123!',accessScope:'warehouse'})).user;
+
+  await page.getByRole('button',{name:'العملاء',exact:true}).click();
+  const customerRow=page.locator('.customers-table tr').filter({hasText:customer.name});
+  await customerRow.getByRole('button',{name:'تعديل'}).click();
+  const customerForm=page.locator('form.panel').filter({has:page.getByRole('heading',{name:`تعديل: ${customer.name}`})});
+  await expect(customerForm).toBeInViewport();await expect(customerForm).toBeFocused();
+  await customerRow.getByRole('button',{name:'تعديل'}).click();
+  await expect(customerForm).toBeInViewport();await expect(customerForm).toBeFocused();
+  await customerForm.getByRole('button',{name:'إلغاء'}).click();
+
+  await page.getByRole('button',{name:'المخازن',exact:true}).click();
+  await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(warehouse.id);
+  const stockRow=page.locator('tr').filter({hasText:product.name}).first();
+  await stockRow.getByRole('button',{name:'تعديل'}).click();
+  const stockForm=page.locator('form.panel').filter({has:page.getByRole('heading',{name:'تعديل الصنف'})});
+  await expect(stockForm).toBeInViewport();await expect(stockForm).toBeFocused();
+  await expect(stockForm.getByLabel('اسم الصنف')).toHaveValue(product.name);
+  await stockForm.getByRole('button',{name:'إلغاء'}).click();
+
+  await page.getByRole('button',{name:'حسابات المكتب',exact:true}).click();
+  await page.locator('.staff-row').filter({hasText:staff.email}).getByRole('button',{name:'كلمة مرور جديدة'}).click();
+  const staffForm=page.locator('form.panel').filter({has:page.getByRole('heading',{name:`كلمة مرور جديدة لـ ${staff.name}`})});
+  await expect(staffForm).toBeInViewport();await expect(staffForm).toBeFocused();
+  await staffForm.getByRole('button',{name:'إلغاء'}).click();
+
+  await page.getByRole('button',{name:'فريق الميدان',exact:true}).click();
+  const engineer=page.locator('.team-row').filter({hasText:'أحمد حسن'}).first();
+  await engineer.getByRole('button',{name:'تعديل المنطقة'}).click();
+  const region=page.locator('form.panel').filter({has:page.getByRole('heading',{name:'منطقة أحمد حسن'})});
+  await expect(region).toBeInViewport();await expect(region).toBeFocused();
+  await region.getByRole('button',{name:'إلغاء'}).click();
+  await engineer.getByRole('button',{name:'كلمة المرور'}).click();
+  const password=page.locator('.reveal-target').filter({has:page.getByRole('heading',{name:'كلمة مرور جديدة لـ أحمد حسن'})});
+  await expect(password).toBeInViewport();await expect(password).toBeFocused();
+  await password.getByLabel('كلمة المرور').fill('short');
+  await password.getByRole('button',{name:'حفظ',exact:true}).click();
+  await expect(password.getByRole('alert')).toContainText('١٠ أحرف على الأقل');
+  await password.getByRole('button',{name:'إلغاء'}).click();
+
+  await page.getByRole('button',{name:'المبيعات',exact:true}).click();
+  await page.getByRole('button',{name:'تعديل الأسعار'}).click();
+  await page.getByRole('button',{name:'إدارة الأصناف وأنواع الأسعار'}).click();
+  const productRow=page.locator('tr').filter({hasText:product.name}).first();
+  await productRow.getByRole('button',{name:'تعديل',exact:true}).click();
+  const productForm=page.locator('form.panel').filter({has:page.getByRole('heading',{name:`تعديل: ${product.name}`})});
+  await expect(productForm).toBeInViewport();await expect(productForm).toBeFocused();
+  await productForm.getByRole('button',{name:'إلغاء'}).click();
+});
+
+test('نجاح إضافة المخزن أو الصنف يظل واضحًا لو تحديث القائمة فشل', async ({page}) => {
+  await signIn(page);
+  const headers={'X-Mandoub-Token':token,'X-Mandoub-Client':'admin'};
+  const warehouseName=`مخزن قائمة ${Date.now()}`;
+  await page.getByRole('button',{name:'المخازن',exact:true}).click();
+  await page.getByLabel('اسم مخزن جديد').fill(warehouseName);
+  await page.route('**/api/warehouse/warehouses',route=>route.request().method()==='GET'?route.abort('failed'):route.continue());
+  await page.getByRole('button',{name:'إضافة مخزن'}).click();
+  await expect(page.getByRole('status')).toContainText('المخزن اتضاف');
+  await expect(page.getByRole('alert')).toContainText('المخزن اتضاف، لكن القائمة ما اتحدّثتش');
+  await page.unroute('**/api/warehouse/warehouses');
+  const warehouses=await (await page.request.get('/api/warehouse/warehouses',{headers})).json();
+  const warehouse=warehouses.warehouses.find((w:{name:string})=>w.name===warehouseName);expect(warehouse).toBeTruthy();
+  await page.reload();await page.getByRole('button',{name:'المخازن',exact:true}).click();
+  await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(warehouse.id);
+  const productName=`صنف قائمة ${Date.now()}`;
+  await page.getByLabel('اسم الصنف').fill(productName);await page.getByLabel('الوحدة',{exact:true}).fill('عبوة');
+  await page.route('**/api/warehouse/stock?*',route=>route.abort('failed'));
+  await page.getByRole('button',{name:'إضافة صنف'}).click();
+  await expect(page.getByRole('status')).toContainText('الصنف اتضاف');
+  await expect(page.getByRole('alert')).toContainText('الصنف اتضاف، لكن القائمة ما اتحدّثتش');
+  await page.unroute('**/api/warehouse/stock?*');
+  const products=await (await page.request.get('/api/warehouse/products',{headers})).json();
+  expect(products.products.filter((p:{name:string})=>p.name===productName)).toHaveLength(1);
+});
+
+
+test('نجاح إنشاء حساب مكتب يظهر بوضوح لو فشل تحديث القائمة', async ({page}) => {
+  await signIn(page);
+  const headers={'X-Mandoub-Token':token,'X-Mandoub-Client':'admin'};
+  const email=`staff-refresh-${Date.now()}@test.example`;
+  await page.getByRole('button',{name:'حسابات المكتب',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'الحسابات'})).toBeVisible();
+  await page.getByLabel('الاسم',{exact:true}).fill('حساب اختبار التحديث');
+  await page.getByLabel('البريد الإلكتروني').fill(email);
+  await page.getByLabel('كلمة المرور',{exact:true}).fill('PasswordForStaff123!');
+  await page.route('**/api/staff',route=>route.request().method()==='GET'?route.abort('failed'):route.continue());
+  await page.getByRole('button',{name:'إنشاء الحساب'}).click();
+  await expect(page.getByRole('status')).toContainText('اتعمل حساب');
+  await expect(page.getByRole('alert')).toContainText('الحساب اتعمل، لكن القائمة ما اتحدّثتش');
+  await page.unroute('**/api/staff');
+  const data=await (await page.request.get('/api/staff',{headers})).json();
+  expect(data.staff.filter((user:{email:string})=>user.email===email)).toHaveLength(1);
+});
+
+test('الانتقال من أولويات العمل يفتح الصفحة من بدايتها', async ({page}) => {
+  await page.setViewportSize({width:390,height:844});
+  await signIn(page);
+  await page.getByRole('button',{name:'المساعد الذكي',exact:true}).click();
+  await page.getByText('أولويات الشغل الحالية').click();
+  await page.getByRole('button',{name:'افتح العملاء'}).click();
+  await expect(page.getByRole('heading',{level:1,name:'العملاء'})).toBeInViewport();
+  await expect(page.locator('header.topbar')).toBeFocused();
+});

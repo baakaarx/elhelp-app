@@ -141,7 +141,7 @@ test('المراجعة تمنع الحفظ بالخطأ والتبويبان ي�
  await expect(page.getByRole('alert')).toContainText('الكمية حتى ٣ أرقام');
  await form.getByRole('textbox',{name:'الكمية'}).fill('1');
  await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
- const review=page.getByLabel('مراجعة العملية');await expect(review).toContainText(c.name);await expect(review).toContainText(w.name);await expect(review).toContainText(p.name);
+ const review=page.getByLabel('مراجعة العملية');await expect(review).toBeInViewport();await expect(review).toBeFocused();await expect(review).toContainText(c.name);await expect(review).toContainText(w.name);await expect(review).toContainText(p.name);
  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width+1);
  let report=await (await page.request.get('/api/sales/overview',{headers})).json();expect(report.latest.some((x:{customerName:string})=>x.customerName===c.name)).toBe(false);
  await page.getByRole('button',{name:'رجوع للتعديل'}).click();await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
@@ -212,6 +212,7 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  await page.getByRole('button',{name:'عرض الحساب'}).click();
  const statement=page.getByLabel('حساب العميل');await statement.locator('summary').first().click();
  await statement.getByRole('button',{name:'عرض الفاتورة'}).click();
+ await expect(page.getByRole('button',{name:'طباعة الفاتورة'})).toBeInViewport();
  const invoice=page.locator('.invoice-print');await expect(invoice).toContainText('فاتورة معتمدة من مجموعة الهلب جروب');await expect(invoice).toContainText('رقم الفاتورة');await expect(invoice).not.toContainText(sale);await expect(invoice.getByRole('img',{name:'شعار الهلب جروب'})).toBeVisible();await expect(invoice).toContainText(p.name);
  await expect(invoice.locator('.invoice-total')).toHaveCount(3);await page.setViewportSize({width:390,height:844});const bounds=await invoice.locator('.kpi-table').evaluate(el=>({table:el.getBoundingClientRect().width,container:el.parentElement!.getBoundingClientRect().width}));expect(bounds.table).toBeLessThanOrEqual(bounds.container+1);
  await page.emulateMedia({media:'print'});await expect(invoice).toHaveCSS('visibility','visible');await expect(page.locator('.page-head')).toHaveCSS('visibility','hidden');const pdf=await page.pdf({format:'A4',printBackground:true,preferCSSPageSize:true,displayHeaderFooter:true,footerTemplate:'<span>TEST_BROWSER_ADDRESS</span>'});expect(pdf.length).toBeGreaterThan(1000);
@@ -226,7 +227,7 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  await page.getByRole('combobox',{name:'حالة المبلغ'}).selectOption('error');
  await page.getByRole('textbox',{name:'المبلغ المصحح (ج.م)'}).fill('10');
  await page.getByRole('textbox',{name:'سبب التصحيح'}).fill('تصحيح صنف ومبلغ مسجل بالخطأ');
- await page.getByRole('button',{name:'مراجعة التصحيح'}).click();await expect(page.getByLabel('مراجعة التصحيح')).toContainText('٣٥');
+ await page.getByRole('button',{name:'مراجعة التصحيح'}).click();await expect(page.getByLabel('مراجعة التصحيح')).toBeInViewport();await expect(page.getByLabel('مراجعة التصحيح')).toBeFocused();await expect(page.getByLabel('مراجعة التصحيح')).toContainText('٣٥');
  let intercepted=0;await page.route(`**/api/sales/corrections/sale/${sale}`,async route=>{if(route.request().method()!=='POST')return route.continue();intercepted++;await route.fetch();await route.abort('failed');});
  await page.getByRole('button',{name:'تأكيد التصحيح'}).click();await expect(page.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();await expect(page.getByRole('alert')).toBeVisible();
  await page.unroute(`**/api/sales/corrections/sale/${sale}`);await page.getByRole('button',{name:'تأكيد العملية'}).click();await expect(page.getByRole('status')).toContainText('اتأكدنا من العملية');expect(intercepted).toBe(1);

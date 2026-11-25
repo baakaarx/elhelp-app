@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useReveal } from './useReveal';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { ApiError, api, del, patch, post } from './api';
 import { ago, formatNumber } from './session';
 import ConfirmAction from './ConfirmAction';
@@ -26,6 +27,7 @@ export default function Customers(_props: { timezone?: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Customer | 'new' | null>(null);
+  const customerForm = useReveal<HTMLFormElement>();
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -72,6 +74,7 @@ export default function Customers(_props: { timezone?: string }) {
     setForm({ ...EMPTY_FORM });
     setFormError('');
     setEditing('new');
+    customerForm.reveal();
   }
   function openEdit(customer: Customer) {
     setForm({
@@ -81,6 +84,7 @@ export default function Customers(_props: { timezone?: string }) {
     });
     setFormError('');
     setEditing(customer);
+    customerForm.reveal();
   }
   const closeForm = () => { setEditing(null); setFormError(''); };
 
@@ -196,6 +200,7 @@ export default function Customers(_props: { timezone?: string }) {
 
       {editing && (
         <CustomerForm
+          formRef={customerForm.ref}
           editing={editing}
           form={form}
           setForm={setForm}
@@ -293,7 +298,8 @@ export default function Customers(_props: { timezone?: string }) {
 }
 
 /** One form for adding and editing. The engineer select is the assignment, and it travels alone. */
-function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers, onCancel, onSave }: {
+function CustomerForm({ formRef, editing, form, setForm, error, saving, tiers, engineers, onCancel, onSave }: {
+  formRef: RefObject<HTMLFormElement | null>;
   editing: Customer | 'new';
   form: typeof EMPTY_FORM;
   setForm: (value: typeof EMPTY_FORM) => void;
@@ -310,7 +316,7 @@ function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers,
   });
   const isNew = editing === 'new';
   return (
-    <form className="panel" onSubmit={onSave}>
+    <form className="panel reveal-target" ref={formRef} tabIndex={-1} onSubmit={onSave}>
       <h3 className="panel-title">{isNew ? 'عميل جديد في قائمة الشركة' : `تعديل: ${editing.name}`}</h3>
       <div className="work-form">
         <label className="field inline">

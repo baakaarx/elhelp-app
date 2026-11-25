@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useReveal } from './useReveal';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, del, patch, post } from './api';
 import { formatNumber } from './session';
 import { hasInputPrecision, ungroupPrice } from './decimal';
@@ -29,12 +30,14 @@ const EMPTY_FORM = { name: '', category: 'other' as ProductCategory, unit: '', u
 const NONE = '';
 
 export default function Products(_props: { timezone?: string }) {
-  const [products, setProducts] = useState<Product[]>([]);
+  const [result, setResult] = useState<{ query: string; products: Product[] } | null>(null);
+  const requestId = useRef(0);
   const [tiers, setTiers] = useState<PriceTier[]>([]);
   const [filters, setFilters] = useState({ q: '', category: '', tierId: NONE, unpricedOnly: false, includeInactive: false });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState<Product | 'new' | null>(null);
+  const productForm = useReveal<HTMLFormElement>();
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -53,24 +56,30 @@ export default function Products(_props: { timezone?: string }) {
     return params.toString();
   }, [filters]);
 
+  const currentQuery = useRef(query); currentQuery.current = query;
+  const products = result?.query === query ? result.products : [];
+  const ready = result?.query === query;
+
   const load = useCallback(async () => {
-    setLoading(true);
+    const id = ++requestId.current;
+    setLoading(true); setResult(null); setError('');
     try {
       const [list, kinds] = await Promise.all([
         api<{ products: Product[] }>(`/api/products?${query}`),
         api<{ tiers: PriceTier[] }>('/api/price-tiers'),
       ]);
-      setProducts(list.products);
+      if (id !== requestId.current || currentQuery.current !== query) return;
+      setResult({ query, products: list.products });
       setTiers(kinds.tiers);
       setError('');
     } catch (e) {
-      setError(messageOf(e, 'تعذر تحميل قائمة الأصناف.'));
+      if (id === requestId.current && currentQuery.current === query) setError(messageOf(e, 'تعذر تحميل قائمة الأصناف.'));
     } finally {
-      setLoading(false);
+      if (id === requestId.current && currentQuery.current === query) setLoading(false);
     }
   }, [query]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => { requestId.current++; }; }, [load]);
 
   /**
    * Every heading is a column, stopped ones included.
@@ -90,11 +99,13 @@ export default function Products(_props: { timezone?: string }) {
     setForm({ ...EMPTY_FORM });
     setFormError('');
     setEditing('new');
+    productForm.reveal();
   }
   function openEdit(product: Product) {
     setForm({ name: product.name, category: product.category, unit: product.unit, unitSize: product.unitSize, notes: product.notes });
     setFormError('');
     setEditing(product);
+    productForm.reveal();
   }
   const closeForm = () => { setEditing(null); setFormError(''); };
 
@@ -207,7 +218,7 @@ export default function Products(_props: { timezone?: string }) {
         <button className="btn primary" onClick={openCreate}>صنف جديد</button>
       </header>
 
-      <div className="stats">
+      {ready && <div className="stats">
         <div className="card stat"><span className="muted small">أصناف ظاهرة</span><strong>{formatNumber(products.length)}</strong><small className="muted">بعد الفلاتر{filters.includeInactive ? ' (الموقوفين داخلين)' : ''}</small></div>
         <div className="card stat"><span className="muted small">أنواع شغالة</span><strong>{formatNumber(liveColumns.length)}</strong><small className="muted">الموقوف باين كعمود كمان عشان يتنضّف</small></div>
         <div className="card stat"><span className="muted small">أسعار مكتوبة</span><strong>{formatNumber(priceCount)}</strong><small className="muted">في الأصناف الظاهرة</small></div>
@@ -216,7 +227,7 @@ export default function Products(_props: { timezone?: string }) {
           <strong>{filters.unpricedOnly && filters.tierId ? formatNumber(products.length) : '—'}</strong>
           <small className="muted">شغّل «اللي بلا سعر بس» بعد ما تختار نوع</small>
         </div>
-      </div>
+      </div>}
 
       <div className="panel filters">
         <label className="field inline">
@@ -254,7 +265,7 @@ export default function Products(_props: { timezone?: string }) {
       {error && <p className="error banner" role="alert">{error}</p>}
 
       {editing && (
-        <form className="panel" onSubmit={save}>
+        <form className="panel reveal-target" ref={productForm.ref} tabIndex={-1} onSubmit={save}>
           <h3 className="panel-title">{editing === 'new' ? 'صنف جديد في قائمة الأصناف' : `تعديل: ${editing.name}`}</h3>
           <div className="filters">
             <label className="field inline">
@@ -295,7 +306,8 @@ export default function Products(_props: { timezone?: string }) {
         </form>
       )}
 
-      <div className="panel">
+      {!ready && !error && <p role="status">جارٍ تحميل الأصناف للفلاتر المختارة…</p>}
+      {ready && <div className="panel">
         <h3 className="panel-title">الأصناف · {formatNumber(products.length)}</h3>
         {tiers.length === 0 && (
           <p className="error banner" role="alert">
@@ -385,7 +397,7 @@ export default function Products(_props: { timezone?: string }) {
             {priceError && <p className="error" role="alert">{priceError}</p>}
           </>
         )}
-      </div>
+      </div>}
 
       <TiersPanel tiers={tiers} onDone={() => void load()} />
     </section>

@@ -1,3 +1,4 @@
+import { useReveal } from './useReveal';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, patch, post } from './api';
 import { dateTimeText } from './dates';
@@ -29,6 +30,7 @@ export default function Warehouses({userId}:{userId:string}) {
   const [movements,setMovements] = useState<Movement[]>([]);
   const [newWarehouse,setNewWarehouse] = useState('');
   const [editing,setEditing] = useState<Stock|null>(null);
+  const editForm = useReveal<HTMLFormElement>();
   const [editName,setEditName] = useState('');
   const [editCategory,setEditCategory] = useState('other');
   const [editUnit,setEditUnit] = useState('');
@@ -73,13 +75,15 @@ export default function Warehouses({userId}:{userId:string}) {
   async function addWarehouse(event:FormEvent) {
     event.preventDefault(); await perform(async () => {
       const r = await post<{warehouse:Warehouse}>('/api/warehouse/warehouses',{name:newWarehouse});
-      setNewWarehouse(''); await loadWarehouses(); setWarehouseId(r.warehouse.id); setMessage('المخزن اتضاف.');
+      setNewWarehouse(''); setMessage('المخزن اتضاف.');
+      try {await loadWarehouses();setWarehouseId(r.warehouse.id);} catch {setError('المخزن اتضاف، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}
     });
   }
   async function addProduct(event:FormEvent) {
     event.preventDefault(); await perform(async () => {
       await post('/api/warehouse/products',{name:productName,category,unit,unitSize});
-      setProductName(''); setUnit(''); setUnitSize(''); await loadStock(); setMessage('الصنف اتضاف؛ سجّل رصيده الافتتاحي في كل مخزن.');
+      setProductName(''); setUnit(''); setUnitSize(''); setMessage('الصنف اتضاف؛ سجّل رصيده الافتتاحي في كل مخزن.');
+      try {await loadStock();} catch {setError('الصنف اتضاف، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}
     });
   }
   async function sendMovement(operation:PendingMovement) {
@@ -131,7 +135,7 @@ export default function Warehouses({userId}:{userId:string}) {
       <label className="field inline"><span>حجم العبوة</span><input maxLength={60} value={unitSize} onChange={e=>setUnitSize(e.target.value)} /></label>
       <button className="btn primary sm" disabled={busy}>إضافة صنف</button></form></div>
     {warehouseId && <>
-      {editing && <form className="panel" onSubmit={e=>{e.preventDefault();void perform(async()=>{await patch(`/api/warehouse/products/${editing.id}`,{name:editName,category:editCategory,unit:editUnit,unitSize:editUnitSize});setEditing(null);await loadStock();setMessage('الصنف اتعدل.');});}}><h3>تعديل الصنف</h3><div className="work-form">
+      {editing && <form className="panel reveal-target" ref={editForm.ref} tabIndex={-1} onSubmit={e=>{e.preventDefault();void perform(async()=>{await patch(`/api/warehouse/products/${editing.id}`,{name:editName,category:editCategory,unit:editUnit,unitSize:editUnitSize});setEditing(null);setMessage('الصنف اتعدل.');try {await loadStock();} catch {setError('الصنف اتعدل، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}});}}><h3>تعديل الصنف</h3><div className="work-form">
         <label className="field inline"><span>اسم الصنف</span><input required minLength={2} maxLength={120} value={editName} onChange={e=>setEditName(e.target.value)} /></label>
         <label className="field inline"><span>تصنيف الصنف</span><select value={editCategory} onChange={e=>setEditCategory(e.target.value)}><option value="other">أخرى</option><option value="fertilizer">أسمدة</option><option value="pesticide">مبيدات</option></select></label>
         <label className="field inline"><span>الوحدة</span><input required maxLength={40} value={editUnit} onChange={e=>setEditUnit(e.target.value)} /></label>
@@ -147,7 +151,7 @@ export default function Warehouses({userId}:{userId:string}) {
         <button className="btn primary sm" disabled={busy}>{busy ? 'جارٍ الحفظ…' : 'حفظ الحركة'}</button>
       </fieldset></form><p className="muted small">لو الرصيد الافتتاحي صفر اكتبه صفر. النقل يحتاج تسجيل الرصيد الافتتاحي في المخزنين.</p></div>
       <div className="panel"><h3>أرصدة المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف</th><th>الوحدة</th><th>الرصيد</th><th>الحالة</th><th></th></tr></thead><tbody>
-        {stock.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.unit} {p.unitSize}</td><td>{p.qty === null ? 'لم يُسجَّل' : qtyText(p.qty)}</td><td>{p.active ? 'شغال' : 'موقوف'}</td><td><button className="btn ghost sm" onClick={()=>{setEditing(p);setEditName(p.name);setEditCategory(p.category);setEditUnit(p.unit);setEditUnitSize(p.unitSize);}}>تعديل</button> <button className="btn ghost sm" disabled={busy} onClick={()=>void perform(async()=>{await patch(`/api/warehouse/products/${p.id}`,{active:!p.active});await loadStock();})}>{p.active?'وقف':'تفعيل'}</button></td></tr>)}
+        {stock.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.unit} {p.unitSize}</td><td>{p.qty === null ? 'لم يُسجَّل' : qtyText(p.qty)}</td><td>{p.active ? 'شغال' : 'موقوف'}</td><td><button className="btn ghost sm" onClick={()=>{setEditing(p);setEditName(p.name);setEditCategory(p.category);setEditUnit(p.unit);setEditUnitSize(p.unitSize);editForm.reveal();}}>تعديل</button> <button className="btn ghost sm" disabled={busy} onClick={()=>void perform(async()=>{await patch(`/api/warehouse/products/${p.id}`,{active:!p.active});setMessage(p.active?'الصنف اتوقف.':'الصنف اتفعّل.');try {await loadStock();} catch {setError('حالة الصنف اتغيرت، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}})}>{p.active?'وقف':'تفعيل'}</button></td></tr>)}
       </tbody></table></div>{stock.length===0 && <p className="muted">مفيش أصناف لسه.</p>}</div>
       <div className="panel"><h3>آخر حركات المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الحركة</th><th>الصنف والكمية</th><th>من / إلى</th><th>بواسطة</th><th>الوقت</th><th>ملاحظة</th></tr></thead><tbody>
         {movements.map(m=><tr key={m.id}><td>{labels[m.kind]}</td><td>{m.productName} · {qtyText(m.qty)} {m.unit}</td><td>{m.fromName || '—'} / {m.toName || '—'}</td><td>{m.actorName}</td><td>{timezone ? dateTimeText(m.createdAt,timezone) : 'الوقت غير متاح'}</td><td>{m.note || '—'}</td></tr>)}

@@ -1,3 +1,4 @@
+import {useReveal} from './useReveal';
 import {useState, type FormEvent} from 'react';
 import {hasInputPrecision} from './decimal';
 import {CorrectionHistory, cashP, qtyM, type Detail} from './SaleInvoice';
@@ -8,6 +9,7 @@ const parse=(s:string)=>{const v=s.trim().replace(/[٠-٩]/g,c=>String('٠١٢٣
 const exact=(text:string,places:number)=>text.trim()==='' || (hasInputPrecision(text,places) && Number.isFinite(parse(text)));
 const account=(p:number)=>p<0?`رصيد لصالح العميل ${cashP(-p)}`:`باقي على العميل ${cashP(p)}`;
 export default function SaleCorrection({detail,timezone,busy,onBack,onSave}:{detail:Detail;timezone?:string;busy:boolean;onBack:()=>void;onSave:(v:CorrectionPayload)=>Promise<void>}){
+ const reviewPanel=useReveal<HTMLDivElement>();
  const [reason,setReason]=useState(''),[cashKind,setCashKind]=useState(''),[cash,setCash]=useState(''),[inputs,setInputs]=useState<Record<string,{corrected:string;returned:string;stockKind:string}>>({}),[review,setReview]=useState<CorrectionPayload|null>(null),[error,setError]=useState('');
  const setLine=(id:string,k:'corrected'|'returned'|'stockKind',v:string)=>setInputs(old=>({...old,[id]:{corrected:old[id]?.corrected??'',returned:old[id]?.returned??'',stockKind:old[id]?.stockKind??'',[k]:v}}));
  function prepare(e:FormEvent){e.preventDefault();setError('');const lines:LineInput[]=[];
@@ -23,7 +25,7 @@ export default function SaleCorrection({detail,timezone,busy,onBack,onSave}:{det
   if(!money&&cashKind){setError('اكتب مبلغ التصحيح أو اختار لا تغيير.');return;}
   if(!lines.length&&!money){setError('حدد تصحيحًا واحدًا على الأقل.');return;}
   if(reason.trim().length<5){setError('اكتب سببًا واضحًا من ٥ حروف على الأقل.');return;}
-  setReview({reason:reason.trim(),revision:detail.revision,balancePiasters:detail.balancePiasters,lines,cash:money?{kind:cashKind as 'error'|'refund',amountPiasters:money}:null});
+  setReview({reason:reason.trim(),revision:detail.revision,balancePiasters:detail.balancePiasters,lines,cash:money?{kind:cashKind as 'error'|'refund',amountPiasters:money}:null});reviewPanel.reveal();
  }
  const correctionAmount=review?.lines.reduce((sum,x)=>{const l=detail.lines.find(y=>y.id===x.lineId)!;return sum+Number((BigInt(l.corrected+x.correctedMilli)*BigInt(l.price)+500n)/1000n)-l.correctedAmount;},0)??0;
  const projected=detail.balancePiasters-correctionAmount+(review?.cash?.amountPiasters??0);
@@ -41,7 +43,7 @@ export default function SaleCorrection({detail,timezone,busy,onBack,onSave}:{det
    {cashKind&&<label className="field"><span>المبلغ المصحح (ج.م)</span><input inputMode="decimal" required value={cash} onChange={e=>setCash(e.target.value)} /></label>}
    <label className="field"><span>سبب التصحيح</span><textarea required minLength={5} maxLength={500} value={reason} onChange={e=>setReason(e.target.value)} /></label>
    {error&&<p className="error" role="alert">{error}</p>}<div className="filters"><button className="btn primary" disabled={busy}>مراجعة التصحيح</button><button type="button" className="btn ghost" disabled={busy} onClick={onBack}>رجوع</button></div>
-  </form>:<div aria-label="مراجعة التصحيح"><p><strong>السبب:</strong> {review.reason}</p>
+  </form>:<div aria-label="مراجعة التصحيح" className="reveal-target" ref={reviewPanel.ref} tabIndex={-1}><p><strong>السبب:</strong> {review.reason}</p>
    {review.lines.map(x=>{const l=detail.lines.find(y=>y.id===x.lineId)!;return <p key={x.lineId}>{l.name}: تصحيح {qtyM(x.correctedMilli)} · إضافة للمخزن {qtyM(x.returnedMilli)} {l.unit} {l.unitSize} {x.stockKind==='error'?'(لم تخرج والخصم خطأ)':x.stockKind==='returned'?'(رجعت فعلًا)':''}</p>;})}
    <p>قيمة تخفيض البيعة: {cashP(correctionAmount)}</p>{review.cash&&<p>{review.cash.kind==='error'?'سُجل خطأ ولم يُستلم':'رُد للعميل بالفعل'}: {cashP(review.cash.amountPiasters)}</p>}
    <p><strong>قبل:</strong> {account(detail.balancePiasters)} · <strong>بعد:</strong> {account(projected)}</p>

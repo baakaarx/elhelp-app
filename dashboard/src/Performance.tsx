@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 import LocationName from './LocationName';
 import { movementStatus } from './locationStatus';
@@ -20,20 +20,25 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
     from: current?.from ?? daysAgo(6),
     to: value,
   }));
-  const [data, setData] = useState<KpiResponse | null>(null);
+  const key = `${from}:${to}`;
+  const currentKey = useRef(key); currentKey.current = key;
+  const requestId = useRef(0);
+  const [result, setResult] = useState<{ key: string; data: KpiResponse } | null>(null);
+  const data = result?.key === key ? result.data : null;
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     if (!timezone) return;
-    setLoading(true); setError('');
-    try { setData(await api<KpiResponse>(`/api/kpis?from=${from}&to=${to}`)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحميل المؤشرات.'); }
-    finally { setLoading(false); }
+    const id = ++requestId.current;
+    setLoading(true); setError(''); setResult(null);
+    try { const data = await api<KpiResponse>(`/api/kpis?from=${from}&to=${to}`); if (id === requestId.current && currentKey.current === key) setResult({ key, data }); }
+    catch (e) { if (id === requestId.current && currentKey.current === key) setError(e instanceof Error ? e.message : 'تعذر تحميل المؤشرات.'); }
+    finally { if (id === requestId.current && currentKey.current === key) setLoading(false); }
   }, [from, to, timezone]);
 
-  useEffect(() => { if (timezone) void load(); }, [load, timezone]);
+  useEffect(() => { if (timezone) void load(); return () => { requestId.current++; }; }, [load, timezone]);
 
   const rows = useMemo(() => [...(data?.rows ?? [])].sort((a, b) => b.visits - a.visits || b.distanceMeters - a.distanceMeters), [data]);
   const totals = useMemo(() => rows.reduce((acc, row) => ({
@@ -76,6 +81,8 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
         <button className="btn primary sm" onClick={() => void exportExcel()} disabled={exporting || !timezone}>{exporting ? 'جارٍ التصدير…' : 'تصدير Excel (.xlsx)'}</button>
         {error && <p className="error" role="alert">{error}</p>}
       </div>
+      {!data && !error && <p role="status">جارٍ تحميل البيانات للفترة المختارة…</p>}
+      {data && <>
       <div className="stats">
         <div className="card stat"><span className="muted small">إجمالي الزيارات</span><strong>{formatNumber(totals.visits)}</strong><small className="muted">{formatNumber(totals.dailyReports)} تقرير يومي</small></div>
         <div className="card stat"><span className="muted small">المسافة المقطوعة</span><strong>{formatNumber(totals.distanceMeters / 1000)} كم</strong><small className="muted">تقديرية</small></div>
@@ -111,6 +118,7 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
           المسافة تُستبعد منها النقاط الضعيفة الدقة، وهي تقديرية.
         </p>
       </div>
+      </>}
     </section>
   );
 }

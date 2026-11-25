@@ -1,3 +1,4 @@
+import { useReveal } from './useReveal';
 import DashboardIcon from './DashboardIcon';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { io, type Socket } from 'socket.io-client';
@@ -41,6 +42,8 @@ export default function App() {
   const [alerts, setAlerts] = useState<ManagerAlert[]>([]);
   const [idleReports, setIdleReports] = useState<IdleReport[]>([]);
   const [tab, setTab] = useState<Tab>('live');
+  const pageHeader = useReveal<HTMLElement>();
+  const navigate = (next:Tab) => {setTab(next);pageHeader.reveal();};
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionJump, setSelectionJump] = useState(0);
   const [selectedIdleId, setSelectedIdleId] = useState<string | null>(null);
@@ -273,7 +276,7 @@ export default function App() {
           {tabs.map((item, index) => (
             <div className="nav-entry" key={item.id}>
             {(index === 0 || index === 4 || index === 7) && <span className="nav-section">{index === 0 ? 'المتابعة' : index === 4 ? 'إدارة العمل' : 'الفريق والإعدادات'}</span>}
-            <button className={tab === item.id ? 'nav-item active' : 'nav-item'} aria-current={tab === item.id ? 'page' : undefined} onClick={() => setTab(item.id)}>
+            <button className={tab === item.id ? 'nav-item active' : 'nav-item'} aria-current={tab === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}>
               <DashboardIcon name={item.id} /><span className="nav-label">{item.label}</span>
               {item.id === 'reports' && overview && (overview.sentOrders ?? 0) > 0 && <em className="badge warn">{formatNumber(overview.sentOrders ?? 0)}</em>}
               {item.id === 'live' && warnCount > 0 && <em className="badge warn">{formatNumber(warnCount)}</em>}
@@ -287,7 +290,7 @@ export default function App() {
         </div>
       </aside>
       <main className="content">
-        <header className="topbar">
+        <header className="topbar reveal-target" ref={pageHeader.ref} tabIndex={-1}>
           <div>
             <p className="topbar-eyebrow">الهلب جروب <span> / </span> لوحة الإدارة</p>
             <h1>{tabs.find(t => t.id === tab)?.label}</h1>
@@ -430,7 +433,7 @@ export default function App() {
         {tab === 'warehouses' && <Warehouses userId={user.id} />}
         {tab === 'staff' && <Staff />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
-        {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={setTab} timezone={overview?.timezone} />}
+        {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={navigate} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
     </div>
@@ -562,38 +565,42 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إنشاء حساب المهندس.'); }
     finally { setCreatingRep(false); }
   }
+  const regionForm = useReveal<HTMLFormElement>();
+  const passwordPanel = useReveal<HTMLDivElement>();
   const [regionFor, setRegionFor] = useState<Rep | null>(null);
   const [regionValue, setRegionValue] = useState('');
   const [savingRegion, setSavingRegion] = useState(false);
+  const [regionError, setRegionError] = useState('');
   async function saveRegion(event: FormEvent) {
     event.preventDefault();
-    if (!regionFor || !regionValue.trim()) { setError('اكتب منطقة المهندس.'); return; }
-    setSavingRegion(true);
+    if (!regionFor || !regionValue.trim()) { setRegionError('اكتب منطقة المهندس.'); return; }
+    setRegionError('');setSavingRegion(true);
     try {
       await patch(`/api/reps/${regionFor.id}`, { region: regionValue.trim() });
       setCreatedReps(current => current.map(rep => rep.id === regionFor.id ? { ...rep, region: regionValue.trim() } : rep));
       setRegionFor(null); setError(''); await onChange();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر حفظ المنطقة.'); }
+    } catch (e) { setRegionError(e instanceof Error ? e.message : 'تعذر حفظ المنطقة.'); }
     finally { setSavingRegion(false); }
   }
-  const regionButton = (rep: Rep) => <button className="btn ghost sm" onClick={() => { setRegionFor(rep); setRegionValue(rep.region || ''); setError(''); }}>تعديل المنطقة</button>;
+  const regionButton = (rep: Rep) => <button className="btn ghost sm" onClick={() => { setRegionFor(rep); setRegionValue(rep.region || ''); setRegionError(''); setError(''); regionForm.reveal(); }}>تعديل المنطقة</button>;
   // A representative who forgets their password cannot sign in and cannot be emailed: the
   // manager has to hand out a new one. Kept inline instead of a browser prompt so the field is
   // masked and the rule (ten characters) is visible while typing.
   const [passwordFor, setPasswordFor] = useState<{ id: string; name: string } | null>(null);
   const [passwordValue, setPasswordValue] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
   async function savePassword() {
     if (!passwordFor) return;
-    if (passwordValue.trim().length < 10) { setError('كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.'); return; }
-    setSavingPassword(true);
+    if (passwordValue.trim().length < 10) { setPasswordError('كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.'); return; }
+    setPasswordError('');setSavingPassword(true);
     try {
       await post(`/api/reps/${passwordFor.id}/password`, { password: passwordValue.trim() });
       setError('');
       setPasswordFor(null);
       setPasswordValue('');
       onChange();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تغيير كلمة المرور.'); }
+    } catch (e) { setPasswordError(e instanceof Error ? e.message : 'تعذر تغيير كلمة المرور.'); }
     finally { setSavingPassword(false); }
   }
   /*
@@ -630,7 +637,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
       onConfirm={() => removeRep(rep)} />
   );
   const passwordButton = (rep: Rep) => (
-    <button className="btn ghost sm" onClick={() => { setError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); }}>كلمة المرور</button>
+    <button className="btn ghost sm" onClick={() => { setError(''); setPasswordError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); passwordPanel.reveal(); }}>كلمة المرور</button>
   );
   const deviceButton = (rep: Rep) => (rep as any).deviceId ? (
     <button className="btn ghost sm" onClick={() => void resetDevice(rep)}>فك ربط الجهاز</button>
@@ -750,18 +757,20 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
               </ul>
             </>
           )}
-          {regionFor && <form className="panel" onSubmit={event => void saveRegion(event)}>
+          {regionFor && <form className="panel reveal-target" ref={regionForm.ref} tabIndex={-1} onSubmit={event => void saveRegion(event)}>
             <h4>منطقة {regionFor.name}</h4>
+            {regionError && <p className="error" role="alert">{regionError}</p>}
             <div className="filters"><label className="field inline"><span>المنطقة الجديدة</span><input required maxLength={80} value={regionValue} onChange={event => setRegionValue(event.target.value)} /></label>
             <button className="btn primary sm" disabled={savingRegion}>حفظ المنطقة</button><button type="button" className="btn ghost sm" onClick={() => setRegionFor(null)}>إلغاء</button></div>
           </form>}
           {passwordFor && (
-            <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
+            <div className="panel reveal-target" ref={passwordPanel.ref} tabIndex={-1} style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
               <h4 className="panel-title">كلمة مرور جديدة لـ {passwordFor.name}</h4>
               <p className="muted small">
                 اكتبها له بنفسك بأمان — مفيش استرجاع بالبريد. تغييرها يخرج كل أجهزته من الحساب فورًا،
                 فالوردية المفتوحة عليه تتقفل.
               </p>
+              {passwordError && <p className="error" role="alert">{passwordError}</p>}
               <div className="filters">
                 <label className="field inline">
                   <span>كلمة المرور</span>

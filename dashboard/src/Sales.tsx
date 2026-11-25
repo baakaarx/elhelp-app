@@ -1,3 +1,4 @@
+import { useReveal } from './useReveal';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, post } from './api';
 import { dateTimeText } from './dates';
@@ -24,6 +25,7 @@ const err=(e:unknown)=>e instanceof Error?e.message:'حصل خطأ. حاول ت�
 type Pending = {path:string; body:unknown; kind:'sale'|'receipt'|'opening'|'correction'};
 export default function Sales({timezone,userId}:{timezone?:string;userId:string}) {
   const pendingKey=`mandoub.sales.pending.${userId}`;
+  const operationPanel=useReveal<HTMLDivElement>();
   const [pending,setPending]=useState<Pending|null>(()=>{try {const raw=localStorage.getItem(pendingKey);return raw?JSON.parse(raw) as Pending:null;}catch{return null;}});
   const sending=useRef(false);
   const [view,setView]=useState<'summary'|'prices'|'advanced'>('summary');
@@ -65,7 +67,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
       }
       try {
         localStorage.setItem(pendingKey,JSON.stringify(operation));
-        setPending(operation);
+        setPending(operation);operationPanel.reveal();
         await post(operation.path,operation.body);
         localStorage.removeItem(pendingKey);setPending(null);
       } catch(e) {
@@ -88,12 +90,12 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
     if(!validLines || !Number.isFinite(paidValue) || paidValue<0 || paidValue>total || !hasInputPrecision(paid,2)){setError('راجع الكميات والأسعار والمبلغ المدفوع: الكمية حتى ٣ أرقام عشرية، والمبالغ حتى رقمين.');return;}
     if(mode==='direct' && (lines.some(l=>!l.productId) || new Set(lines.map(l=>l.productId)).size!==lines.length)){setError('اختار كل صنف مرة واحدة.');return;}
     if(mode==='order' && !selectedOrder){setError('اختار طلبية مرسلة.');return;}
-    setReview('sale');
+    setReview('sale');operationPanel.reveal();
   }
   function entry(event:FormEvent,kind:'receipt'|'opening'){event.preventDefault();setError('');setMessage('');const value=parse(kind==='receipt'?receiptAmount:openingAmount);
     if(!Number.isFinite(value)||value<0||value>1_000_000_000||(kind==='receipt'&&value===0)||!hasInputPrecision(kind==='receipt'?receiptAmount:openingAmount,2)){setError('اكتب مبلغ صحيح بالجنيه والقرش.');return;}
     if(kind==='receipt' && value>(report?.debtors.find(c=>c.id===receiptCustomer)?.due??0)){setError('الدفعة أكبر من المبلغ المسجّل على العميل.');return;}
-    setReview(kind);
+    setReview(kind);operationPanel.reveal();
   }
   async function confirmReview(){if(!review)return;setError('');setMessage('');setBusy(true);
     try {
@@ -110,7 +112,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   }
   async function showStatement(salesOffset=0,receiptsOffset=0){if(!statementCustomer)return;setStatementBusy(true);setError('');try{setStatement(await api<Statement>(`/api/sales/statement/${encodeURIComponent(statementCustomer)}?salesOffset=${salesOffset}&receiptsOffset=${receiptsOffset}`));}catch(e){setStatement(null);setError(err(e));}finally{setStatementBusy(false);}}
   async function openDetail(type:'sale'|'receipt',id:string,mode:'invoice'|'correction') {setError('');setMessage('');setBusy(true);try {
-    const d=await api<Detail>(`/api/sales/corrections/${type}/${encodeURIComponent(id)}`);setDetail(d);setDetailMode(mode);
+    const d=await api<Detail>(`/api/sales/corrections/${type}/${encodeURIComponent(id)}`);setDetail(d);setDetailMode(mode);operationPanel.reveal();
   }catch(e){setError(err(e));}finally{setBusy(false);}}
   async function saveCorrection(values:CorrectionPayload) {if(!detail)return;setError('');setBusy(true);try{
     await sendOperation({path:`/api/sales/corrections/${detail.type}/${encodeURIComponent(detail.record.id)}`,body:{id:crypto.randomUUID(),...values},kind:'correction'});
@@ -126,7 +128,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
       {view==='summary'&&!pending&&!review&&!detailMode&&!needsRefresh&&<button className="btn primary" onClick={()=>{setShowSale(!showSale);setError('');setMessage('');}}>{showSale?'إغلاق':'تسجيل فاتورة'}</button>}
     </div></header>
     {error&&<p className="error" role="alert">{error}</p>}{message&&<p className="ok-text" role="status">{message}</p>}
-    {pending?<div className="panel"><h3>عملية محتاجة تأكيد</h3><p>الاتصال وقف قبل ما نتأكد من حفظ {pending.kind==='sale'?'الفاتورة':pending.kind==='receipt'?'الدفعة':pending.kind==='correction'?'التصحيح':'المديونية القديمة'}. اضغط تأكيد العملية لإعادة إرسال نفس الطلب بأمان، من غير تكرار.</p><button className="btn primary" disabled={busy} onClick={()=>void retryPending()}>تأكيد العملية</button></div>:needsRefresh?<div className="panel"><h3>لازم نحدّث الأرقام الأول</h3><p>العملية اتحفظت، لكن الأرقام المعروضة ممكن تكون قديمة. حدّثها قبل أي عملية جديدة.</p><button className="btn primary" disabled={loading} onClick={()=>void load()}>تحديث الأرقام</button></div>:loading&&!options?<p>جارٍ التحميل…</p>:!options||!report?<button className="btn ghost sm" onClick={()=>void load()}>حاول تاني</button> :review?<div className="panel" aria-label="مراجعة العملية"><h3>راجع البيانات قبل الحفظ</h3>
+    {pending?<div className="panel reveal-target" tabIndex={-1} ref={operationPanel.ref}><h3>عملية محتاجة تأكيد</h3><p>الاتصال وقف قبل ما نتأكد من حفظ {pending.kind==='sale'?'الفاتورة':pending.kind==='receipt'?'الدفعة':pending.kind==='correction'?'التصحيح':'المديونية القديمة'}. اضغط تأكيد العملية لإعادة إرسال نفس الطلب بأمان، من غير تكرار.</p><button className="btn primary" disabled={busy} onClick={()=>void retryPending()}>تأكيد العملية</button></div>:needsRefresh?<div className="panel"><h3>لازم نحدّث الأرقام الأول</h3><p>العملية اتحفظت، لكن الأرقام المعروضة ممكن تكون قديمة. حدّثها قبل أي عملية جديدة.</p><button className="btn primary" disabled={loading} onClick={()=>void load()}>تحديث الأرقام</button></div>:loading&&!options?<p>جارٍ التحميل…</p>:!options||!report?<button className="btn ghost sm" onClick={()=>void load()}>حاول تاني</button> :review?<div className="panel reveal-target" ref={operationPanel.ref} tabIndex={-1} aria-label="مراجعة العملية"><h3>راجع البيانات قبل الحفظ</h3>
       {review==='sale'?<>
         <p><strong>العميل:</strong> {options.customers.find(c=>c.id===customerId)?.name} {options.customers.find(c=>c.id===customerId)?.phone} · رقم {customerId.slice(-6)}</p>
         <p><strong>المخزن:</strong> {options.warehouses.find(w=>w.id===warehouseId)?.name}</p>
@@ -141,7 +143,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         {review==='receipt'?<>{!options.customers.find(c=>c.id===receiptCustomer)?.hasOpening&&<p className="notice">المديونية القديمة للعميل لسه ما اتسجلتش؛ الباقي المسجّل قد لا يكون الرصيد الحقيقي.</p>}<p><strong>الباقي المسجّل قبل الدفعة:</strong> {cash(report.debtors.find(c=>c.id===receiptCustomer)?.due??0)}</p><p><strong>الدفعة:</strong> {cash(parse(receiptAmount))} · <strong>الباقي بعدها:</strong> {cash(Math.round(((report.debtors.find(c=>c.id===receiptCustomer)?.due??0)-parse(receiptAmount))*100)/100)}</p></>:<><p><strong>المديونية القديمة:</strong> {cash(parse(openingAmount))}</p><p className="notice">تتسجل مرة واحدة ولا يمكن تعديلها من الشاشة. تأكد إنها لا تشمل البيعات المسجلة هنا.</p></>}
       </>}
       <div className="filters"><button className="btn primary" disabled={busy} onClick={()=>void confirmReview()}>تأكيد وحفظ</button><button className="btn ghost" disabled={busy} onClick={()=>{setReview(null);setError('');}}>رجوع للتعديل</button></div>
-    </div>:detail&&detailMode==='invoice'?<SaleInvoice key={detail.version} detail={detail} timezone={timezone} onRefresh={setDetail} onBack={()=>{setDetail(null);setDetailMode(null);}}/>:detail&&detailMode==='correction'?<SaleCorrection key={`${detail.type}:${detail.record.id}:${detail.revision}`} detail={detail} timezone={timezone} busy={busy} onBack={()=>{setDetail(null);setDetailMode(null);}} onSave={saveCorrection}/>:view==='advanced'?<><button className="btn ghost sm" onClick={()=>{setView('prices');void load();}}>رجوع للتسعير</button><Products timezone={timezone} /></>:view==='prices'?<>
+    </div>:detail&&detailMode==='invoice'?<div className="reveal-target" tabIndex={-1} ref={operationPanel.ref}><SaleInvoice key={detail.version} detail={detail} timezone={timezone} onRefresh={setDetail} onBack={()=>{setDetail(null);setDetailMode(null);}}/></div>:detail&&detailMode==='correction'?<div className="reveal-target" tabIndex={-1} ref={operationPanel.ref}><SaleCorrection key={`${detail.type}:${detail.record.id}:${detail.revision}`} detail={detail} timezone={timezone} busy={busy} onBack={()=>{setDetail(null);setDetailMode(null);}} onSave={saveCorrection}/></div>:view==='advanced'?<><button className="btn ghost sm" onClick={()=>{setView('prices');void load();}}>رجوع للتسعير</button><Products timezone={timezone} /></>:view==='prices'?<>
       <form className="panel" onSubmit={savePrice}><h3>تعديل سعر صنف</h3><div className="work-form">
         <label className="field"><span>الصنف</span><select required value={priceProduct} onChange={e=>selectPrice(e.target.value,priceTier)}><option value="">اختار الصنف</option>{options.products.map(p=><option key={p.id} value={p.id}>{p.name} · {p.unit} {p.unitSize}</option>)}</select></label>
         <label className="field"><span>نوع السعر</span><select required value={priceTier} onChange={e=>selectPrice(priceProduct,e.target.value)}><option value="">اختار نوع السعر</option>{options.tiers.filter(t=>t.active).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
