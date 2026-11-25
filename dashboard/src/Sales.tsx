@@ -8,8 +8,8 @@ import SaleCorrection, {type CorrectionPayload} from './SaleCorrection';
 
 type Customer = { id:string;name:string;phone:string;priceTierId:string|null;hasOpening:number };
 type Product = { id:string;name:string;unit:string;unitSize:string };
-type OrderLine = {productId:string;name:string;qty:number;price:number;unit:string;unitSize:string};
-type Options = {customers:Customer[];statementCustomers:{id:string;name:string;phone:string;active:number}[];products:Product[];warehouses:{id:string;name:string}[];reps:{id:string;name:string;region:string}[];prices:{productId:string;tierId:string;price:number}[];tiers:{id:string;name:string;active:number}[];orders:{id:string;customerId:string;customerName:string;total:number;pricedAt:number;repName:string;lines:OrderLine[]}[]};
+type OrderLine = {productId:string;name:string;qty:number;price:number|null;unit:string;unitSize:string;notes:string};
+type Options = {customers:Customer[];statementCustomers:{id:string;name:string;phone:string;active:number}[];products:Product[];warehouses:{id:string;name:string}[];reps:{id:string;name:string;region:string}[];prices:{productId:string;tierId:string;price:number}[];tiers:{id:string;name:string;active:number}[];orders:{id:string;customerId:string;customerName:string;status:'sent'|'priced';notes:string;total:number|null;sentAt:number;pricedAt:number|null;repName:string;lines:OrderLine[]}[]};
 type Report = {count:number;sales:number;collected:number;due:number;credit:number;creditors:{id:string;name:string;credit:number}[];debtors:{id:string;name:string;phone:string;due:number}[];latest:{id:string;orderId:string|null;customerName:string;warehouseName:string;total:number;paid:number;createdAt:number;corrected:number}[];payments:{customerName:string;amount:number;createdAt:number;corrected:number}[];soldItems:{name:string;unit:string;unitSize:string;qty:number;amount:number}[];stock:{warehouseId:string;warehouseName:string;productId:string;productName:string;unit:string;unitSize:string;qty:number|null}[]};
 type Statement={customer:{name:string;phone:string};opening:{amount:number;actorName:string;createdAt:number}|null;balance:number;due:number;credit:number;moreSales:boolean;moreReceipts:boolean;salesOffset:number;receiptsOffset:number;sales:{id:string;total:number;paid:number;warehouseName:string;actorName:string;repName:string;repSource:string;repDeleted:number;createdAt:number;corrected:boolean;lines:{name:string;unit:string;unitSize:string;qty:number;price:number;amount:number}[]}[];receipts:{id:string;amount:number;actorName:string;createdAt:number;corrected:boolean}[]};
 type Line = {key:string;productId:string;qty:string;price:string;priceEdited:boolean};
@@ -41,7 +41,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const load=useCallback(async()=>{setLoading(true);try {const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);setOptions(o);setReport(r);setStatement(null);setNeedsRefresh(false);setError('');}catch(e){setError(err(e));}finally{setLoading(false);}},[]);
   useEffect(()=>{void load();},[load]);
   const selectedOrder=options?.orders.find(o=>o.id===orderId);
-  const currentLines = mode==='order' ? (selectedOrder?.lines??[]).map(l=>({qty:l.qty,price:l.price})) : lines.map(l=>({qty:parse(l.qty),price:parse(l.price)}));
+  const currentLines = mode==='order' && selectedOrder?.status==='priced' ? selectedOrder.lines.map(l=>({qty:l.qty,price:l.price ?? NaN})) : lines.map(l=>({qty:parse(l.qty),price:parse(l.price)}));
   const validLines=currentLines.length>0 && currentLines.every(l=>Number.isFinite(l.qty)&&l.qty>0&&l.qty<=100_000&&Math.abs(l.qty*1000-Math.round(l.qty*1000))<0.00001&&Number.isFinite(l.price)&&l.price>=0&&l.price<=1_000_000_000&&Math.abs(l.price*100-Math.round(l.price*100))<0.00001);
   const total=validLines?currentLines.reduce((sum,l)=>sum+Number((BigInt(Math.round(l.qty*1000))*BigInt(Math.round(l.price*100))+500n)/1000n),0)/100:0;
   const paidValue=parse(paid);
@@ -81,11 +81,11 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
     await sendOperation(pending);setReview(null);setDetail(null);setDetailMode(null);saleRequest.current='';receiptRequest.current='';openingRequest.current='';
     setShowSale(false);setRepChoice('');setLines([emptyLine()]);setPaid('');setOrderId('');setReceiptCustomer('');setReceiptAmount('');setOpeningCustomer('');setOpeningAmount('');
     await refreshAfter('اتأكدنا من العملية واتحدّثت الأرقام.');
-  }catch(e){setError(err(e));}finally{setBusy(false);}}
+  }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}setError(err(e));}finally{setBusy(false);}}
   function saveSale(event:FormEvent) {event.preventDefault();setError('');setMessage('');
     if(!validLines || !Number.isFinite(paidValue) || paidValue<0 || paidValue>total || Math.abs(paidValue*100-Math.round(paidValue*100))>0.00001){setError('راجع الكميات والأسعار والمبلغ المدفوع.');return;}
     if(mode==='direct' && (lines.some(l=>!l.productId) || new Set(lines.map(l=>l.productId)).size!==lines.length)){setError('اختار كل صنف مرة واحدة.');return;}
-    if(mode==='order' && (!selectedOrder || Math.round(selectedOrder.total*100)!==Math.round(total*100))){setError('إجمالي الطلبية المتسعّرة مختلف عن حساب البيعة بالقرش. راجع المسؤول قبل التسجيل.');return;}
+    if(mode==='order' && (!selectedOrder || (selectedOrder.status==='priced' && (selectedOrder.total===null || Math.round(selectedOrder.total*100)!==Math.round(total*100))))){setError('إجمالي الطلبية المتسعّرة مختلف عن حساب البيعة بالقرش. راجع المسؤول قبل التسجيل.');return;}
     setReview('sale');
   }
   function entry(event:FormEvent,kind:'receipt'|'opening'){event.preventDefault();setError('');setMessage('');const value=parse(kind==='receipt'?receiptAmount:openingAmount);
@@ -96,7 +96,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   async function confirmReview(){if(!review)return;setError('');setMessage('');setBusy(true);
     try {
       if(review==='sale'){
-        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:[]}:{repId:repChoice==='none'?null:repChoice,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parse(l.price)}))})};
+        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:selectedOrder?.status==='sent'?lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parse(l.price)})):[]}:{repId:repChoice==='none'?null:repChoice,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parse(l.price)}))})};
         await sendOperation({path:'/api/sales',body,kind:'sale'});saleRequest.current='';setPaid('');setOrderId('');setLines([emptyLine()]);setShowSale(false);setRepChoice('');setReview(null);await refreshAfter('البيعة اتسجلت واتخصمت من المخزن.');
       } else {
         const ref=review==='receipt'?receiptRequest:openingRequest;
@@ -104,7 +104,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         ref.current='';if(review==='receipt'){setReceiptAmount('');setReceiptCustomer('');}else{setOpeningAmount('');setOpeningCustomer('');}
         const success=review==='receipt'?'الدفعة اتحفظت.':'المديونية القديمة اتحفظت.';setReview(null);await refreshAfter(success);
       }
-    }catch(e){setError(err(e));}finally{setBusy(false);}
+    }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}setError(err(e));}finally{setBusy(false);}
   }
   async function showStatement(salesOffset=0,receiptsOffset=0){if(!statementCustomer)return;setStatementBusy(true);setError('');try{setStatement(await api<Statement>(`/api/sales/statement/${encodeURIComponent(statementCustomer)}?salesOffset=${salesOffset}&receiptsOffset=${receiptsOffset}`));}catch(e){setStatement(null);setError(err(e));}finally{setStatementBusy(false);}}
   async function openDetail(type:'sale'|'receipt',id:string,mode:'invoice'|'correction') {setError('');setMessage('');setBusy(true);try {
@@ -129,10 +129,11 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         <p><strong>العميل:</strong> {options.customers.find(c=>c.id===customerId)?.name} {options.customers.find(c=>c.id===customerId)?.phone} · رقم {customerId.slice(-6)}</p>
         <p><strong>المخزن:</strong> {options.warehouses.find(w=>w.id===warehouseId)?.name}</p>
         <p><strong>المهندس:</strong> {mode==='order'?selectedOrder?.repName:repChoice==='none'?'بدون مهندس':options.reps.find(r=>r.id===repChoice)?.name}</p>
-        {mode==='order'&&selectedOrder&&<p><strong>الطلبية:</strong> {dateTimeText(selectedOrder.pricedAt,timezone)} · رقم {selectedOrder.id.slice(-8)}</p>}
-        <ul className="sale-order-lines">{(mode==='order'?selectedOrder?.lines??[]:lines.map(l=>{const p=options.products.find(x=>x.id===l.productId);return {productId:l.productId,name:p?.name??'',unit:p?.unit??'',unitSize:p?.unitSize??'',qty:parse(l.qty),price:parse(l.price)};})).map(l=><li key={l.productId}><strong>{l.name}</strong> · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} للوحدة</li>)}</ul>
+        {mode==='order'&&selectedOrder&&<p><strong>الطلبية:</strong> {dateTimeText(selectedOrder.sentAt,timezone)} · رقم {selectedOrder.id.slice(-8)}</p>}
+        <ul className="sale-order-lines">{(mode==='order'&&selectedOrder?.status==='priced'?selectedOrder.lines.map(l=>({...l,price:l.price??NaN})):lines.map(l=>{const p=mode==='order'?selectedOrder?.lines.find(x=>x.productId===l.productId):options.products.find(x=>x.id===l.productId);return {productId:l.productId,name:p?.name??'',unit:p?.unit??'',unitSize:p?.unitSize??'',qty:parse(l.qty),price:parse(l.price)};})).map(l=><li key={l.productId}><strong>{l.name}</strong> · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} للوحدة{mode==='order'&&selectedOrder?.status==='sent'&&` · ترشيح المهندس: ${qtyText(selectedOrder.lines.find(x=>x.productId===l.productId)!.qty)}`}</li>)}</ul>
+        {mode==='order'&&selectedOrder?.status==='sent'&&selectedOrder.lines.some(l=>!lines.some(x=>x.productId===l.productId))&&<p className="notice">أصناف مستبعدة من البيعة: {selectedOrder.lines.filter(l=>!lines.some(x=>x.productId===l.productId)).map(l=>l.name).join('، ')}. ترشيح المهندس الأصلي محفوظ.</p>}
         <p><strong>الإجمالي: {cash(total)} · المدفوع الآن: {cash(paidValue)} · الباقي من البيعة: {cash(Math.round((total-paidValue)*100)/100)}</strong></p>
-        {!options.customers.find(c=>c.id===customerId)?.hasOpening&&<p className="notice">المديونية القديمة للعميل لسه ما اتسجلتش؛ الباقي المسجّل قد لا يكون الرصيد الحقيقي.</p>}{mode==='direct'&&options.orders.some(o=>o.customerId===customerId)&&<p className="notice">تأكد إن البيعة دي مش نفس طلبية متسعّرة للعميل.</p>}<p className="notice">بعد التأكيد هيتخصم المخزون، والبيعة لا يمكن تعديلها من الشاشة. راجع العميل والأصناف والمبلغ كويس.</p>
+        {!options.customers.find(c=>c.id===customerId)?.hasOpening&&<p className="notice">المديونية القديمة للعميل لسه ما اتسجلتش؛ الباقي المسجّل قد لا يكون الرصيد الحقيقي.</p>}{mode==='direct'&&options.orders.some(o=>o.customerId===customerId)&&<p className="notice">تأكد إن البيعة دي مش نفس طلبية مرسلة للعميل.</p>}<p className="notice">بعد التأكيد هيتخصم المخزون، والبيعة لا يمكن تعديلها من الشاشة. راجع العميل والأصناف والمبلغ كويس.</p>
       </>:<>
         <p><strong>العميل:</strong> {(review==='receipt'?report.debtors.find(c=>c.id===receiptCustomer):options.customers.find(c=>c.id===openingCustomer))?.name} · رقم {(review==='receipt'?receiptCustomer:openingCustomer).slice(-6)}</p>
         {review==='receipt'?<>{!options.customers.find(c=>c.id===receiptCustomer)?.hasOpening&&<p className="notice">المديونية القديمة للعميل لسه ما اتسجلتش؛ الباقي المسجّل قد لا يكون الرصيد الحقيقي.</p>}<p><strong>الباقي المسجّل قبل الدفعة:</strong> {cash(report.debtors.find(c=>c.id===receiptCustomer)?.due??0)}</p><p><strong>الدفعة:</strong> {cash(parse(receiptAmount))} · <strong>الباقي بعدها:</strong> {cash(Math.round(((report.debtors.find(c=>c.id===receiptCustomer)?.due??0)-parse(receiptAmount))*100)/100)}</p></>:<><p><strong>المديونية القديمة:</strong> {cash(parse(openingAmount))}</p><p className="notice">تتسجل مرة واحدة ولا يمكن تعديلها من الشاشة. تأكد إنها لا تشمل البيعات المسجلة هنا.</p></>}
@@ -148,20 +149,31 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
       <button className="btn ghost sm" onClick={()=>setView('advanced')}>إدارة الأصناف وأنواع الأسعار</button>
     </>:<>
       {showSale&&<form className="panel" onSubmit={saveSale}><h3>تسجيل بيعة</h3><p className="muted small">تأكيد البيعة بيخصم الكمية من المخزن. التسعير لوحده مش بيعة.</p><div className="work-form">
-        <label className="field"><span>طريقة البيع</span><select value={mode} onChange={e=>{setMode(e.target.value as typeof mode);setOrderId('');saleRequest.current='';}}><option value="direct">بيعة مباشرة</option><option value="order">من طلبية متسعّرة</option></select></label>
-        {mode==='order'&&<label className="field"><span>الطلبية</span><select required value={orderId} onChange={e=>{const o=options.orders.find(x=>x.id===e.target.value);setOrderId(e.target.value);setCustomerId(o?.customerId||'');saleRequest.current='';}}><option value="">اختار طلبية</option>{options.orders.map(o=><option key={o.id} value={o.id}>{o.customerName} · {dateTimeText(o.pricedAt,timezone)} · {cash(o.total)} · {o.id.slice(-8)}</option>)}</select></label>}
+        <label className="field"><span>طريقة البيع</span><select value={mode} onChange={e=>{setMode(e.target.value as typeof mode);setOrderId('');saleRequest.current='';}}><option value="direct">بيعة مباشرة</option><option value="order">من طلبية مرسلة</option></select></label>
+        {mode==='order'&&<label className="field"><span>الطلبية</span><select required value={orderId} onChange={e=>{const o=options.orders.find(x=>x.id===e.target.value);setOrderId(e.target.value);setCustomerId(o?.customerId||'');setLines(o?.status==='sent'?o.lines.map(l=>({key:l.productId,productId:l.productId,qty:String(l.qty),price:suggested(l.productId,o.customerId),priceEdited:false})):[emptyLine()]);saleRequest.current='';}}><option value="">اختار طلبية</option>{options.orders.map(o=><option key={o.id} value={o.id}>{o.customerName} · {o.repName} · {dateTimeText(o.sentAt,timezone)} · {o.status==='priced'?`متسعّرة ${cash(o.total??0)}`:'مرسلة بدون تسعير'} · {o.id.slice(-8)}</option>)}</select></label>}
         <label className="field"><span>العميل</span><select required value={customerId} disabled={mode==='order'} onChange={e=>{setCustomerId(e.target.value);setLines(ls=>ls.map(l=>l.priceEdited?l:{...l,price:suggested(l.productId,e.target.value)}));saleRequest.current='';}}><option value="">اختار العميل</option>{options.customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.phone?` · ${c.phone}`:''} · رقم {c.id.slice(-6)}</option>)}</select></label>
         {mode==='direct'?<label className="field"><span>المهندس المسؤول</span><select required value={repChoice} onChange={e=>{setRepChoice(e.target.value);saleRequest.current='';}}><option value="">اختار المهندس أو بدون مهندس</option><option value="none">بدون مهندس</option>{options.reps.map(r=><option key={r.id} value={r.id}>{r.name} · {r.region} · {r.id.slice(-6)}</option>)}</select></label>:selectedOrder&&<p><strong>مهندس الطلبية:</strong> {selectedOrder.repName}</p>}
         <label className="field"><span>المخزن</span><select required value={warehouseId} onChange={e=>{setWarehouseId(e.target.value);saleRequest.current='';}}><option value="">اختار المخزن</option>{options.warehouses.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
       </div>
-      {mode==='direct'&&customerId&&options.orders.some(o=>o.customerId===customerId)&&<p className="notice">للعميل طلبيات متسعّرة لم تُسجّل كبيعة. لو دي نفس البيعة، اختار «من طلبية متسعّرة» عشان ما تتكررش.</p>}
+      {mode==='direct'&&customerId&&options.orders.some(o=>o.customerId===customerId)&&<p className="notice">للعميل طلبيات مرسلة لم تُسجّل كبيعة. لو دي نفس البيعة، اختار «من طلبية مرسلة» عشان ما تتكررش.</p>}
       {mode==='direct'?<div className="stack">{lines.map((l,i)=><div className="sale-line" key={l.key}>
         <label className="field"><span>الصنف {formatNumber(i+1)}</span><select required value={l.productId} onChange={e=>changeLine(l.key,{productId:e.target.value,price:suggested(e.target.value,customerId),priceEdited:false})}><option value="">اختار الصنف</option>{options.products.map(p=><option key={p.id} value={p.id}>{p.name} · {p.unit} {p.unitSize}</option>)}</select></label>
         <label className="field"><span>الكمية</span><input required inputMode="decimal" value={l.qty} onChange={e=>changeLine(l.key,{qty:e.target.value})} /></label>
         <label className="field"><span>سعر الوحدة (ج.م)</span><input required inputMode="decimal" value={l.price} onChange={e=>changeLine(l.key,{price:e.target.value,priceEdited:true})} /></label>
         {lines.length>1&&<button type="button" className="btn ghost sm" onClick={()=>{setLines(v=>v.filter(x=>x.key!==l.key));saleRequest.current='';}}>إزالة الصنف</button>}
-      </div>)}<button type="button" className="btn ghost sm" onClick={()=>{setLines(v=>[...v,emptyLine()]);saleRequest.current='';}}>إضافة صنف</button></div>:selectedOrder&&<ul className="sale-order-lines">{selectedOrder.lines.map(l=><li key={l.productId}>{l.name} · {qtyText(l.qty)} {l.unit} · {cash(l.price)} للوحدة</li>)}</ul>}
-      {mode==='order'&&selectedOrder&&!validLines&&<p className="error">الطلبية فيها سعر بأكثر من رقمين عشريين أو كمية بأكثر من ٣ أرقام عشرية، ومينفعش نسجلها كبيعة من غير مراجعة المسؤول.</p>}
+      </div>)}<button type="button" className="btn ghost sm" onClick={()=>{setLines(v=>[...v,emptyLine()]);saleRequest.current='';}}>إضافة صنف</button></div>:selectedOrder&&<div className="stack">
+        {selectedOrder.notes&&<p className="notice">ملاحظة المهندس: {selectedOrder.notes}</p>}
+        {selectedOrder.status==='priced'?<ul className="sale-order-lines">{selectedOrder.lines.map(l=><li key={l.productId}>{l.name} · {qtyText(l.qty)} {l.unit} {l.unitSize} · {l.price===null?'بدون سعر':cash(l.price)} للوحدة</li>)}</ul>:<>
+          <p className="muted small">كمية المهندس للترشيح فقط ومحفوظة كما أرسلها. عدّل الكمية الفعلية والسعر، أو استبعد صنفًا لم يُبع.</p>
+          {selectedOrder.lines.map(l=>{const edit=lines.find(x=>x.productId===l.productId);return <div className="sale-line" key={l.productId}>
+            <label><input type="checkbox" checked={!!edit} onChange={e=>{saleRequest.current='';setLines(prev=>e.target.checked?[...prev,{key:l.productId,productId:l.productId,qty:String(l.qty),price:suggested(l.productId,selectedOrder.customerId),priceEdited:false}]:prev.filter(x=>x.productId!==l.productId));}} /> بيع {l.name}</label>
+            <span>ترشيح المهندس: {qtyText(l.qty)} {l.unit} {l.unitSize}{l.notes?` · ${l.notes}`:''}</span>
+            {edit&&<><label className="field"><span>الكمية المباعة · {l.name}</span><input required inputMode="decimal" value={edit.qty} onChange={e=>changeLine(edit.key,{qty:e.target.value})} /></label>
+            <label className="field"><span>سعر الوحدة · {l.name} (ج.م)</span><input required inputMode="decimal" value={edit.price} onChange={e=>changeLine(edit.key,{price:e.target.value,priceEdited:true})} /></label></>}
+          </div>;})}
+        </>}
+      </div>}
+      {mode==='order'&&selectedOrder&&!validLines&&<p className="error">اختار صنفًا على الأقل واكتب كمية صحيحة وسعرًا بالجنيه والقرش لكل صنف مباع.</p>}
       <p className="muted small">قيمة كل صنف بتتقرب لأقرب قرش قبل جمع الإجمالي.</p>
       <div className="work-form"><label className="field"><span>المدفوع دلوقتي (ج.م)</span><input required inputMode="decimal" value={paid} onChange={e=>{setPaid(e.target.value);saleRequest.current='';}} placeholder="اكتب 0 لو كله آجل" /></label></div>
       <p><strong>الإجمالي: {validLines?cash(total):'اكتب الكميات والأسعار'}</strong>{validLines&&Number.isFinite(paidValue)&&paidValue<=total?` · الباقي: ${cash(Math.round((total-paidValue)*100)/100)}`:''}</p>

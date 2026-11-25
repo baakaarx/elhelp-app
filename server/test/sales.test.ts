@@ -121,3 +121,59 @@ test('two simultaneous submissions of the same sale id record and deduct only on
  assert.deepEqual(results.map(r=>r.status).sort(),[200,201]);assert.equal(await stock(),before-1);
  const statement=(await client.get(`/api/sales/statement/${cust}`).set(auth)).body;assert.equal(statement.sales.length,1);assert.equal(statement.due,1);
 });
+
+test('sent recommendations become one sale with office quantities, preserving the original and excluding sold orders from queues',async()=>{
+ const rep=(await client.post('/api/reps').set(auth).send({name:'مهندس ترشيح',email:'recommend@sales.test',password:'Password12345!',region:'طنطا'})).body.user.id;
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل ترشيح',repId:rep})).body.customer.id;
+ const second=(await client.post('/api/warehouse/products').set(auth).send({name:'ترشيح غير مباع',category:'other',unit:'عبوة'})).body.product.id;
+ const repAuth={Authorization:`Bearer ${(await client.post('/api/auth/login').send({email:'recommend@sales.test',password:'Password12345!'})).body.token}`};
+ const orderId=randomUUID();
+ assert.equal((await client.post('/api/orders').set(repAuth).send({id:orderId,customerId:cust,notes:'راجع المزارع',lines:[{productId:prod,qty:3,notes:'ترشيح'},{productId:second,qty:7}],send:true})).status,201);
+ const opts=(await client.get('/api/sales/options').set(auth)).body;assert.equal(opts.orders.find((o:any)=>o.id===orderId).status,'sent');
+ assert.ok((await client.get('/api/orders?status=sent').set(auth)).body.orders.some((o:any)=>o.id===orderId));
+ const before=await stock();
+ const base={id:randomUUID(),customerId:cust,warehouseId:wh,orderId,paid:2,lines:[{productId:prod,qty:1.5,price:4.25}]};
+ assert.equal((await client.post('/api/sales').set(repAuth).send(base)).status,403);
+ assert.equal((await client.get('/api/sales/options').set(repAuth)).status,403);
+ assert.equal((await client.post('/api/sales').set(auth).send({...base,id:randomUUID(),lines:[{productId:randomUUID(),qty:1,price:1}]})).body.code,'ORDER_LINES');
+ assert.equal((await client.post('/api/sales').set(auth).send({...base,id:randomUUID(),lines:[]})).body.code,'ORDER_LINES');
+ assert.equal((await client.post('/api/sales').set(auth).send({...base,id:randomUUID(),lines:[{productId:prod,qty:1,price:1},{productId:second,qty:1,price:1}]})).body.code,'NO_OPENING');
+ assert.equal(await stock(),before);
+ const results=await Promise.all([client.post('/api/sales').set(auth).send(base),client.post('/api/sales').set(auth).send(base)]);
+ assert.deepEqual(results.map(r=>r.status).sort(),[200,201]);
+ assert.equal((await client.post('/api/sales').set(auth).send({...base,id:randomUUID()})).body.code,'ORDER_SOLD');
+ assert.equal((await client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:1},{productId:second,price:1}]})).body.code,'ORDER_SOLD');
+ assert.equal(await stock(),before-1.5);
+ const statement=(await client.get(`/api/sales/statement/${cust}`).set(auth)).body;
+ assert.equal(statement.sales.length,1);assert.equal(statement.sales[0].repName,'مهندس ترشيح');assert.equal(statement.sales[0].total,6.38);assert.equal(statement.due,4.38);assert.equal(statement.sales[0].lines[0].qty,1.5);
+ assert.ok(!(await client.get('/api/sales/options').set(auth)).body.orders.some((o:any)=>o.id===orderId));
+ assert.ok(!(await client.get('/api/orders?status=sent').set(auth)).body.orders.some((o:any)=>o.id===orderId));
+ assert.ok(!(await client.get('/api/work-priorities').set(auth)).body.waitingOrders.some((o:any)=>o.id===orderId));
+ const original=(await client.get('/api/orders').set(repAuth)).body.orders.find((o:any)=>o.id===orderId);
+ assert.equal(original.sold,true);assert.equal(original.status,'sent');assert.deepEqual(original.lines.map((l:any)=>l.qty),[3,7]);assert.ok(!JSON.stringify(original).includes('price'));
+});
+
+test('pricing and selling the same unpriced order cannot both commit',async()=>{
+ const rep=(await client.post('/api/reps').set(auth).send({name:'مهندس تزامن',email:'race-recommend@sales.test',password:'Password12345!',region:'طنطا'})).body.user.id;
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل تزامن ترشيح',repId:rep})).body.customer.id;
+ const repAuth={Authorization:`Bearer ${(await client.post('/api/auth/login').send({email:'race-recommend@sales.test',password:'Password12345!'})).body.token}`};
+ const orderId=randomUUID();await client.post('/api/orders').set(repAuth).send({id:orderId,customerId:cust,lines:[{productId:prod,qty:1}],send:true});
+ const before=await stock();
+ const [price,sale]=await Promise.all([
+  client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:20}]}),
+  client.post('/api/sales').set(auth).send({id:randomUUID(),orderId,customerId:cust,warehouseId:wh,paid:0,lines:[{productId:prod,qty:1,price:10}]})
+ ]);
+ assert.ok((price.status===200&&sale.status===409&&sale.body.code==='ORDER_CHANGED')||(sale.status===201&&price.status===409&&price.body.code==='ORDER_SOLD'));
+ assert.equal(await stock(),before-(sale.status===201?1:0));
+});
+
+test('competing sale IDs for the same recommendation deduct stock only once',async()=>{
+ const rep=(await client.post('/api/reps').set(auth).send({name:'مهندس بيع متزامن',email:'race-two-sales@sales.test',password:'Password12345!',region:'طنطا'})).body.user.id;
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل بيع متزامن',repId:rep})).body.customer.id;
+ const repAuth={Authorization:`Bearer ${(await client.post('/api/auth/login').send({email:'race-two-sales@sales.test',password:'Password12345!'})).body.token}`};
+ const orderId=randomUUID();await client.post('/api/orders').set(repAuth).send({id:orderId,customerId:cust,lines:[{productId:prod,qty:1}],send:true});
+ const before=await stock();const body={orderId,customerId:cust,warehouseId:wh,paid:0,lines:[{productId:prod,qty:1,price:5}]};
+ const results=await Promise.all([client.post('/api/sales').set(auth).send({...body,id:randomUUID()}),client.post('/api/sales').set(auth).send({...body,id:randomUUID()})]);
+ assert.deepEqual(results.map(r=>r.status).sort(),[201,409]);assert.equal(results.find(r=>r.status===409)?.body.code,'ORDER_SOLD');
+ assert.equal(await stock(),before-1);assert.equal((await client.get(`/api/sales/statement/${cust}`).set(auth)).body.sales.length,1);
+});

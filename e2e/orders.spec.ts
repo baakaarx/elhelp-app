@@ -21,7 +21,7 @@ test.describe('طابور الطلبيات', () => {
     await expect(page.getByRole('heading', { level: 2, name: 'الطلبيات', exact: true })).toBeVisible();
 
     const row = page.locator('.orders-table tbody tr').filter({ hasText: 'عميل اختبار الطلبية' }).first();
-    await expect(row).toContainText('مستنية التسعير');
+    await expect(row).toContainText('مستنية المكتب');
     await expect(row).toContainText('يوريا ٤٦٪');
     await expect(row).toContainText('أحمد حسن');
     await row.getByRole('button', { name: 'افتح للتسعير' }).click();
@@ -39,11 +39,11 @@ test.describe('طابور الطلبيات', () => {
     await price.fill('1150');
 
     await sheet.getByRole('button', { name: /ختم التسعير/ }).click();
-    await expect(page.getByText(/مفيش طلبية مستنية التسعير/)).toBeVisible();
+    await expect(page.getByText(/مفيش طلبية مستنية المكتب/)).toBeVisible();
     await expect(ordersTab(page).locator('em.badge')).toHaveCount(0);
     await page.getByRole('tab', { name: 'متسعّرة' }).click();
     const closedRow = page.locator('.orders-table tbody tr').filter({ hasText: 'عميل اختبار الطلبية' }).first();
-    await expect(closedRow).toContainText('اتقفلت');
+    await expect(closedRow).toContainText('متسعّرة');
     await expect(closedRow).toContainText('٢٬٣٠٠ ج.م');
     await closedRow.getByRole('button', { name: 'عرض السطور' }).click();
     // No inputs on a closed sheet — only what was stamped.

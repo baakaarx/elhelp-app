@@ -10,7 +10,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   const managerTab = manager.locator('button.nav-item').filter({ hasText: 'الزيارات والطلبيات' });
   await managerTab.click();
   await manager.getByRole('tab', { name: /الطلبيات/ }).click();
-  await expect(manager.getByText(/مفيش طلبية مستنية التسعير/)).toBeVisible();
+  await expect(manager.getByText(/مفيش طلبية مستنية المكتب/)).toBeVisible();
   await page.setViewportSize({ width: 420, height: 850 });
   await page.goto(`${E2E_API}/app/`);
   await page.getByPlaceholder('rep@company.com').fill(E2E_REPS[0].email);
@@ -32,7 +32,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   expect(result.status()).toBe(201);
   const body = await result.json();
   expect(body.order.status).toBe('sent');
-  await expect(page.getByText('الطلبية وصلت للمكتب وبقت مستنية التسعير.')).toBeVisible();
+  await expect(page.getByText('الطلبية وصلت للمكتب وبقت مستنية المراجعة.')).toBeVisible();
   expect(body.order.lines[0].qty).toBe(3);
   expect(body.order.lines[0]).not.toHaveProperty('price');
   expect(body.order).not.toHaveProperty('total');

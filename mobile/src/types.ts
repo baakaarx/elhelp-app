@@ -183,6 +183,7 @@ export interface OrderInput {
 /** اللي بيرجع للتليفون: أصناف وكميات وحالة بس — مفيش سعر ولا إجمالي على شاشة المندوب. */
 export interface OrderView {
   id: string;
+  sold: boolean;
   status: 'draft' | 'sent' | 'priced';
   notes: string;
   customerName: string;

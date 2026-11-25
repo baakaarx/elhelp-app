@@ -159,7 +159,7 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
       />
       <CheckInSheet visible={checkInOpen} onClose={() => setCheckInOpen(false)} field={field} user={user} />
       <OrderSheet visible={orderOpen} onClose={() => setOrderOpen(false)} field={field} visit={orderVisit}
-        onSubmitted={result => setOrderMessage(result === 'queued' ? 'الطلبية اتحفظت على الموبايل وهتتزامن لما الشبكة ترجع.' : 'الطلبية وصلت للمكتب وبقت مستنية التسعير.')} />
+        onSubmitted={result => setOrderMessage(result === 'queued' ? 'الطلبية اتحفظت على الموبايل وهتتزامن لما الشبكة ترجع.' : 'الطلبية وصلت للمكتب وبقت مستنية المراجعة.')} />
       <CheckOutSheet visit={checkOutVisit} onClose={() => setCheckOutVisit(null)} field={field} />
     </>
   );

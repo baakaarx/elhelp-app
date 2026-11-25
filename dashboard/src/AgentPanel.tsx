@@ -55,7 +55,7 @@ export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:Ma
       <ProductTable title="الأصناف الأعلى مبيعًا بعدد العبوات" rows={data.productsByQty} note="الترتيب بعدد الوحدات المسجلة لكل صنف؛ حجم ونوع العبوة قد يختلفان من صنف لآخر." />
     </>}
     <details className="panel"><summary><strong>أولويات الشغل الحالية</strong></summary>{priorityError&&<p className="error">{priorityError}</p>}{!priorities?<p className="muted">جارٍ تحميل الأولويات…</p>:<>
-      <h3>المبيعات</h3><p>{formatNumber(priorities.orderCount)} طلبية مستنية التسعير · {formatNumber(priorities.unassignedCustomers)} عميل شغال من غير مهندس.</p>
+      <h3>المبيعات</h3><p>{formatNumber(priorities.orderCount)} طلبية مستنية المكتب · {formatNumber(priorities.unassignedCustomers)} عميل شغال من غير مهندس.</p>
       {priorities.waitingOrders.length>0&&<ul>{priorities.waitingOrders.map(o=><li key={o.id}>{o.customerName} · {o.repName} · {ago(o.sentAt)}</li>)}</ul>}
       <div className="filters"><button className="btn ghost sm" onClick={()=>onNavigate('reports')}>افتح الطلبيات والزيارات</button><button className="btn ghost sm" onClick={()=>onNavigate('customers')}>افتح العملاء</button></div>
       <h3>الميدان</h3><p>{formatNumber(priorities.openVisitCount)} زيارة مفتوحة · {formatNumber(fieldAlerts.length)} تنبيه ميداني حالي.</p>{fieldAlerts.length>0&&<ul>{fieldAlerts.slice(0,5).map(a=><li key={a.id}>{a.repName?`${a.repName}: `:''}{a.title}</li>)}</ul>}

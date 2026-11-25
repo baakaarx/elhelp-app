@@ -36,6 +36,7 @@ export interface OrderRow {
   customerPhone: string;
   visitId: string | null;
   status: 'draft' | 'sent' | 'priced';
+  sold: boolean;
   notes: string;
   recordedOffline: boolean;
   createdAt: number;
@@ -52,7 +53,7 @@ export interface OrderRow {
 
 type Filter = 'sent' | 'priced' | 'all';
 const FILTERS: Array<{ id: Filter; label: string }> = [
-  { id: 'sent', label: 'مستنية التسعير' },
+  { id: 'sent', label: 'مستنية المكتب' },
   { id: 'priced', label: 'متسعّرة' },
   { id: 'all', label: 'الكل' },
 ];
@@ -170,7 +171,7 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
       ) : orders.length === 0 ? (
         <p className="empty">
           {filter === 'sent'
-            ? 'مفيش طلبية مستنية التسعير — أول ما مندوب يبعث واحدة من الموبايل هتظهر هنا على طول.'
+            ? 'مفيش طلبية مستنية المكتب — أول ما مندوب يبعث واحدة من الموبايل هتظهر هنا على طول.'
             : 'مفيش طلبيات مسجلة لحد دلوقتي.'}
         </p>
       ) : (
@@ -200,25 +201,27 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
                       </td>
                       <td><small className="mono">{lineSummary(order)}</small></td>
                       <td className="mono">
-                        {order.status === 'priced' && order.total !== null
+                        {order.sold && order.status === 'sent' ? <span className="muted small">مبلغ البيعة في المبيعات</span> : order.status === 'priced' && order.total !== null
                           ? <strong>{money(order.total)}</strong>
-                          : order.status === 'sent' && open && openPlan
+                          : order.status === 'sent' && !order.sold && open && openPlan
                             ? <>{money(openPlan.total)} {openPlan.missing.length ? <span className="muted small">· {formatNumber(openPlan.missing.length)} من غير سعر</span> : <span className="muted small">· جاهز</span>}</>
                             : <span className="pill warn">لسه من غير مبلغ</span>}
                       </td>
                       <td>
-                        {order.status === 'priced'
-                          ? <span className="pill ok">اتقفلت · {order.pricedByName ?? 'المكتب'} · {order.pricedAt ? dateTimeText(order.pricedAt, timezone) : ''}</span>
+                        {order.sold
+                          ? <span className="pill ok">اتسجلت كبيعة</span>
+                          : order.status === 'priced'
+                          ? <span className="pill ok">متسعّرة · لم تُسجّل كبيعة · {order.pricedByName ?? 'المكتب'} · {order.pricedAt ? dateTimeText(order.pricedAt, timezone) : ''}</span>
                           : order.status === 'sent'
-                            ? <span className="pill warn">مستنية التسعير</span>
+                            ? <span className="pill warn">مستنية المكتب</span>
                             : <span className="pill">مسودة عند المندوب</span>}
                       </td>
                       <td>
                         <button
-                          className={open ? 'btn ghost sm' : order.status === 'sent' ? 'btn primary sm' : 'btn ghost sm'}
+                          className={open ? 'btn ghost sm' : order.status === 'sent' && !order.sold ? 'btn primary sm' : 'btn ghost sm'}
                           onClick={() => { setOpenId(open ? '' : order.id); setError(''); }}
                         >
-                          {open ? 'قفل الورقة' : order.status === 'sent' ? 'افتح للتسعير' : 'عرض السطور'}
+                          {open ? 'قفل الورقة' : order.status === 'sent' && !order.sold ? 'افتح للتسعير' : 'عرض السطور'}
                         </button>
                       </td>
                     </tr>
@@ -240,7 +243,7 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
                                     {line.notes ? ` · ${line.notes}` : ''}
                                   </small>
                                 </span>
-                                {order.status === 'priced' ? (
+                                {order.status === 'priced' || order.sold ? (
                                   <span className="mono">{typeof line.price === 'number' ? `${money(line.price)}${line.tierId ? '' : ' باليد'}` : '—'}</span>
                                 ) : (
                                   <label className="price-field">
@@ -260,7 +263,7 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
                                 )}
                               </div>
                             ))}
-                            {order.status === 'sent' && openPlan && (
+                            {order.status === 'sent' && !order.sold && openPlan && (
                               <div className="confirm-pair">
                                 <button className="btn primary sm" disabled={busy !== '' || openPlan.missing.length > 0} onClick={() => void stampClosed(order)}>
                                   {busy === order.id ? 'جارٍ الختم…' : `ختم التسعير · ${money(openPlan.total)}`}
@@ -285,7 +288,7 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
         <button className="btn ghost sm" disabled={loading || !hasMore} onClick={() => { setLoading(true); setOpenId(''); setOffset(offset + pageSize); }}>التالي</button>
       </div>}
       <p className="muted small">
-        المهندس ما بيشوفش الأسعار. بعد ختم التسعير الطلبية بتتقفل، ولو فيها غلطة بلّغ المسؤول.
+        المهندس ما بيشوفش الأسعار. التسعير وحده مش بيعة؛ تقدر تسجّل بيعة من طلبية مرسلة مباشرة من شاشة المبيعات.
       </p>
     </section>
   );

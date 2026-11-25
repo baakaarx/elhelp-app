@@ -300,13 +300,13 @@ export function createApp(overrides: Partial<Config> = {}) {
   const adminOnly = requireAuth(store, 'admin');
   app.use('/api/warehouse', auth, createWarehouseRouter(store));
   app.use('/api/staff', adminOnly, createStaffRouter(store, id => io.in(`user:${id}`).disconnectSockets(true)));
-  app.use('/api/sales', adminOnly, createSalesRouter(store,config.timezone));
+  app.use('/api/sales', adminOnly, createSalesRouter(store,config.timezone,orderId=>{io.to('admins').emit('order',{id:orderId,sold:true});invalidateKpis();broadcast();}));
   app.use('/api/sales-insights', adminOnly, createInsightsRouter(store,config.timezone));
   app.get('/api/work-priorities', adminOnly, (_req, res) => {
     const waitingOrders = store.all(`SELECT o.id,c.name AS customerName,u.name AS repName,o.sent_at AS sentAt
       FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id
-      WHERE o.status='sent' ORDER BY o.sent_at,o.id LIMIT 10`);
-    const orderCount = Number(store.get("SELECT COUNT(*) AS c FROM orders WHERE status='sent'")?.c || 0);
+      WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.sent_at,o.id LIMIT 10`);
+    const orderCount = Number(store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c || 0);
     const unassignedCustomers = Number(store.get('SELECT COUNT(*) AS c FROM customers WHERE active=1 AND rep_id IS NULL')?.c || 0);
     const openVisits = store.all(`SELECT v.id,v.customer_name AS customerName,u.name AS repName,v.checked_in_at AS checkedInAt
       FROM visits v JOIN users u ON u.id=v.user_id WHERE v.status='open' ORDER BY v.checked_in_at LIMIT 10`);
@@ -511,7 +511,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   function overview() {
     const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY created_at, name").map(repSnapshot);
     // The orders tab's badge: what the field sent and the office has not opened yet.
-    const sentOrders = (store.get("SELECT COUNT(*) AS c FROM orders WHERE status='sent'")?.c as number) || 0;
+    const sentOrders = (store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c as number) || 0;
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
     // The dashboard needs the same staleness threshold the alerts use, otherwise the map and
@@ -2115,6 +2115,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       c.name AS customerName, c.phone AS customerPhone, c.price_tier_id AS customerTierId, t.name AS customerTierName,
       u.name AS repName, u.color AS repColor,
       o.status, o.notes, o.total, o.recorded_offline AS recordedOffline,
+      EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) AS sold,
       o.created_at AS createdAt, o.updated_at AS updatedAt, o.sent_at AS sentAt,
       o.priced_at AS pricedAt, pb.name AS pricedByName
     FROM orders o
@@ -2132,7 +2133,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!row) return undefined;
     const withPrices = audience === 'office';
     const shaped: Record<string, any> = {
-      id: row.id, customerId: row.customerId, status: row.status, notes: row.notes,
+      id: row.id, customerId: row.customerId, status: row.status, sold:Boolean(row.sold), notes: row.notes,
       customerName: row.customerName, recordedOffline: Boolean(row.recordedOffline),
       createdAt: row.createdAt, sentAt: row.sentAt ?? null,
       lines: orderLineRows(id, withPrices),
@@ -2318,6 +2319,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const status = req.query.status === undefined ? '' : String(req.query.status);
     if (status && !['draft', 'sent', 'priced'].includes(status)) { res.status(400).json({ error: 'حالة الطلبية غير صحيحة.' }); return; }
     if (status) { where.push('o.status=?'); params.push(status); }
+    if (isAdmin && status==='sent') where.push('NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)');
     if (isAdmin && typeof req.query.repId === 'string' && req.query.repId) { where.push('o.user_id=?'); params.push(String(req.query.repId)); }
     const rawLimit = req.query.limit === undefined ? '100' : String(req.query.limit);
     const rawOffset = req.query.offset === undefined ? '0' : String(req.query.offset);
@@ -2359,6 +2361,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const order = store.get(`SELECT o.id, o.status, o.customer_id AS customerId, c.price_tier_id AS customerTierId, c.name AS customerName
       FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`, String(req.params.id)) as Record<string, any> | undefined;
     if (!order) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
+    if(store.get('SELECT 1 FROM office_sales_v1 WHERE order_id=?',order.id)){res.status(409).json({error:'الطلبية اتسجّلت كبيعة قبل كده؛ راجع حساب العميل.',code:'ORDER_SOLD'});return;}
     if (order.status === 'priced') { res.status(409).json({ error: 'الطلبية متسعّرة ومقفولة — الرقم اتكتب في الدفتر مرة واحدة. لو فيها غلط، بلّغ المسؤول.', code: 'ORDER_PRICED' }); return; }
     if (order.status !== 'sent') { res.status(409).json({ error: 'الطلبية لسه ما اتبعتتش من الميدان.', code: 'ORDER_NOT_SENT' }); return; }
     const stored = orderLineRows(order.id, false);
@@ -2387,17 +2390,22 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     total = Math.round(total * 100) / 100;
     const now = Date.now();
-    store.transaction(() => {
+    try { store.transaction(() => {
+      // A sale and a price stamp can race from different office screens. The check
+      // belongs inside the same transaction as the price writes.
+      if(store.get('SELECT 1 FROM office_sales_v1 WHERE order_id=?',order.id)) throw Error('ORDER_SOLD');
       for (const line of stored) {
         const edit = byProduct.get(String(line.productId))!;
         store.run('UPDATE order_lines SET price=?, tier_id=? WHERE id=?', edit.price, edit.tierId ?? null, line.id);
       }
-      // The second status gate rides in the WHERE: the office opening the same order on two screens
-      // prices it once, and the losing press is told so instead of stamping a second total.
       const closed = store.run(`UPDATE orders SET status='priced', total=?, priced_at=?, priced_by=?, updated_at=? WHERE id=? AND status='sent'`,
         total, now, res.locals.user.id, now, order.id);
-      if (!Number(closed.changes || 0)) throw Object.assign(new Error('DOUBLE_CLOSE'), { alreadyPriced: true });
-    });
+      if (!Number(closed.changes || 0)) throw Error('DOUBLE_CLOSE');
+    }); } catch(e) {
+      const code=(e as Error).message;
+      if(code==='ORDER_SOLD'||code==='DOUBLE_CLOSE'){res.status(409).json({error:code==='ORDER_SOLD'?'الطلبية اتسجّلت كبيعة قبل كده؛ راجع حساب العميل.':'الطلبية اتسعّرت قبل كده؛ حدّث البيانات.',code});return;}
+      throw e;
+    }
     store.audit(res.locals.user.id, 'order.price', { orderId: order.id, customerName: order.customerName, lines: stored.length, total });
     io.to('admins').emit('order', orderRow(order.id, 'office'));
     invalidateKpis(); broadcast();
@@ -2662,10 +2670,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     });
     // An order that waits is an agreement nobody wrote up: warn level, because a day of these is a
     // week of invoices the accounting team will chase by phone.
-    const orderQueue = store.get("SELECT COUNT(*) AS c, MIN(sent_at) AS oldest FROM orders WHERE status='sent'") as { c: number; oldest: number | null } | undefined;
+    const orderQueue = store.get("SELECT COUNT(*) AS c, MIN(o.sent_at) AS oldest FROM orders o WHERE o.status='sent' AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)") as { c: number; oldest: number | null } | undefined;
     if (Number(orderQueue?.c || 0) > 0) {
       alerts.push({ id: 'orders:queue', level: 'warn', code: 'orders_awaiting_pricing',
-        title: 'طلبيات مستنية التسعير', detail: `${Number(orderQueue!.c)} طلبية اتبعتت من الميدان ولسه ما فتحتش.`, at: Number(orderQueue!.oldest ?? now) });
+        title: 'طلبيات مستنية المكتب', detail: `${Number(orderQueue!.c)} طلبية اتبعتت من الميدان ولسه ما اتسعّرتش ولا اتسجلت كبيعة.`, at: Number(orderQueue!.oldest ?? now) });
     }
     const staleReviews = store.get('SELECT COUNT(*) AS c FROM reports WHERE status=? AND created_at<?', 'new', now - 24 * 3600000)!;
     if (Number(staleReviews.c) > 0) {

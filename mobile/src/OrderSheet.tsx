@@ -203,7 +203,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
         <Text style={styles.label}>طلبياتك السابقة</Text>
         {historyError ? <Text style={styles.notice}>{historyError}</Text> : null}
         {history.slice(0, 10).map(order => <Card key={order.id} tone="plain">
-          <Text style={styles.lineName}>{order.customerName} · {order.status === 'priced' ? 'اتسعّرت' : order.status === 'sent' ? 'اتبعتت للمكتب' : 'مسودة'}</Text>
+          <Text style={styles.lineName}>{order.customerName} · {order.sold ? 'اتسجلت كبيعة' : order.status === 'priced' ? 'اتسعّرت'  : order.status === 'sent' ? 'اتبعتت للمكتب' : 'مسودة'}</Text>
           <Text style={styles.linePack}>{order.lines.map(line => `${line.productName}: ${line.qty} ${line.unit}`).join(' · ')}</Text>
         </Card>)}
       </View>

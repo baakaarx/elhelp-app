@@ -27,7 +27,7 @@ export default function Reports({ reps, onReviewed, version = 0, ordersVersion =
   }
   return <section className="page">
     <header className="page-head"><div><h2>الزيارات والطلبيات</h2><p className="muted">زيارات المهندسين والطلبيات المرسلة للمكتب.</p></div>
-      {sentOrders > 0 && <span className="pill warn">{formatNumber(sentOrders)} طلبية مستنية التسعير</span>}</header>
+      {sentOrders > 0 && <span className="pill warn">{formatNumber(sentOrders)} طلبية مستنية المكتب</span>}</header>
     <div className="tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'visits'} className={tab === 'visits' ? 'tab active' : 'tab'} onClick={() => setTab('visits')}>الزيارات ({formatNumber(visits.length)})</button>
       <button role="tab" aria-selected={tab === 'orders'} className={tab === 'orders' ? 'tab active' : 'tab'} onClick={() => setTab('orders')}>الطلبيات{sentOrders > 0 ? ` (${formatNumber(sentOrders)} مستنية)` : ''}</button>

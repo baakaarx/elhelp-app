@@ -19,7 +19,7 @@ const correctionBody=z.object({id,reason:z.string().trim().min(5).max(500),balan
   cash:z.object({kind:z.enum(['error','refund']),amountPiasters:z.number().int().positive().max(100_000_000_000)}).strict().nullable()}).strict();
 
 /** Office-only confirmed sales; a priced order is not itself a sale or a payment. */
-export function createSalesRouter(store: Store, timezone:string) {
+export function createSalesRouter(store: Store, timezone:string, onOrderSold:(orderId:string)=>void = ()=>{}) {
   const router = Router();
   const balance = (customerId: string): number => Number(store.get(`SELECT
     COALESCE((SELECT SUM(amount_piasters) FROM office_debts_v1 WHERE customer_id=?),0)
@@ -34,7 +34,7 @@ export function createSalesRouter(store: Store, timezone:string) {
   };
   const fail = (code:string) => {
     const errors:Record<string,string> = {
-      CUSTOMER:'اختار عميل شغال من القائمة.', WAREHOUSE:'اختار مخزن صحيح.', ORDER:'الطلبية مش متسعّرة أو تخص عميل تاني.',
+      CUSTOMER:'اختار عميل شغال من القائمة.', WAREHOUSE:'اختار مخزن صحيح.', ORDER:'الطلبية مش مرسلة للمكتب أو تخص عميل تاني.', ORDER_CHANGED:'الطلبية اتسعّرت أو اتغيّرت. حدّث البيانات وراجع البيعة من جديد.', ORDER_LINES:'اختار أصناف من الطلبية واكتب الكمية الفعلية وسعر المكتب.',
       ORDER_SOLD:'الطلبية دي اتسجّلت كبيعة قبل كده.', REP:'المهندس المختار غير موجود أو موقوف.', ORDER_TOTAL:'إجمالي الطلبية المتسعّرة مختلف عن حساب البيعة بالقرش. راجع المسؤول قبل التسجيل.', PRODUCT:'الصنف غير موجود أو موقوف.',
       DUPLICATE_PRODUCT:'اختار كل صنف مرة واحدة.', PRECISION:'الكمية تقبل ٣ أرقام عشرية والسعر رقمين عشريين.',
       NO_OPENING:'سجّل الرصيد الافتتاحي للصنف في المخزن الأول.', SHORT:'الكمية المطلوبة أكبر من رصيد المخزن.',
@@ -50,10 +50,10 @@ export function createSalesRouter(store: Store, timezone:string) {
     const warehouses=store.all('SELECT id,name FROM warehouses ORDER BY name COLLATE NOCASE,id');
     const reps=store.all("SELECT id,name,region FROM users WHERE role='rep' AND active=1 ORDER BY name COLLATE NOCASE,id");
     const prices=store.all('SELECT product_id AS productId,tier_id AS tierId,price FROM product_prices');
-    const orders=store.all(`SELECT o.id,o.customer_id AS customerId,c.name AS customerName,o.total,o.priced_at AS pricedAt,u.name AS repName
-      FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id WHERE o.status='priced' AND c.active=1
-      AND NOT EXISTS (SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.priced_at,o.id`);
-    const pendingOrders=orders.map(order=>({...order,lines:store.all('SELECT product_id AS productId,product_name AS name,unit,unit_size AS unitSize,qty,price FROM order_lines WHERE order_id=? ORDER BY position',order.id)}));
+    const orders=store.all(`SELECT o.id,o.customer_id AS customerId,c.name AS customerName,o.status,o.notes,o.total,o.sent_at AS sentAt,o.priced_at AS pricedAt,u.name AS repName
+      FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id WHERE o.status IN ('sent','priced') AND c.active=1
+      AND NOT EXISTS (SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.sent_at,o.id`);
+    const pendingOrders=orders.map(order=>({...order,lines:store.all('SELECT product_id AS productId,product_name AS name,unit,unit_size AS unitSize,qty,price,notes FROM order_lines WHERE order_id=? ORDER BY position',order.id)}));
     const tiers=store.all('SELECT id,name,active FROM price_tiers ORDER BY position,name COLLATE NOCASE');
     res.json({customers,statementCustomers,products,warehouses,reps,prices,tiers,orders:pendingOrders});
   });
@@ -199,14 +199,30 @@ export function createSalesRouter(store: Store, timezone:string) {
         let pricedOrderTotal: number | undefined;
         let saleRep: {id:string;name:string} | null=null;
         if (data.orderId) {
-          if(data.lines.length || data.repId) throw Error('ORDER');
-          const order=store.get("SELECT o.id,o.customer_id,o.total,o.user_id,u.name AS rep_name FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.status='priced'",data.orderId);
+          if(data.repId) throw Error('ORDER');
+          const order=store.get("SELECT o.id,o.status,o.customer_id,o.total,o.user_id,u.name AS rep_name FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.status IN ('sent','priced')",data.orderId);
           if(!order || order.customer_id!==data.customerId) throw Error('ORDER');
           if(store.get('SELECT id FROM office_sales_v1 WHERE order_id=?',data.orderId)) throw Error('ORDER_SOLD');
-          if(typeof order.total!=='number' || !Number.isFinite(order.total) || !exact(order.total,100)) throw Error('ORDER_TOTAL');
-          pricedOrderTotal=cents(order.total);
           saleRep={id:String(order.user_id),name:String(order.rep_name)};
-          lines=store.all('SELECT product_id AS productId,qty,price,product_name AS name,unit,unit_size AS unitSize FROM order_lines WHERE order_id=? ORDER BY position',data.orderId) as typeof lines;
+          const recommended=store.all('SELECT product_id AS productId,qty,price,product_name AS name,unit,unit_size AS unitSize FROM order_lines WHERE order_id=? ORDER BY position',data.orderId);
+          if(order.status==='priced') {
+            // Older office-priced orders remain frozen; never silently overwrite their agreement.
+            if(data.lines.length)throw Error('ORDER_CHANGED');
+            if(typeof order.total!=='number' || !Number.isFinite(order.total) || !exact(order.total,100)) throw Error('ORDER_TOTAL');
+            pricedOrderTotal=cents(order.total);
+            lines=recommended as typeof lines;
+          } else {
+            // Field quantities are recommendations. The office explicitly confirms actual sold
+            // quantities and prices, without altering the original order or adding other products.
+            if(!data.lines.length || new Set(data.lines.map(l=>l.productId)).size!==data.lines.length)throw Error('ORDER_LINES');
+            const byId=new Map(recommended.map(line=>[String(line.productId),line]));
+            if(data.lines.some(line=>!byId.has(line.productId)))throw Error('ORDER_LINES');
+            const actual=new Map(data.lines.map(line=>[line.productId,line]));
+            lines=recommended.filter(line=>actual.has(String(line.productId))).map(line=>{
+              const edit=actual.get(String(line.productId))!;
+              return {...edit,name:String(line.name),unit:String(line.unit),unitSize:String(line.unitSize)};
+            });
+          }
         } else {
           if (!data.lines.length) throw Error('PRODUCT');
           if(data.repId){const rep=store.get("SELECT id,name FROM users WHERE id=? AND role='rep' AND active=1",data.repId);if(!rep)throw Error('REP');saleRep={id:String(rep.id),name:String(rep.name)};}
@@ -235,7 +251,8 @@ export function createSalesRouter(store: Store, timezone:string) {
         }
         store.audit(actor.id,'sales.confirm',{saleId:data.id,customerId:data.customerId,orderId:data.orderId??null});
       });
-    } catch(e) { const code=(e as Error).message; if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    } catch(e) { const code=(e as Error).message; if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    if(data.orderId){try{onOrderSold(data.orderId);}catch(e){console.error('[sales] order notification failed',e);}}
     res.status(201).json({ok:true,duplicate:false});
   });
   router.post('/opening', (req,res) => {

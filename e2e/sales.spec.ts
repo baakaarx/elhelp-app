@@ -271,3 +271,44 @@ test('طباعة فاتورة طويلة تحافظ على كل الصفوف و�
  let all='';for(let i=1;i<=pdf.numPages;i++){const p=await pdf.getPage(i),v=p.getViewport({scale:1}),t=await p.getTextContent();for(const item of t.items)if('str' in item){all+=item.str;expect(item.transform[4]).toBeGreaterThanOrEqual(-1);expect(item.transform[4]+item.width).toBeLessThanOrEqual(v.width+1);}}
  for(let i=1;i<=35;i++)expect(all).toContain(`TEST-${String(i).padStart(2,'0')}`);
 });
+
+test('بيع من ترشيح مرسل بكميات وأسعار المكتب مع استعادة العملية بعد انقطاع',async({page})=>{
+ await signInAsManager(page);
+ const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));
+ const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const send=async(path:string,data:object,h:Record<string,string>=headers)=>{const r=await page.request.post(path,{headers:h,data});expect(r.ok(),`${path} ${await r.text()}`).toBeTruthy();return r.json();};
+ const reps=(await (await page.request.get('/api/reps',{headers})).json()).reps;
+ const rep=reps.find((r:{email:string})=>r.email===E2E_REPS[0].email);
+ const customer=(await send('/api/customers',{name:`عميل ترشيح ${Date.now()}`,repId:rep.id})).customer;
+ const warehouse=(await send('/api/warehouse/warehouses',{name:`مخزن ترشيح ${Date.now()}`})).warehouse;
+ const p=(await send('/api/warehouse/products',{name:`صنف ترشيح ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+ const excluded=(await send('/api/warehouse/products',{name:`صنف مستبعد ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+ await send('/api/warehouse/movements',{id:randomUUID(),kind:'opening',productId:p.id,toWarehouseId:warehouse.id,qty:10});
+ const login=await send('/api/auth/login',{email:E2E_REPS[0].email,password:E2E_REP_PASSWORD},{});
+ const repHeaders={'Authorization':`Bearer ${login.token}`,'X-Mandoub-Client':'rep'};
+ const orderId=randomUUID();await send('/api/orders',{id:orderId,customerId:customer.id,notes:'ملاحظة ترشيح',lines:[{productId:p.id,qty:3},{productId:excluded.id,qty:4}],send:true},repHeaders);
+ await page.getByRole('button',{name:'المبيعات',exact:true}).click();
+ await page.getByRole('button',{name:'تسجيل بيعة',exact:true}).click();
+ await page.getByRole('combobox',{name:'طريقة البيع'}).selectOption('order');
+ await page.getByRole('combobox',{name:'الطلبية'}).selectOption(orderId);
+ await expect(page.getByText('ترشيح المهندس: ٣ عبوة')).toBeVisible();
+ await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(warehouse.id);
+ await page.getByRole('checkbox',{name:`بيع ${excluded.name}`}).uncheck();
+ await page.getByRole('textbox',{name:`الكمية المباعة · ${p.name}`}).fill('1.5');
+ await page.getByRole('textbox',{name:`سعر الوحدة · ${p.name} (ج.م)`}).fill('4.25');
+ await page.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('2');
+ await page.getByRole('button',{name:'مراجعة البيعة'}).click();
+ const review=page.getByLabel('مراجعة العملية');await expect(review).toContainText('ترشيح المهندس: ٣');await expect(review).toContainText(excluded.name);await expect(review).toContainText('٦٫٣٨');
+ let dropped=false;const ids:string[]=[];
+ await page.route('**/api/sales',async route=>{if(route.request().method()!=='POST')return route.continue();ids.push(route.request().postDataJSON().id);if(!dropped){dropped=true;await route.fetch();await route.abort('failed');}else await route.continue();});
+ await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
+ await expect(page.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();
+ await page.reload();await page.getByRole('button',{name:'المبيعات',exact:true}).click();
+ await page.getByRole('button',{name:'تأكيد العملية'}).click();await expect(page.getByRole('status')).toContainText('اتأكدنا من العملية');
+ expect(ids).toHaveLength(2);expect(ids[0]).toBe(ids[1]);
+ const original=(await (await page.request.get('/api/orders',{headers:repHeaders})).json()).orders.find((o:{id:string})=>o.id===orderId);
+ expect(original.sold).toBe(true);expect(original.lines.map((l:{qty:number})=>l.qty)).toEqual([3,4]);expect(JSON.stringify(original)).not.toContain('price');
+ const statement=await (await page.request.get(`/api/sales/statement/${customer.id}`,{headers})).json();
+ expect(statement.sales).toHaveLength(1);expect(statement.sales[0].total).toBe(6.38);expect(statement.due).toBe(4.38);expect(statement.sales[0].repName).toBe(rep.name);
+ const report=await (await page.request.get('/api/sales/overview',{headers})).json();expect(report.stock.find((x:{warehouseId:string;productId:string})=>x.warehouseId===warehouse.id&&x.productId===p.id).qty).toBe(8.5);
+});
