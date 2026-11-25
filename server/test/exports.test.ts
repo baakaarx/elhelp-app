@@ -5,6 +5,7 @@ import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { tokenHash } from '../src/auth.js';
 import { localDate } from '../src/geo.js';
+import { bookCustomer } from './book.js';
 
 /** The two registers the board shows and the owner asks for on paper. */
 const config = {
@@ -27,7 +28,7 @@ async function admin() {
 async function makeRep(tag: string) {
   const email = `${tag}.${Date.now()}@export.test`;
   const adminValue = await admin();
-  const created = await client.post('/api/reps').set(auth(adminValue)).send({ name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
+  const created = await client.post('/api/reps').set(auth(adminValue)).send({ region: 'منطقة اختبار', name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const id = String(created.body.user.id);
   const token = randomBytes(32).toString('base64url');
@@ -39,7 +40,8 @@ test('the visits register exports what the board shows', async () => {
   const rep = await makeRep('register');
   await client.post('/api/shifts/start').set(auth(rep.token)).send({ consentVersion: '1.0', deviceId: rep.device, location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   const id = randomUUID();
-  await client.post('/api/visits/check-in').set(auth(rep.token)).send({ id, customerName: 'مزرعة التصدير', purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  await client.post('/api/visits/check-in').set(auth(rep.token))
+    .send({ id, customerId: bookCustomer(store, rep.id, 'مزرعة التصدير'), customerName: 'مزرعة التصدير', purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   await client.post(`/api/visits/${id}/check-out`).set(auth(rep.token)).send({ outcome: '=cmd|calc', notes: 'ملاحظة', amount: 100, location: null });
 
   const csv = await client.get(`/api/visits.csv?from=${today}&to=${today}`).set(auth(await admin()));

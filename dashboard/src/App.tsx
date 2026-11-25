@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useReveal } from './useReveal';
+import DashboardIcon from './DashboardIcon';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API_AUTH_REQUIRED_EVENT, ApiError, api, del, getToken, patch, post, setToken } from './api';
 import { dateTimeText, localDay, localDateText, timeText } from './dates';
@@ -11,19 +13,27 @@ import Reports from './Reports';
 import Performance from './Performance';
 import AgentPanel from './AgentPanel';
 import Monthly from './Monthly';
+import Customers from './Customers';
+import Sales from './Sales';
+import Warehouses from './Warehouses';
+import Staff from './Staff';
 import type { IdleReport, ManagerAlert, Overview, Rep, RepImpact, Report, RouteResponse, User, Visit } from './types';
 import ConfirmAction from './ConfirmAction';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'team' | 'account' | 'agent';
-const tabs: { id: Tab; label: string; icon: string }[] = [
-  { id: 'live', label: 'مركز العمليات', icon: '◈' },
-  { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
-  { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
-  { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
-  { id: 'team', label: 'فريق الميدان', icon: '◆' },
-  { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
-  { id: 'account', label: 'هويتي', icon: '◉' },
+type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'products' | 'team' | 'account' | 'agent' | 'warehouses' | 'staff';
+const tabs: { id: Tab; label: string }[] = [
+  { id: 'live', label: 'مركز العمليات' },
+  { id: 'monthly', label: 'السجل الشهري' },
+  { id: 'performance', label: 'مؤشرات التأثير' },
+  { id: 'reports', label: 'الزيارات والطلبيات' },
+  { id: 'customers', label: 'العملاء' },
+  { id: 'products', label: 'المبيعات' },
+  { id: 'warehouses', label: 'المخازن' },
+  { id: 'staff', label: 'حسابات المكتب' },
+  { id: 'team', label: 'فريق الميدان' },
+  { id: 'agent', label: 'المساعد الذكي' },
+  { id: 'account', label: 'هويتي' },
 ];
 
 export default function App() {
@@ -32,7 +42,12 @@ export default function App() {
   const [alerts, setAlerts] = useState<ManagerAlert[]>([]);
   const [idleReports, setIdleReports] = useState<IdleReport[]>([]);
   const [tab, setTab] = useState<Tab>('live');
+  const pageHeader = useReveal<HTMLElement>();
+  const navigate = (next:Tab) => {setTab(next);pageHeader.reveal();};
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectionJump, setSelectionJump] = useState(0);
+  const [selectedIdleId, setSelectedIdleId] = useState<string | null>(null);
+  const selectedSummaryRef = useRef<HTMLDivElement>(null);
   const [visits, setVisits] = useState<Visit[]>([]);
   // Bumped by a deletion on this screen so the list refetches now, not on the 30-second clock.
   const [visitsVersion, setVisitsVersion] = useState(0);
@@ -49,6 +64,9 @@ export default function App() {
    * submitted a daily report saw nothing until he switched tabs and came back.
    */
   const [reportsVersion, setReportsVersion] = useState(0);
+  /** Same idea for the orders queue: a send from the field must open the list, not wait for the tab to be re-entered. */
+  const [ordersVersion, setOrdersVersion] = useState(0);
+  const bumpOrders = useCallback(() => setOrdersVersion(value => value + 1), []);
   const bumpReports = useCallback(() => setReportsVersion(value => value + 1), []);
   const socketRef = useRef<Socket | null>(null);
   const liveRef = useRef(false);
@@ -60,6 +78,8 @@ export default function App() {
     setAlerts([]);
     setIdleReports([]);
     setSelectedId(null);
+    setSelectedIdleId(null);
+    setSelectionJump(0);
     setVisits([]);
     setRoute(null);
     setRouteDate('');
@@ -68,6 +88,28 @@ export default function App() {
     setError('');
   }, []);
 
+  useEffect(() => {
+    const clearValidity = (event: Event) => {
+      const field = event.target;
+      if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement) field.setCustomValidity('');
+    };
+    const explainInvalid = (event: Event) => {
+      const field = event.target;
+      if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement)) return;
+      const validity = field.validity;
+      let message = 'راجع البيانات المكتوبة.';
+      if (validity.valueMissing) message = field instanceof HTMLSelectElement ? 'اختار من القائمة.' : 'اكتب البيانات المطلوبة.';
+      else if (validity.typeMismatch && field instanceof HTMLInputElement && field.type === 'email') message = 'اكتب بريدًا إلكترونيًا صحيحًا.';
+      else if (validity.tooShort && !(field instanceof HTMLSelectElement)) message = `اكتب ${field.minLength} أحرف على الأقل.`;
+      else if (validity.tooLong && !(field instanceof HTMLSelectElement)) message = `اكتب ${field.maxLength} حرفًا على الأكثر.`;
+      else if (validity.rangeUnderflow || validity.rangeOverflow || validity.stepMismatch || validity.badInput) message = 'اكتب رقمًا صحيحًا في الحدود المسموحة.';
+      field.setCustomValidity(message);
+    };
+    document.addEventListener('invalid', explainInvalid, true);
+    document.addEventListener('input', clearValidity, true);
+    document.addEventListener('change', clearValidity, true);
+    return () => { document.removeEventListener('invalid', explainInvalid, true); document.removeEventListener('input', clearValidity, true); document.removeEventListener('change', clearValidity, true); };
+  }, []);
   useEffect(() => {
     window.addEventListener(API_AUTH_REQUIRED_EVENT, clearSession);
     return () => window.removeEventListener(API_AUTH_REQUIRED_EVENT, clearSession);
@@ -85,13 +127,13 @@ export default function App() {
         api<{ reports: IdleReport[] }>('/api/idle-reports?limit=20').catch(() => ({ reports: [] })),
       ]);
       setOverview(nextOverview);
-      setAlerts(nextAlerts.alerts);
+      setAlerts(nextAlerts.alerts.filter(alert => alert.code !== 'missing_daily_report' && alert.code !== 'stale_reviews'));
       setIdleReports(nextIdle.reports);
       setSyncedAt(Date.now());
       setError('');
       // With no live socket the poll is the only thing that can notice a new report, so the
       // reports screen follows it; when the socket is up its events do that job instead.
-      if (!liveRef.current) bumpReports();
+      if (!liveRef.current) { bumpReports(); bumpOrders(); }
     } catch (e) {
       // api() removes an expired/invalid token on 401. Move back to login as well, rather than
       // leaving the manager-looking dashboard mounted with requests that can never succeed.
@@ -101,10 +143,10 @@ export default function App() {
       }
       setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.');
     }
-  }, [bumpReports, clearSession]);
+  }, [bumpReports, bumpOrders, clearSession]);
 
   useEffect(() => {
-    if (!user || user.role !== 'admin') return;
+    if (!user || user.role !== 'admin' || user.accessScope === 'warehouse') return;
     refresh();
     const socket = io('/', { auth: { token: getToken() }, transports: ['websocket', 'polling'], reconnectionDelayMax: 5000 });
     socketRef.current = socket;
@@ -114,17 +156,18 @@ export default function App() {
     socket.on('overview', (data: Overview) => { setOverview(data); setSyncedAt(Date.now()); });
     socket.on('report', () => { bumpReports(); refresh(); });
     socket.on('daily-report', () => { bumpReports(); refresh(); });
-    socket.on('visit', () => refresh());
+    socket.on('visit', () => { bumpReports(); refresh(); });
+    socket.on('order', () => { bumpOrders(); refresh(); });
     return () => { liveRef.current = false; socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would
     // churn connections. The poll below has its own effect precisely so it can follow it.
-  }, [user, refresh, bumpReports]);
+  }, [user, refresh, bumpReports, bumpOrders]);
 
   // The polling rate depends on the live socket, and the value read when the socket effect ran
   // was always the initial `false` — so a connected dashboard kept asking three endpoints every
   // two seconds instead of every thirty. Re-creating only the timer keeps the socket untouched.
   useEffect(() => {
-    if (!user || user.role !== 'admin') return;
+    if (!user || user.role !== 'admin' || user.accessScope === 'warehouse') return;
     const poll = setInterval(refresh, connected ? 30000 : 2000);
     return () => clearInterval(poll);
   }, [user, refresh, connected]);
@@ -153,7 +196,24 @@ export default function App() {
       && serverNow - recordedAt <= limitMs;
   }).length;
   const visitStaleMinutes = reps.reduce((max, rep) => Math.max(max, rep.staleLimitMinutes ?? 0), 0);
-  const selectedIdle = useMemo(() => idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId]);
+  const selectedIdle = useMemo(() => idleReports.find(r => r.id === selectedIdleId && r.userId === selectedId) ?? idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId, selectedIdleId]);
+
+  // Alerts live above the map and team list. Selecting alone can happen entirely off-screen,
+  // especially on a phone; move focus and the viewport to the selected engineer every time.
+  function openEngineer(repId:string, eventAt?:number, idleId?:string) {
+    if (!reps.some(rep => rep.id === repId)) return false;
+    setSelectedId(repId);
+    setSelectedIdleId(idleId ?? null);
+    setRouteDate(typeof eventAt === 'number' && Number.isFinite(eventAt) ? localDay(overview?.timezone,eventAt) : '');
+    setSelectionJump(value => value + 1);
+    return true;
+  }
+  useLayoutEffect(() => {
+    if (!selectionJump || !selectedSummaryRef.current) return;
+    const summary=selectedSummaryRef.current;
+    summary.focus({preventScroll:true});
+    summary.scrollIntoView({block:'start',behavior:'auto'});
+  }, [selectionJump]);
 
   // The trail is refreshed on its own slow clock. Tying it to `overview.serverTime` meant every
   // live position update re-downloaded the selected engineer's whole day, several times a minute.
@@ -197,6 +257,11 @@ export default function App() {
   if (user === undefined) return <div className="boot">جارٍ التحقق من الجلسة…</div>;
   if (!user) return <Login onLogin={setUser} />;
   if (!isManager(user)) return <EngineerOnlyNotice />;
+  if (user.accessScope === 'warehouse') return <div className="app warehouse-app"><main className="content">
+    <header className="topbar"><div><h1>المخازن</h1><p className="muted small">{user.name}</p></div>
+      <button className="btn ghost sm" onClick={async () => { try { await logout(); } catch {} clearSession(); }}>خروج</button></header>
+    <Warehouses userId={user.id} />
+  </main></div>;
 
   return (
     <div className="app">
@@ -206,13 +271,17 @@ export default function App() {
           <div><strong>ELHELB GROUP</strong><small>شبكة الميدان · منذ 1993</small></div>
         </div>
 
-        <nav>
-          {tabs.map(item => (
-            <button key={item.id} className={tab === item.id ? 'nav-item active' : 'nav-item'} onClick={() => setTab(item.id)}>
-              <span aria-hidden="true">{item.icon}</span> {item.label}
-              {item.id === 'reports' && overview && overview.newReports > 0 && <em className="badge">{formatNumber(overview.newReports)}</em>}
+        <p className="mobile-nav-hint">اسحب القائمة للتنقل بين الصفحات <span aria-hidden="true">←</span></p>
+        <nav aria-label="التنقل الرئيسي">
+          {tabs.map((item, index) => (
+            <div className="nav-entry" key={item.id}>
+            {(index === 0 || index === 4 || index === 7) && <span className="nav-section">{index === 0 ? 'المتابعة' : index === 4 ? 'إدارة العمل' : 'الفريق والإعدادات'}</span>}
+            <button className={tab === item.id ? 'nav-item active' : 'nav-item'} aria-current={tab === item.id ? 'page' : undefined} onClick={() => navigate(item.id)}>
+              <DashboardIcon name={item.id} /><span className="nav-label">{item.label}</span>
+              {item.id === 'reports' && overview && (overview.sentOrders ?? 0) > 0 && <em className="badge warn">{formatNumber(overview.sentOrders ?? 0)}</em>}
               {item.id === 'live' && warnCount > 0 && <em className="badge warn">{formatNumber(warnCount)}</em>}
             </button>
+            </div>
           ))}
         </nav>
         <div className="sidebar-foot">
@@ -221,13 +290,14 @@ export default function App() {
         </div>
       </aside>
       <main className="content">
-        <header className="topbar">
+        <header className="topbar reveal-target" ref={pageHeader.ref} tabIndex={-1}>
           <div>
+            <p className="topbar-eyebrow">الهلب جروب <span> / </span> لوحة الإدارة</p>
             <h1>{tabs.find(t => t.id === tab)?.label}</h1>
             <p className="muted small">{dateTimeText(clock, overview?.timezone)} · {user.name}</p>
           </div>
           <div className="topbar-actions">
-            <button className="btn ghost sm" onClick={() => refresh()}>تحديث</button>
+            <button className="btn ghost sm refresh-button" onClick={() => refresh()}><DashboardIcon name="refresh" /> تحديث</button>
             <button className="btn ghost sm" onClick={async () => {
               try { await logout(); } catch { /* Local logout still wins if the API is unreachable. */ }
               clearSession();
@@ -236,17 +306,19 @@ export default function App() {
         </header>
         {error && <p className="error banner" role="alert">{error}</p>}
         {tab === 'live' && (
-          <section className="page">
-            {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} visitStaleMinutes={visitStaleMinutes} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
-            {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={repId => setSelectedId(repId)} />}
+          <section className="page live-page">
+            <div className="overview-heading"><div><span className="section-kicker">نظرة عامة</span><h2>متابعة العمل الميداني</h2><p className="muted">كل ما تحتاجه لمتابعة الفريق والطلبيات في مكان واحد.</p></div><span className="overview-status"><span className={connected ? 'status ok' : 'status'} />{connected ? 'متصل بالبث الحي' : 'وضع التحديث الدوري'}</span></div>
+            {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} visitStaleMinutes={visitStaleMinutes} onPick={openEngineer} />}
+            {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={openEngineer} />}
             <div className="stats">
-              <Stat label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
-              <Stat label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
-              <Stat label="إجمالي مسافة اليوم" value={`${formatNumber(totalKm / 1000)} كم`} hint="تقديري بعد استبعاد النقاط الضعيفة" />
-              <Stat label="بانتظار المراجعة" value={formatNumber(overview?.newReports ?? 0)} hint="تقارير ميدان ويومية" />
+              <Stat icon="signal" label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
+              <Stat icon="team" label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
+              <Stat icon="distance" label="إجمالي مسافة اليوم" value={`${formatNumber(totalKm / 1000)} كم`} hint="تقديري بعد استبعاد النقاط الضعيفة" />
+              <Stat icon="reports" label="طلبيات مستنية" value={formatNumber(overview?.sentOrders ?? 0)} hint="بانتظار تسجيل فاتورة" />
             </div>
             <div className="live-grid">
               <div className="panel map-panel">
+                <div className="map-heading"><div><h3>خريطة الفريق</h3><p className="muted small">مواقع المهندسين ومساراتهم</p></div><span className="map-heading-icon"><DashboardIcon name="distance" /></span></div>
                 <MapView reps={reps} selectedId={selectedId} route={route} live={connected} syncedAt={syncedAt} timezone={overview?.timezone} />
                 <div className="map-controls">
                   <label className="field inline">
@@ -258,12 +330,12 @@ export default function App() {
                 </div>
               </div>
               <div className="panel">
-                <h3 className="panel-title">الفريق الآن</h3>
+                <div className="team-panel-heading"><div><h3>الفريق الآن</h3><p className="muted small">اختر مهندسًا لعرض التفاصيل</p></div><span className="team-count">{formatNumber(reps.length)}</span></div>
                 <ul className="rep-list">
                   {reps.length === 0 && <li className="empty">لا يوجد مهندسون بعد. أضفهم من صفحة الفريق.</li>}
                   {reps.map(rep => (
                     <li key={rep.id}>
-                      <button className={selectedId === rep.id ? 'rep active' : 'rep'} onClick={() => setSelectedId(rep.id)}>
+                      <button className={selectedId === rep.id ? 'rep active' : 'rep'} onClick={() => {setSelectedIdleId(null);setSelectedId(rep.id);}}>
                         <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                         <span className="grow">
                           <strong>{rep.name}</strong>
@@ -284,11 +356,11 @@ export default function App() {
                   ))}
                 </ul>
                 {selected && (
-                  <div className="selected-summary">
+                  <div className="selected-summary" ref={selectedSummaryRef} role="region" aria-label="تفاصيل المهندس المحدد" tabIndex={-1}>
                     <h4>{selected.name}</h4>
                     <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock, staleMs, overview?.timezone)}</p>
                     <LocationName key={selected.id} location={selected.location} timezone={overview?.timezone} />
-                    {selectedIdle && <p className="muted small">آخر تبرير وقوف: {selectedIdle.reason} · {ago(selectedIdle.createdAt, clock)}</p>}
+                    {selectedIdle && <p className="muted small">{selectedIdle.id === selectedIdleId ? 'تبرير الوقوف المختار' : 'آخر تبرير وقوف'}: {selectedIdle.reason} · {ago(selectedIdle.createdAt, clock)}</p>}
                     <dl>
                       <div><dt>آخر موقع</dt><dd>{ago(selected.location?.recordedAt ?? null, clock)}</dd></div>
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
@@ -355,9 +427,13 @@ export default function App() {
         )}
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
-        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} timezone={overview?.timezone} />}
-        {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
-        {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
+        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
+        {tab === 'customers' && <Customers timezone={overview?.timezone} />}
+        {tab === 'products' && <Sales timezone={overview?.timezone} userId={user.id} />}
+        {tab === 'warehouses' && <Warehouses userId={user.id} />}
+        {tab === 'staff' && <Staff />}
+  {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
+        {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={navigate} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
     </div>
@@ -381,8 +457,9 @@ function EngineerOnlyNotice() {
   );
 }
 
-function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; visitStaleMinutes?: number; onPick: (repId?: string) => void }) {
+function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; visitStaleMinutes?: number; onPick: (repId:string, eventAt?:number) => boolean }) {
   const [open, setOpen] = useState(true);
+  const [pickError, setPickError] = useState('');
   const warn = alerts.filter(a => a.level === 'warn');
   const shown = open ? alerts : alerts.slice(0, 2);
   return (
@@ -391,6 +468,7 @@ function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { 
         <strong>تنبيهات الميدان <span className="pill warn">{formatNumber(warn.length)} مهم</span> <span className="pill">{formatNumber(alerts.length)} إجمالًا</span> <small className="muted">حد انقطاع الإشارة {formatNumber(staleMinutes)} دقيقة{visitStaleMinutes > staleMinutes ? ` · ${formatNumber(visitStaleMinutes)} دقيقة داخل زيارة مفتوحة` : ''}</small></strong>
         <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>
       </div>
+      {pickError && <p className="error" role="alert">{pickError}</p>}
       <ul>
         {shown.map(alert => (
           <li key={alert.id} className={alert.level === 'warn' ? 'alert warn' : 'alert'}>
@@ -399,7 +477,7 @@ function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { 
               <strong>{alert.title}{alert.repName ? ` · ${alert.repName}` : ''}</strong>
               <small>{alert.detail}</small>
             </div>
-            {alert.repId && <button className="btn ghost sm" onClick={() => onPick(alert.repId)}>فتح</button>}
+            {alert.repId && <button className="btn ghost sm" onClick={() => {const visitAlert=alert.code==='long_open_visit'||alert.code==='open_visit_without_shift';setPickError(onPick(alert.repId!,visitAlert ? alert.at : undefined) ? '' : 'المهندس غير ظاهر في القائمة الحالية. حدّث البيانات وحاول تاني.');}}>فتح</button>}
           </li>
         ))}
       </ul>
@@ -407,8 +485,9 @@ function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { 
   );
 }
 
-function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]; clock: number; onPick: (repId: string) => void }) {
+function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]; clock: number; onPick: (repId: string, eventAt?:number, idleId?:string) => boolean }) {
   const [open, setOpen] = useState(false);
+  const [pickError, setPickError] = useState('');
   const shown = open ? reports : reports.slice(0, 3);
   return (
     <div className="alerts-panel" role="region" aria-label="تبريرات الوقوف">
@@ -416,6 +495,7 @@ function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]
         <strong>تبريرات الوقوف <span className="pill">{formatNumber(reports.length)}</span> <small className="muted">سبب السكون المرسل من الموبايل</small></strong>
         {reports.length > 3 && <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>}
       </div>
+      {pickError && <p className="error" role="alert">{pickError}</p>}
       <ul>
         {shown.map(item => (
           <li key={item.id} className="alert">
@@ -424,7 +504,7 @@ function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]
               <strong>{item.repName}{item.durationMinutes ? ` · توقف ${formatNumber(item.durationMinutes)} دقيقة` : ''}</strong>
               <small>{item.reason} · {ago(item.createdAt, clock)}</small>
             </div>
-            <button className="btn ghost sm" onClick={() => onPick(item.userId)}>فتح</button>
+            <button className="btn ghost sm" onClick={() => setPickError(onPick(item.userId,item.createdAt,item.id) ? '' : 'المهندس غير ظاهر في القائمة الحالية. حدّث البيانات وحاول تاني.')}>فتح</button>
           </li>
         ))}
       </ul>
@@ -437,14 +517,15 @@ const arabicDate = (iso: string) => {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString('ar-EG', { day: 'numeric', month: 'long', year: 'numeric' });
 };
 
-function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
-  return <div className="stat"><span className="label">{label}</span><strong>{value}</strong><small>{hint}</small></div>;
+function Stat({ label, value, hint, icon }: { label: string; value: string; hint: string; icon: string }) {
+  return <div className="stat"><div className="stat-heading"><span className="label">{label}</span><span className="stat-icon"><DashboardIcon name={icon} /></span></div><strong>{value}</strong><small>{hint}</small></div>;
 }
 
 /** The warning inside the confirm step: real counts, or the honest «مفيش سجلات». */
 function impactText(impact: RepImpact): string {
   const rows = [
     impact.visits ? `${formatNumber(impact.visits)} زيارة` : '',
+    impact.orders ? `${formatNumber(impact.orders)} طلبية` : '',
     impact.reports ? `${formatNumber(impact.reports)} تقرير ميدان` : '',
     impact.dailyReports ? `${formatNumber(impact.dailyReports)} تقرير يومي` : '',
     impact.locations ? `${formatNumber(impact.locations)} نقطة موقع` : '',
@@ -467,6 +548,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     event.preventDefault();
     setError('');
     setCreatedRepMessage('');
+    if (!newRep.region.trim()) { setError('اكتب منطقة المهندس.'); return; }
     setCreatingRep(true);
     try {
       const result = await post<{ user: User }>('/api/reps', {
@@ -483,23 +565,46 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إنشاء حساب المهندس.'); }
     finally { setCreatingRep(false); }
   }
+  const regionForm = useReveal<HTMLFormElement>();
+  const passwordPanel = useReveal<HTMLDivElement>();
+  const teamNotice = useReveal<HTMLParagraphElement>();
+  const [actionMessage,setActionMessage] = useState('');
+  const [regionFor, setRegionFor] = useState<Rep | null>(null);
+  const [regionValue, setRegionValue] = useState('');
+  const [savingRegion, setSavingRegion] = useState(false);
+  const [regionError, setRegionError] = useState('');
+  async function saveRegion(event: FormEvent) {
+    event.preventDefault();
+    if (!regionFor || !regionValue.trim()) { setRegionError('اكتب منطقة المهندس.'); return; }
+    setRegionError('');setSavingRegion(true);
+    try {
+      await patch(`/api/reps/${regionFor.id}`, { region: regionValue.trim() });
+      setCreatedReps(current => current.map(rep => rep.id === regionFor.id ? { ...rep, region: regionValue.trim() } : rep));
+      setActionMessage(`تم تحديث منطقة ${regionFor.name}.`);teamNotice.reveal();
+      setRegionFor(null); setError(''); await onChange();
+    } catch (e) { setRegionError(e instanceof Error ? e.message : 'تعذر حفظ المنطقة.'); }
+    finally { setSavingRegion(false); }
+  }
+  const regionButton = (rep: Rep) => <button className="btn ghost sm" onClick={() => { setRegionFor(rep); setRegionValue(rep.region || ''); setActionMessage(''); setRegionError(''); setError(''); regionForm.reveal(); }}>تعديل المنطقة</button>;
   // A representative who forgets their password cannot sign in and cannot be emailed: the
   // manager has to hand out a new one. Kept inline instead of a browser prompt so the field is
   // masked and the rule (ten characters) is visible while typing.
   const [passwordFor, setPasswordFor] = useState<{ id: string; name: string } | null>(null);
   const [passwordValue, setPasswordValue] = useState('');
   const [savingPassword, setSavingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
   async function savePassword() {
     if (!passwordFor) return;
-    if (passwordValue.trim().length < 10) { setError('كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.'); return; }
-    setSavingPassword(true);
+    if (passwordValue.trim().length < 10) { setPasswordError('كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.'); return; }
+    setPasswordError('');setSavingPassword(true);
     try {
       await post(`/api/reps/${passwordFor.id}/password`, { password: passwordValue.trim() });
       setError('');
+      setActionMessage(`تم تغيير كلمة مرور ${passwordFor.name}.`);teamNotice.reveal();
       setPasswordFor(null);
       setPasswordValue('');
       onChange();
-    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر تغيير كلمة المرور.'); }
+    } catch (e) { setPasswordError(e instanceof Error ? e.message : 'تعذر تغيير كلمة المرور.'); }
     finally { setSavingPassword(false); }
   }
   /*
@@ -508,13 +613,17 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
    * rather than being guessed from the rows this page happens to hold — «امسح الحساب» and «امسح
    * سجله كله» are different requests, and only one of them is on offer here.
    */
-  const [impacts, setImpacts] = useState<Record<string, string>>({});
+  const [impacts, setImpacts] = useState<Record<string, { detail: string; ready: boolean }>>({});
+  const impactRequests = useRef<Record<string, number>>({});
   async function loadImpact(rep: Rep) {
+    const request = (impactRequests.current[rep.id] ?? 0) + 1;
+    impactRequests.current[rep.id] = request;
+    setImpacts(current => ({ ...current, [rep.id]: { detail: 'جارٍ حساب سجلات الحساب…', ready: false } }));
     try {
       const impact = await api<RepImpact>(`/api/reps/${rep.id}/impact`);
-      setImpacts(current => ({ ...current, [rep.id]: impactText(impact) }));
+      if (impactRequests.current[rep.id] === request) setImpacts(current => ({ ...current, [rep.id]: { detail: impactText(impact), ready: true } }));
     } catch {
-      setImpacts(current => ({ ...current, [rep.id]: 'تعذر حساب السجلات المرتبطة — الحذف يمسح الحساب وكل بياناته.' }));
+      if (impactRequests.current[rep.id] === request) setImpacts(current => ({ ...current, [rep.id]: { detail: 'تعذر حساب السجلات — ألغِ وجرب تاني.', ready: false } }));
     }
   }
   async function removeRep(rep: Rep) {
@@ -528,11 +637,11 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
   }
   const deleteButton = (rep: Rep) => (
     <ConfirmAction label="حذف الحساب" confirmLabel="تأكيد الحذف النهائي" busyLabel="جارٍ الحذف…"
-      detail={impacts[rep.id] ?? 'جارٍ حساب سجلات الحساب…'} onArm={() => void loadImpact(rep)}
+      detail={impacts[rep.id]?.detail || 'جارٍ حساب سجلات الحساب…'} confirmDisabled={!impacts[rep.id]?.ready} onArm={() => void loadImpact(rep)}
       onConfirm={() => removeRep(rep)} />
   );
   const passwordButton = (rep: Rep) => (
-    <button className="btn ghost sm" onClick={() => { setError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); }}>كلمة المرور</button>
+    <button className="btn ghost sm" onClick={() => { setError(''); setActionMessage(''); setPasswordError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); passwordPanel.reveal(); }}>كلمة المرور</button>
   );
   const deviceButton = (rep: Rep) => (rep as any).deviceId ? (
     <button className="btn ghost sm" onClick={() => void resetDevice(rep)}>فك ربط الجهاز</button>
@@ -581,8 +690,8 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 onChange={event => setNewRep(current => ({ ...current, phone: event.target.value }))} />
             </label>
             <label className="field">
-              <span>المنطقة <span className="muted">(اختياري)</span></span>
-              <input maxLength={80} autoComplete="address-level1" value={newRep.region}
+              <span>المنطقة</span>
+              <input required maxLength={80} autoComplete="address-level1" value={newRep.region}
                 onChange={event => setNewRep(current => ({ ...current, region: event.target.value }))} />
             </label>
           </div>
@@ -605,6 +714,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                 <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {rep.createdAt ? `انضم ${localDateText(rep.createdAt, timezone)}` : 'تاريخ الانضمام غير مسجّل'}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {regionButton(rep)}
                   {deviceButton(rep)}
                   <button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button>
                   <button className="btn ghost sm" onClick={() => approve(rep, 'rejected')}>رفض</button>
@@ -624,6 +734,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                 <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.tracking ? '● في وردية الآن' : '○ متصل'} · {rep.region || 'بدون منطقة'} · {formatNumber(rep.visitsToday)} زيارة اليوم · {rep.shiftStartedAt ? `بدأ ${timeText(rep.shiftStartedAt, timezone)}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {regionButton(rep)}
                   {deviceButton(rep)}
                   {passwordButton(rep)}
                   <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
@@ -640,6 +751,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                   <li key={rep.id} className="team-row" style={{ opacity: rep.active ? 0.85 : 0.65 }}>
                     <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                     <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}{rep.active ? '' : ' · الحساب متوقف'}</small></span>
+                    {regionButton(rep)}
                     {deviceButton(rep)}
                     {passwordButton(rep)}
                     <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
@@ -649,13 +761,20 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
               </ul>
             </>
           )}
+          {regionFor && <form className="panel reveal-target" ref={regionForm.ref} tabIndex={-1} onSubmit={event => void saveRegion(event)}>
+            <h4>منطقة {regionFor.name}</h4>
+            {regionError && <p className="error" role="alert">{regionError}</p>}
+            <div className="filters"><label className="field inline"><span>المنطقة الجديدة</span><input required maxLength={80} value={regionValue} onChange={event => setRegionValue(event.target.value)} /></label>
+            <button className="btn primary sm" disabled={savingRegion}>حفظ المنطقة</button><button type="button" className="btn ghost sm" onClick={() => setRegionFor(null)}>إلغاء</button></div>
+          </form>}
           {passwordFor && (
-            <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
+            <div className="panel reveal-target" ref={passwordPanel.ref} tabIndex={-1} style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
               <h4 className="panel-title">كلمة مرور جديدة لـ {passwordFor.name}</h4>
               <p className="muted small">
                 اكتبها له بنفسك بأمان — مفيش استرجاع بالبريد. تغييرها يخرج كل أجهزته من الحساب فورًا،
                 فالوردية المفتوحة عليه تتقفل.
               </p>
+              {passwordError && <p className="error" role="alert">{passwordError}</p>}
               <div className="filters">
                 <label className="field inline">
                   <span>كلمة المرور</span>
@@ -669,6 +788,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
               </div>
             </div>
           )}
+          {actionMessage && <p className="ok-text reveal-target" role="status" ref={teamNotice.ref} tabIndex={-1}>{actionMessage}</p>}
         </div>
       </div>
     </section>

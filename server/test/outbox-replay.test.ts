@@ -186,3 +186,51 @@ test('a permanent server rejection keeps the saved report and explains why it di
   assert.equal(recovered.sent, 1);
   assert.equal(pending.size, 0);
 });
+
+test('an offline order is sent exactly as saved and stays queued on rejection', async () => {
+  const order = { id: 'order-1', customerId: 'customer-1', notes: '', lines: [{ productId: 'product-1', qty: 2 }], send: true, recordedAt: 12345 };
+  const entry = item('order', 'order', order);
+  const pending = new Map([[entry.key, entry]]);
+  const queue: Pick<Outbox, 'remove' | 'bump' | 'reject' | 'unreject'> = {
+    async remove(key) { pending.delete(key); },
+    async bump(key) { const x = pending.get(key); if (x) x.attempts++; },
+    async reject(key) { const x = pending.get(key); if (x) x.rejected = true; },
+    async unreject(key) { const x = pending.get(key); if (x) x.rejected = false; },
+  };
+  const seen: unknown[] = [];
+  const send = {
+    async checkIn() {}, async checkOut() {}, async report() {}, async dailyReport() {},
+    async createOrder(value: typeof order) { seen.push(value); throw Object.assign(new Error('الطلبية قديمة'), { status: 422 }); },
+  };
+  const rejected = await replayOutboxActions([entry], queue, send);
+  assert.equal(rejected.sent, 0);
+  assert.equal(pending.get('order')?.rejected, true);
+  assert.match(rejected.notice ?? '', /الطلبية قديمة/);
+  assert.deepEqual(seen, [order]);
+  const paused = await replayOutboxActions([entry], queue, send);
+  assert.equal(paused.sent, 0);
+  assert.equal(seen.length, 1);
+});
+
+test('an order linked to an offline visit waits until that visit is accepted', async () => {
+  const order = { id: 'order-linked', customerId: 'customer', visitId: visit.id, notes: '', lines: [{ productId: 'item', qty: 1 }], recordedAt: 12346 };
+  const initial = [item('checkin', 'visit-checkin', visit), item('order', 'order', order)];
+  const pending = new Map(initial.map(entry => [entry.key, entry]));
+  const queue: Pick<Outbox, 'remove' | 'bump' | 'reject' | 'unreject'> = {
+    async remove(key) { pending.delete(key); }, async bump() {}, async reject() {}, async unreject() {},
+  };
+  const calls: string[] = [];
+  let connected = false;
+  const send = {
+    async checkIn() { calls.push('visit'); if (!connected) throw Object.assign(new Error('offline'), { status: 0 }); },
+    async checkOut() {}, async report() {}, async dailyReport() {},
+    async createOrder() { calls.push('order'); },
+  };
+  await replayOutboxActions(initial, queue, send);
+  assert.deepEqual(calls, ['visit']);
+  assert.equal(pending.size, 2);
+  connected = true;
+  await replayOutboxActions([...pending.values()], queue, send);
+  assert.deepEqual(calls, ['visit', 'visit', 'order']);
+  assert.equal(pending.size, 0);
+});

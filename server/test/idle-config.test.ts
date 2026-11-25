@@ -53,7 +53,7 @@ test('the engineer app is told the threshold the server will alert on', async ()
     const admin = await client.post('/api/auth/login').send({ email: config.adminEmail, password: config.adminPassword });
     const email = `idle.${Date.now()}@idle.test`;
     await client.post('/api/reps').set('Authorization', `Bearer ${admin.body.token}`)
-      .send({ name: 'مهندس سكون', email, password: 'RepPassword123!' });
+      .send({ region: 'منطقة اختبار', name: 'مهندس سكون', email, password: 'RepPassword123!' });
     const login = await client.post('/api/auth/login').send({ email, password: 'RepPassword123!' });
     const summary = await client.get('/api/me/summary').set('Authorization', `Bearer ${login.body.token}`);
     assert.equal(summary.status, 200, JSON.stringify(summary.body));

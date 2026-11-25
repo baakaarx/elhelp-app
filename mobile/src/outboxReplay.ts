@@ -1,15 +1,17 @@
 import type { CheckOutBody } from './api';
 import type { Outbox } from './queue';
-import type { DailyReportInput, OutboxItem, ReportInput, VisitInput } from './types';
+import type { DailyReportInput, OrderInput, OutboxItem, ReportInput, VisitInput } from './types';
 
 type QueuedCheckIn = VisitInput & { recordedAt: number };
 type QueuedCheckOut = { id: string; visitId: string; body: CheckOutBody & { recordedAt: number } };
+type QueuedOrder = OrderInput & { recordedAt: number };
 
 export interface OutboxSenders {
   checkIn(visit: QueuedCheckIn): Promise<unknown>;
   checkOut(visitId: string, body: QueuedCheckOut['body']): Promise<unknown>;
   report(report: ReportInput): Promise<unknown>;
   dailyReport(report: DailyReportInput): Promise<unknown>;
+  createOrder(order: QueuedOrder): Promise<unknown>;
 }
 
 export interface OutboxReplayResult { sent: number; notice?: string }
@@ -35,16 +37,20 @@ export async function replayOutboxActions(
 
     if (item.rejected && !options.retryRejected) {
       if (item.kind === 'visit-checkin') checkInsToRetry.add((payload as QueuedCheckIn).id);
-      notice ||= 'هناك بيانات محفوظة رفضها السيرفر؛ ما زالت على الهاتف ولم نكرر إرسالها تلقائيًا. افتح «مزامنة ما لم يُرسل» لإعادة المحاولة.';
+      notice ||= 'هناك بيانات محفوظة رفضها السيرفر؛ ما زالت على الهاتف ولم نكرر إرسالها تلقائيًا. افتح «حسابي» واضغط «مزامنة الآن» لإعادة المحاولة.';
       continue;
     }
     if (item.rejected && options.retryRejected) await queue.unreject(item.key);
 
     if (item.kind === 'visit-checkout') {
       const checkout = payload as QueuedCheckOut;
-      // A check-in that is pending or paused after rejection must stay ahead of its result;
-      // otherwise a 404 from the check-out would create a second, misleading permanent failure.
+      // A pending check-in must stay ahead of its dependent result.
       if (checkInsToRetry.has(checkout.visitId)) continue;
+    }
+    if (item.kind === 'order') {
+      const order = payload as QueuedOrder;
+      // An order linked to an offline visit must wait for the visit to reach the server first.
+      if (order.visitId && checkInsToRetry.has(order.visitId)) continue;
     }
 
     try {
@@ -53,7 +59,14 @@ export async function replayOutboxActions(
         const checkout = payload as QueuedCheckOut;
         await send.checkOut(checkout.visitId, checkout.body);
       } else if (item.kind === 'report') await send.report(payload as ReportInput);
-      else await send.dailyReport(payload as DailyReportInput);
+      // Named, not fallen into: the last branch used to be «anything else», and a kind added without
+      // a line here would have been silently replayed as a daily report.
+      else if (item.kind === 'daily-report') await send.dailyReport(payload as DailyReportInput);
+      else if (item.kind === 'order') await send.createOrder(payload as QueuedOrder);
+      else {
+        notice ||= 'في بيانات محفوظة من نسخة تانية من التطبيق؛ ما زالت على الهاتف ولم تُرسل. حدّث التطبيق أو اطلب مساعدة.';
+        continue;
+      }
       await queue.remove(item.key);
       sent++;
     } catch (error) {

@@ -43,22 +43,59 @@ export interface DailyReport {
   repName: string; repColor: string; visits: DailyVisit[];
 }
 export type VisitPurpose = 'visit' | 'order' | 'collection' | 'note' | 'issue' | 'other';
-export interface VisitInput {
+/**
+ * A row of the company's customer book — the only way a visit can name a customer.
+ *
+ * The list is entered and divided by the sales office; the phone reads its own slice of it. That is
+ * why there is no "add a customer" here: a name typed in front of a farm is how one man becomes three
+ * customers and three numbers in the manager's report.
+ */
+export type CustomerStage = 'new' | 'following' | 'active' | 'dormant' | 'lost';
+export const customerStageLabels: Record<CustomerStage, string> = {
+  new: 'جديد', following: 'تحت المتابعة', active: 'دائم', dormant: 'برّد', lost: 'مرفوض',
+};
+export interface Customer {
   id: string;
-  customerName: string;
+  name: string;
+  phone: string;
   governorate: string;
   district: string;
   village: string;
-  phone: string;
+  notes: string;
+  stage: CustomerStage;
+  active: boolean;
+  /** How many visits the book has on him, and when the last one was — the cooling clock, on paper. */
+  visitCount: number;
+  lastVisitAt: number | null;
+  openVisits: number;
+  repName: string;
+}
+export interface VisitInput {
+  id: string;
+  /** The row in the office's book. The visit's name, phone and area are read from it, not typed. */
+  customerId: string;
   purpose: VisitPurpose;
   notes: string;
   location: { lat: number; lng: number; accuracy: number | null };
   deviceId?: string;
+  /**
+   * Sent only when the phone knows something the book does not — a customer met at his warehouse,
+   * a corrected number. Left out, the server copies the address from the customer's row.
+   */
+  governorate?: string;
+  district?: string;
+  village?: string;
+  phone?: string;
 }
 export interface Visit {
   id: string;
   userId: string;
   customerName: string;
+  /**
+   * The row in the office's book this visit was booked against. Null on a visit recorded before the
+   * book existed — the typed name stays readable, nothing is merged into a customer by guessing.
+   */
+  customerId?: string | null;
   governorate: string;
   district: string;
   village: string;
@@ -116,9 +153,67 @@ export const visitPurposeLabels: Record<VisitPurpose, string> = {
   visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
 /** `visit-checkin` / `visit-checkout` are the two halves of a visit typed without a signal. */
-export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout';
+export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout' | 'order';
 export interface OutboxItem {
   key: string; kind: OutboxKind; payload: string; createdAt: number; attempts: number;
   /** A permanent server rejection is retained but paused until the engineer manually retries. */
   rejected?: boolean;
+}
+
+/* ------------------------------------------------ الطلبيات: الكميات اللي الميدان اتفق عليها */
+
+export interface OrderLineInput {
+  productId: string;
+  /** مرقومة بوحدة الصنف نفسها (شيكارة/عبوة/جركن) — مش وزن ولا كرتونة. */
+  qty: number;
+  notes?: string;
+}
+export interface OrderInput {
+  id: string;
+  /** سطر من قائمة المكتب — الطلبية ما تتسجلش على اسم مكتوب بالإيد، زي الزيارة بالظبط. */
+  customerId: string;
+  visitId?: string;
+  notes: string;
+  lines: OrderLineInput[];
+  /** ضغطة الميدان معناها «ابعت»؛ المسودة للطلبية اللي عايز تكملها بعد شوية. */
+  send?: boolean;
+  /** بتبعتها الطابور اللي من غير شبكة، زي الزيارة المتأخرة. */
+  recordedAt?: number;
+}
+/** اللي بيرجع للتليفون: أصناف وكميات وحالة بس — مفيش سعر ولا إجمالي على شاشة المندوب. */
+export interface OrderView {
+  id: string;
+  sold: boolean;
+  status: 'draft' | 'sent' | 'priced';
+  notes: string;
+  customerName: string;
+  createdAt: number;
+  sentAt: number | null;
+  recordedOffline: boolean;
+  lines: Array<{ productId: string; productName: string; unit: string; unitSize: string; qty: number }>;
+}
+
+/* --------------------------------------------------------------- ما تبيعه الشركة: الأصناف وعبواتها */
+
+/**
+ * The catalogue the office writes. The phone reads it and never prices from it.
+ *
+ * A rep's `GET /api/products` carries no `prices` key at all — the server attaches prices to an admin
+ * session only — so there is no number here for an engineer to misread in front of a farmer, and none to
+ * be held to later. `notes` is left off the same way on purpose: it is what the office tells itself about
+ * storage and shelf life, and a screen that shows it will be read as a promise to the customer.
+ */
+export type ProductCategory = 'pesticide' | 'fertilizer' | 'other';
+export const productCategoryLabels: Record<ProductCategory, string> = {
+  pesticide: 'مبيدات', fertilizer: 'أسمدة', other: 'أخرى',
+};
+export interface Product {
+  id: string;
+  name: string;
+  category: ProductCategory;
+  /** ما بيتباع بيه: «عبوة»، «شيكارة»، «جركن». أي كمية في أي طلبية بتُعدّ بالوحدة دي. */
+  unit: string;
+  /** «٥٠ كجم»، «٥٠٠ مل» — سطر يتقري، ما بيحسبش: الحجم الحقيقي هو اللي في `unit`. */
+  unitSize: string;
+  active: boolean;
 }

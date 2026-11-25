@@ -4,6 +4,7 @@ export interface User {
   name: string;
   email: string;
   role: Role;
+  accessScope?: 'full' | 'warehouse';
   phone: string;
   region: string;
   color: string;
@@ -11,6 +12,80 @@ export interface User {
   approvalStatus?: string;
   deviceId?: string;
   oauthProvider?: string;
+}
+/**
+ * The company's customer book, as the office screen reads it.
+ *
+ * `repId` is null for a customer the manager entered and has not handed to anybody yet — that is a
+ * state of the list, not a missing value, and the screen shows him as «من غير مهندس» rather than
+ * hiding him. The visit counters come from the server because the row the manager is looking at has
+ * to agree with the numbers the reports screen shows.
+ */
+export type CustomerStage = 'new' | 'following' | 'active' | 'dormant' | 'lost';
+export const customerStageLabels: Record<CustomerStage, string> = {
+  new: 'جديد', following: 'تحت المتابعة', active: 'دائم', dormant: 'برّد', lost: 'مرفوض',
+};
+export interface Customer {
+  id: string;
+  repId: string | null;
+  name: string;
+  phone: string;
+  governorate: string;
+  district: string;
+  village: string;
+  notes: string;
+  stage: CustomerStage;
+  lostReason: string;
+  active: boolean;
+  /** النوع اللي بيتسعّر بيه. null = المكتب ما حددش، والطلبية يتسعّر باليد. */
+  priceTierId: string | null;
+  priceTierName: string;
+  createdAt: number;
+  updatedAt: number;
+  repName: string;
+  repColor: string;
+  visitCount: number;
+  lastVisitAt: number | null;
+  openVisits: number;
+}
+/** One area (محافظة / مركز) as the workbench groups the list by place instead of by person. */
+export interface AreaRow {
+  governorate: string;
+  district: string;
+  /** What the table really holds. The labels above are for the screen, these are what gets sent. */
+  bareGovernorate: string;
+  bareDistrict: string;
+  total: number;
+  unassigned: number;
+  inactive: number;
+  visited: number;
+  settled: boolean;
+  owners: Array<{ repId: string; repName: string; repActive: boolean; customers: number }>;
+  suggestedRepId: string | null;
+  suggestedRepName: string;
+}
+export interface AreaBook {
+  areas: AreaRow[];
+  engineers: Array<{ id: string; name: string; region: string; color: string; active: boolean }>;
+  totals: { customers: number; unassigned: number; areas: number };
+}
+/** What a bulk move is about to do, answered before any of it is written. */
+export interface AreaPreview {
+  dryRun: boolean;
+  matched: number;
+  wouldMove: number;
+  capped: boolean;
+  customers: Array<{ id: string; name: string }>;
+  conflicts: Array<{ id: string; name: string }>;
+}
+export interface MoveResult {
+  ok: boolean;
+  repName: string;
+  matched: number;
+  moved: number;
+  skipped: number;
+  capped: boolean;
+  conflicts: Array<{ id: string; name: string }>;
 }
 export interface LocationPoint {
   lat: number;
@@ -63,6 +138,8 @@ export interface Overview {
   timezone: string;
   retentionDays: number;
   newReports: number;
+  /** Sent orders waiting for the office to price them — the badge on the orders tab. */
+  sentOrders?: number;
   /** Server-side staleness threshold (STALE_GPS_MINUTES), so both sides agree. */
   staleGpsMinutes?: number;
 }
@@ -240,9 +317,53 @@ export interface RepImpact {
   locations: number;
   visits: number;
   openVisits: number;
+  orders: number;
   reports: number;
   dailyReports: number;
   idleReports: number;
   /** True while he has an open shift on a phone — deleting closes it. */
   trackingNow: boolean;
+}
+
+/* --------------------------------------------------------------------------- الأصناف والأسعار */
+
+/** ما تبيعه الشركة: مبيدات وأسمدة، وحاجة تانية نادرة. غير ده مرفوض في الراوت نفسه. */
+export type ProductCategory = 'pesticide' | 'fertilizer' | 'other';
+export const productCategoryLabels: Record<ProductCategory, string> = {
+  pesticide: 'مبيدات', fertilizer: 'أسمدة', other: 'أخرى',
+};
+
+/** سعر صنف واحد تحت نوع مشترٍ واحد. الغياب حالة عادية: «لسه ما اتسعّرش». */
+export interface ProductPrice {
+  tierId: string;
+  price: number;
+}
+
+/**
+ * الصنف = اسم + عبوة. `unitSize` سطر يشرح جوّا العبوة إيه («٥٠٠ مل»، «٥٠ كجم») — بيتقرا ومش
+ * بيحسب: اللي بيحدد الرقم هو عمود «العبوة»، مش رقم مخفي في نص.
+ */
+export interface Product {
+  id: string;
+  name: string;
+  category: ProductCategory;
+  unit: string;
+  unitSize: string;
+  notes: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+  /** الأعمدة دي للمكتب وحده — قائمة المهندس بتجي من غير `prices` أصلًا. */
+  prices?: ProductPrice[];
+}
+
+/** رأس قائمة الأسعار: أنواع المشترى اللي المكتب يسمّيها. */
+export interface PriceTier {
+  id: string;
+  name: string;
+  position: number;
+  active: boolean;
+  /** كام صنف عليه سعر تحت النوع ده، وكام عميل بيتسعّر بيه. */
+  priced: number;
+  customers: number;
 }

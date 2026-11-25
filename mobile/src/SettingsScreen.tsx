@@ -43,7 +43,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
     try {
       await disablePushNotifications();
       setPushEnabled(false);
-      Alert.alert('الإشعارات', 'تم إيقاف إرسال إشعارات المراجعة لهذا الجهاز.');
+      Alert.alert('الإشعارات', 'تم إيقاف إرسال الإشعارات لهذا الجهاز.');
     } catch (error) {
       Alert.alert('تعذر إيقاف الإشعارات', error instanceof Error ? error.message : 'حاول مرة أخرى.');
     } finally { setPushBusy(false); }
@@ -55,14 +55,14 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       if (pushActive) {
         await disablePushNotifications();
         setPushEnabled(false);
-        Alert.alert('الإشعارات', 'تم إيقاف إرسال إشعارات المراجعة لهذا الجهاز.');
+        Alert.alert('الإشعارات', 'تم إيقاف إرسال الإشعارات لهذا الجهاز.');
         return;
       }
       const result = await enablePushNotifications();
       if (result === 'enabled') {
         setPushEnabled(true);
         setPushPermission('granted');
-        Alert.alert('الإشعارات', 'تم تفعيل إشعارات مراجعة تقاريرك وموافقة الإدارة.');
+        Alert.alert('الإشعارات', 'تم تفعيل إشعارات تحديث حالة الحساب.');
       } else if (result === 'denied') {
         setPushPermission('denied');
         Alert.alert('الإشعارات غير مفعلة', 'اسمح بالإشعارات من إعدادات الهاتف ثم جرّب مرة أخرى.');
@@ -91,7 +91,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
   function askConfirmDelete() {
     Alert.alert(
       'حذف الحساب نهائيًا',
-      'هيتحذف حسابك وكل بياناتك: الموقع، الورديات، الزيارات، والتقارير. الخطوة دي مش ممكن التراجع عنها.',
+      'هيتحذف حسابك وكل بياناتك: الموقع، الورديات، الزيارات، الطلبيات، والتقارير القديمة. الخطوة دي مش ممكن التراجع عنها.',
       [
         { text: 'إلغاء', style: 'cancel' },
         { text: 'حذف نهائي', style: 'destructive', onPress: () => void eraseAccount() },
@@ -146,7 +146,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         <SectionTitle title="المزامنة" action={<Pill label={field.pending ? `${field.pending} بالانتظار` : 'كل شيء مُرسل'} tone={field.pending ? 'warn' : 'mint'} />} />
         <Body muted>
           {field.pending
-            ? 'فيه بيانات محفوظة على جهازك (مواقع أو تقارير) وما اتبعتتش. هتتبعت تلقائيًا لما الشبكة ترجع.'
+            ? 'فيه بيانات محفوظة على جهازك (مواقع أو زيارات أو طلبيات) وما اتبعتتش. هنحاول نبعتها تلقائيًا لما الشبكة ترجع؛ لو السيرفر رفض بيانات، هتظهر رسالة بالمشكلة.'
             : 'كل بياناتك مُرسلة للسيرفر. المزامنة التلقائية كل ١٥ ثانية.'}
         </Body>
         <Row style={{ gap: space.sm }}>
@@ -166,12 +166,12 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       <Card>
         <SectionTitle title="الإشعارات" action={<Pill label={pushActive ? 'مفعلة' : pushEnabled ? 'تحتاج إذن الهاتف' : 'متوقفة'} tone={pushActive ? 'mint' : 'warn'} />} />
         <Body muted>
-          لو المدير راجع تقريرك أو غيّر حالة حسابك، هيوصلك تنبيه حتى لو التطبيق مقفول. لا تحتوي الإشعارات على موقعك أو تفاصيل التقرير. يتفعّل التسجيل بعد ربط الحساب بهذا الهاتف ببدء وردية مرة واحدة.
+          لو الإدارة غيّرت حالة حسابك، هيوصلك تنبيه حتى لو التطبيق مقفول. لا تحتوي الإشعارات على موقعك. يتفعّل التسجيل بعد ربط الحساب بهذا الهاتف ببدء وردية مرة واحدة.
           {pushPermission === 'denied' ? '\nإذن الإشعارات مرفوض من إعدادات الهاتف.' : ''}
         </Body>
         <Button
           variant={pushActive ? 'ghost' : 'soft'}
-          label={pushBusy ? 'جارٍ التحديث…' : pushActive ? 'إيقاف إشعارات هذا الجهاز' : pushEnabled ? 'إعادة تفعيل إشعارات المراجعة' : 'تفعيل إشعارات المراجعة'}
+          label={pushBusy ? 'جارٍ التحديث…' : pushActive ? 'إيقاف إشعارات هذا الجهاز' : pushEnabled ? 'إعادة تفعيل الإشعارات' : 'تفعيل الإشعارات'}
           loading={pushBusy}
           onPress={() => void togglePush()}
         />
@@ -191,7 +191,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         <SectionTitle title="الخصوصية" />
         <Body>
           موقعك يُسجَّل أثناء الوردية فقط وبعد موافقتك الصريحة، ويُستخدم لمتابعة خط السير وإعداد التقارير.
-          البيانات تُحذف تلقائيًا بعد {field.summary?.retentionDays ?? 365} يومًا، وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
+          نقاط الموقع والزيارات والتقارير تُحذف تلقائيًا بعد {field.summary?.retentionDays ?? 365} يومًا. الطلبيات تفضل محفوظة لحد حذف الحساب. وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
         </Body>
         <Pressable onPress={() => void Linking.openURL(`${API_BASE}/privacy`)} accessibilityRole="link">
           <Text style={styles.link}>سياسة الخصوصية الكاملة ←</Text>
@@ -231,7 +231,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       <Card>
         <SectionTitle title="حذف الحساب" action={<Pill label="نهائي" tone="warn" />} />
         <Body muted>
-          حذف الحساب يمسح كل بياناتك من السيرفر فورًا (الموقع، الورديات، الزيارات، التقارير) ويلغي كل الجلسات.
+          حذف الحساب يمسح كل بياناتك من السيرفر فورًا (الموقع، الورديات، الزيارات، الطلبيات، التقارير القديمة) ويلغي كل الجلسات.
           اكتب بريدك للتأكيد، أو راسل مسؤول الخصوصية لو محتاج مساعدة.
         </Body>
         <TextInput

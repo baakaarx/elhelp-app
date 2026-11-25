@@ -4,7 +4,7 @@ import type { OutboxItem, OutboxKind } from './types';
 
 const KEY = 'mandoub.outbox';
 const READ_ERROR = 'تعذّر قراءة البيانات المعلّقة على هذا الهاتف؛ لم نمسحها. لا تحذف بيانات التطبيق أو المتصفح، واطلب المساعدة قبل المتابعة.';
-const KINDS = new Set<OutboxKind>(['location', 'report', 'daily-report', 'visit-checkin', 'visit-checkout']);
+const KINDS = new Set<OutboxKind>(['location', 'report', 'daily-report', 'visit-checkin', 'visit-checkout', 'order']);
 
 function isOutboxItem(value: unknown): value is OutboxItem {
   if (!value || typeof value !== 'object') return false;
@@ -68,6 +68,10 @@ export async function createQueue(): Promise<Outbox> {
       const items = read().sort((a, b) => a.createdAt - b.createdAt);
       // Reports first: see queue.native.ts — a GPS backlog must not starve them.
       return [...items.filter(item => item.kind !== 'location'), ...items.filter(item => item.kind === 'location')].slice(0, limit);
+    },
+    async listForReplay(locationLimit = 200) {
+      const items = read().sort((a, b) => a.createdAt - b.createdAt);
+      return [...items.filter(item => item.kind !== 'location'), ...items.filter(item => item.kind === 'location').slice(0, locationLimit)];
     },
     async remove(key: string) { write(read().filter(item => item.key !== key)); },
     async bump(key: string) { write(read().map(item => (item.key === key ? { ...item, attempts: item.attempts + 1 } : item))); },

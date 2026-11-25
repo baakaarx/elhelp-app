@@ -46,6 +46,16 @@ test('a fix older than the staleness window says how long it has been missing', 
   assert.match(text, /آخر موقع معروف/);
 });
 
+test('a long signal gap is shown in days, hours and minutes without rounding up', () => {
+  const text = (minutes: number) => movementStatus(rep({}, { recordedAt: NOW - minutes * 60_000 }), NOW);
+  assert.match(text(59), /لا إشارة من 59 دقيقة/);
+  assert.match(text(60), /لا إشارة من 1 ساعة ·/);
+  assert.match(text(1360), /لا إشارة من 22 ساعة و40 دقيقة/);
+  assert.match(text(1440), /لا إشارة من 1 يوم ·/);
+  assert.match(text(1505), /لا إشارة من 1 يوم و1 ساعة و5 دقيقة/);
+  assert.match(movementStatus(rep({ gap: { kind: 'gps_blocked' } } as Partial<Rep>, { recordedAt: NOW - 1505 * 60_000 }), NOW), /1 يوم و1 ساعة و5 دقيقة/);
+});
+
 test('a configured server threshold overrides the default window', () => {
   const sixMinutesOld = rep({}, { recordedAt: NOW - 6 * 60_000, speed: 0 });
   assert.match(movementStatus(sixMinutesOld, NOW, 5 * 60_000), /لا إشارة/);

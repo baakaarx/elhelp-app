@@ -1,4 +1,5 @@
 import { formatNumber } from './session';
+import { elapsedMinutesText } from '../../server/src/elapsedTime';
 import { timeText } from './dates';
 import type { Rep } from './types';
 
@@ -38,20 +39,20 @@ export function movementStatus(rep: Rep, now = Date.now(), staleMs = STALE_FIX_M
   const accuracyText = typeof fix.accuracy === 'number' ? `±${Math.round(fix.accuracy)} م` : '';
   const limitMs = rep.staleLimitMinutes ? rep.staleLimitMinutes * 60_000 : staleMs;
   if (now - fix.recordedAt > limitMs) {
-    const minutes = Math.round(ageSeconds / 60);
+    const elapsed = elapsedMinutesText(ageSeconds / 60);
     // The server already compared the silence with the phone's own requests, so show its verdict
     // instead of one phrase that lets a dead battery, a frozen app and a coverage hole hide behind
     // "النت واقع".
     if (rep.gap?.kind === 'gps_blocked') {
-      return `التطبيق واصِل للسيرفر بس مفيش نقاط موقع من ${minutes} دقيقة — الموقع هو المقطوع، مش الشبكة`;
+      return `التطبيق واصِل للسيرفر بس مفيش نقاط موقع من ${elapsed} — الموقع هو المقطوع، مش الشبكة`;
     }
     const battery = typeof rep.gap?.battery === 'number' ? rep.gap.battery : null;
-    return `لا إشارة من ${minutes} دقيقة · ${battery !== null && battery <= 10 ? `التليفون فصل والبطارية ${Math.round(battery)}٪` : 'تليفون مقفول أو مكان بلا شبكة'} · آخر موقع معروف${accuracyText ? ` (${accuracyText})` : ''}`;
+    return `لا إشارة من ${elapsed} · ${battery !== null && battery <= 10 ? `التليفون فصل والبطارية ${Math.round(battery)}٪` : 'تليفون مقفول أو مكان بلا شبكة'} · آخر موقع معروف${accuracyText ? ` (${accuracyText})` : ''}`;
   }
   if (rep.openVisit && limitMs > staleMs && now - fix.recordedAt > staleMs) {
     // Still inside the widened window: name the reason instead of leaving the manager to imagine
     // a fault, and keep the customer visible so the visit itself is obvious at a glance.
-    return `داخل زيارة عند ${rep.openVisit.customerName} · آخر موقع من ${Math.round(ageSeconds / 60)} دقيقة (موقع داخل مبنى)`;
+    return `داخل زيارة عند ${rep.openVisit.customerName} · آخر موقع من ${elapsedMinutesText(ageSeconds / 60)} (موقع داخل مبنى)`;
   }
   if (fix.accuracy == null || fix.accuracy > WEAK_ACCURACY_M) {
     return `إشارة ضعيفة${accuracyText ? ` ${accuracyText}` : ''} · الحركة غير مؤكدة`;

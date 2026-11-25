@@ -52,7 +52,7 @@ test('the server answers a fast clock with a code the app can read', async () =>
   const admin = await client.post('/api/auth/login').send({ email: config.adminEmail, password: config.adminPassword });
   assert.equal(admin.status, 200);
   await client.post('/api/reps').set('Authorization', `Bearer ${admin.body.token}`)
-    .send({ name: 'مهندس ساعة', email: 'clock@mandoub.test', password: 'RepPassword123!' });
+    .send({ region: 'منطقة اختبار', name: 'مهندس ساعة', email: 'clock@mandoub.test', password: 'RepPassword123!' });
   const login = await client.post('/api/auth/login').send({ email: 'clock@mandoub.test', password: 'RepPassword123!' });
   const token = login.body.token as string;
   const started = await client.post('/api/shifts/start').set('Authorization', `Bearer ${token}`)

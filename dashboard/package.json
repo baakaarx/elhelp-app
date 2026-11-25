@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@expo-google-fonts/cairo": "^0.4.2",
     "@expo-google-fonts/noto-naskh-arabic": "^0.4.5",
     "leaflet": "^1.9.4",
     "react": "^19.3.1",

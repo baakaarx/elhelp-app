@@ -33,7 +33,7 @@ test('the website and mobile client can only issue sessions for their own role',
   assert.equal(managerLogin.body.user.role, 'admin');
 
   const created = await client.post('/api/reps').set(clientHeaders(adminToken, 'admin'))
-    .send({ name: 'مهندس الميدان', email: repEmail, password: repPassword });
+    .send({ region: 'منطقة اختبار', name: 'مهندس الميدان', email: repEmail, password: repPassword });
   assert.equal(created.status, 201, JSON.stringify(created.body));
 
   const engineerOnWebsite = await client.post('/api/auth/login')

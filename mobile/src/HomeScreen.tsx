@@ -3,6 +3,7 @@ import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInp
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle, Sheet, Stat } from './ui';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
+import OrderSheet from './OrderSheet';
 import { clockText, hhmmss, timeText } from './format';
 import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
@@ -14,16 +15,17 @@ type Props = {
   user: User;
   field: FieldBundle;
   onOpenVisits: () => void;
-  onOpenReports: () => void;
-  onOpenDaily: () => void;
 };
 
-export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, onOpenDaily }: Props) {
+export default function HomeScreen({ user, field, onOpenVisits }: Props) {
   const [now, setNow] = useState(Date.now());
   const [consentOpen, setConsentOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
   const [checkInOpen, setCheckInOpen] = useState(false);
   const [checkOutVisit, setCheckOutVisit] = useState<Visit | null>(null);
+  const [orderOpen, setOrderOpen] = useState(false);
+  const [orderMessage, setOrderMessage] = useState('');
+  const [orderVisit, setOrderVisit] = useState<Visit | null>(null);
 
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
 
@@ -35,7 +37,6 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
   const openVisit = summary?.openVisit ?? null;
   const shiftElapsed = shift ? hhmmss(now - shift.started_at) : null;
   const openElapsed = openVisit ? hhmmss(now - openVisit.checkedInAt) : null;
-  const daily = summary?.dailyReport ?? null;
 
   return (
     <>
@@ -101,16 +102,20 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
             </Body>
             <Row style={{ gap: space.sm, marginTop: 4 }}>
               <Button style={{ flex: 1 }} label="إنهاء الزيارة" onPress={() => setCheckOutVisit(openVisit)} />
-              <Button style={{ flex: 1 }} label="تفاصيل" variant="ghost" onPress={onOpenVisits} />
+              <Button style={{ flex: 1 }} label="طلبية للعميل" variant="ghost" onPress={() => { setOrderVisit(openVisit); setOrderOpen(true); }} />
             </Row>
           </Card>
         ) : null}
 
         <View style={styles.actions}>
           <ActionTile icon="◉" label="زيارة جديدة" hint="تسجيل حضور" onPress={() => { if (!shift) { setConsentOpen(true); return; } setCheckInOpen(true); }} />
-          <ActionTile icon="✎" label="تقرير سريع" hint="زيارة/طلبية" onPress={onOpenReports} />
-          <ActionTile icon="▤" label="التقرير اليومي" hint={daily ? 'تم الإرسال' : 'لم يُرسل'} onPress={onOpenDaily} tone={daily ? 'done' : 'todo'} />
+          <ActionTile icon="₪" label="تسجيل طلبية" hint="كميات على العميل" onPress={() => { setOrderVisit(null); setOrderOpen(true); }} />
         </View>
+
+        {orderMessage ? <Card tone="mint"><Row style={{ justifyContent: 'space-between' }}>
+          <Text style={{ flex: 1, color: colors.green900 }}>{orderMessage}</Text>
+          <Pressable onPress={() => setOrderMessage('')} accessibilityRole="button" accessibilityLabel="إخفاء رسالة الطلبية"><Text style={styles.link}>إخفاء</Text></Pressable>
+        </Row></Card> : null}
 
         <Card>
           <SectionTitle title="آخر الزيارات" action={<Pressable onPress={onOpenVisits}><Text style={styles.link}>الكل</Text></Pressable>} />
@@ -133,15 +138,6 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
           ))}
         </Card>
 
-        <Card tone={daily ? 'plain' : 'mint'}>
-          <SectionTitle title="التقرير اليومي" action={<Pill label={daily ? (daily.status === 'reviewed' ? 'تمت المراجعة' : 'بانتظار المراجعة') : 'مطلوب'} tone={daily ? 'mint' : 'warn'} />} />
-          <Body muted>
-            {daily
-              ? 'تقريرك اليومي وصل للمدير. يمكنك إرسال تقرير إضافي إن طرأ تغيير.'
-              : 'أرسل تقرير اليوم بزياراته وتوقيعك الإلكتروني قبل نهاية اليوم.'}
-          </Body>
-          <Button label={daily ? 'عرض/إرسال تقرير آخر' : 'إرسال التقرير اليومي'} variant={daily ? 'ghost' : 'primary'} onPress={onOpenDaily} />
-        </Card>
       </ScrollView>
 
       <ConsentSheet
@@ -162,6 +158,8 @@ export default function HomeScreen({ user, field, onOpenVisits, onOpenReports, o
         error={field.error}
       />
       <CheckInSheet visible={checkInOpen} onClose={() => setCheckInOpen(false)} field={field} user={user} />
+      <OrderSheet visible={orderOpen} onClose={() => setOrderOpen(false)} field={field} visit={orderVisit}
+        onSubmitted={result => setOrderMessage(result === 'queued' ? 'الطلبية اتحفظت على الموبايل وهتتزامن لما الشبكة ترجع.' : 'الطلبية وصلت للمكتب وبقت مستنية المراجعة.')} />
       <CheckOutSheet visit={checkOutVisit} onClose={() => setCheckOutVisit(null)} field={field} />
     </>
   );
@@ -211,7 +209,7 @@ function ConsentSheetShell({ visible, onClose, agreed, setAgreed, background, se
         <>
           <Body>
             أثناء الوردية فقط، يسجّل التطبيق موقعك كل ثانية تقريبًا ويُرسله إلى لوحة متابعة الهلب.
-            تُستخدم البيانات لعرض خط سيرك للمدير ولإعداد تقاريرك، وتُحذف تلقائيًا بعد {retentionDays} يومًا.
+            تُستخدم بيانات الموقع لعرض خط سيرك للمدير، وتُحذف تلقائيًا بعد {retentionDays} يومًا.
           </Body>
           <Body muted>يمكنك إيقاف التتبع في أي لحظة من الزر الأحمر، ويُسجَّل كل بدء/إيقاف في سجل التدقيق.</Body>
         </>

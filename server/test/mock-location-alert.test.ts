@@ -23,7 +23,7 @@ async function login(email: string, password: string) {
 
 test('native mock-provider reports are deduplicated, tied to the device, and visible to the manager', async () => {
   const adminToken = await login(config.adminEmail, config.adminPassword);
-  const created = await client.post('/api/reps').set(as(adminToken, 'admin')).send({
+  const created = await client.post('/api/reps').set(as(adminToken, 'admin')).send({ region: 'منطقة اختبار',
     name: 'مهندس الموقع', email: `rep.${randomUUID()}@mock-location.test`, password: 'RepPassword123!',
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
-import { enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
+import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit, createOrder } from './api';
+import { enqueueOrder, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
-import type { RepSummary, User, Visit, VisitInput } from './types';
+import type { Customer, OrderInput, Product, RepSummary, User, Visit, VisitInput } from './types';
 
 export interface CheckOutInput {
   outcome: string;
@@ -35,6 +35,30 @@ export interface FieldBundle {
    * only found out from a stale signal.
    */
   backgroundNotice: string;
+  /**
+   * The engineer's own slice of the company's customer book, plus the note that explains when it is
+   * not fresh.
+   *
+   * A visit is booked on one of these rows, so the sheet cannot simply refuse to open with no
+   * network: an engineer who loaded his list at the office must still be able to record a visit in a
+   * farm with two bars. The list is kept in memory from the last successful read for exactly that,
+   * and `customersNotice` says it is a cached copy rather than pretending it is current. It is not
+   * written to storage on purpose — a visit needs an open shift, and opening one needs the network,
+   * so there is no offline session this cache would serve.
+   */
+  customers: Customer[];
+  customersLoading: boolean;
+  customersNotice: string;
+  /** Called when the check-in sheet opens, and once when a shift starts (the moment we know there is signal). */
+  loadCustomers: () => Promise<void>;
+  /**
+   * قائمة الأصناف، بنفس طريقة التحزين اللي فوق: آخر نسخة ناجحة في الذاكرة علشان «إحنا بنبيع العبوة دي
+   * ولا لأ» يتقال في الميدان من غير شبكة. الأسعار مش هنا أصلًا — السيرفر ما بيبعتش `prices` لجلسة مهندس.
+   */
+  products: Product[];
+  productsLoading: boolean;
+  productsNotice: string;
+  loadProducts: () => Promise<void>;
   error: string;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -43,6 +67,8 @@ export interface FieldBundle {
   finishShift: () => Promise<void>;
   checkIn: (input: VisitInput) => Promise<void>;
   checkOut: (id: string, input: CheckOutInput) => Promise<void>;
+  /** ابعث الطلبية — أو احفظها على الهاتف تبعت لوحدها، بنفس طابور الزيارة بالظبط. */
+  submitOrder: (input: OrderInput) => Promise<'sent' | 'queued'>;
 }
 
 /** Shown in the consent sheet when background tracking was asked for but cannot run. */
@@ -64,9 +90,31 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [backgroundNotice, setBackgroundNotice] = useState('');
   const trackingActiveRef = useRef(false);
   const mounted = useRef(true);
-  const pendingVisitNotice = (count: number) => count > 0
-    ? `هناك ${count} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.`
-    : '';
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
+  const [customersNotice, setCustomersNotice] = useState('');
+  /** Kept beside the state so a failed refresh can ask «is there anything to fall back to?» without re-creating the callback. */
+  const customersRef = useRef<Customer[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [productsNotice, setProductsNotice] = useState('');
+  const productsRef = useRef<Product[]>([]);
+  /** Same reason as the customer list: a second engineer on this phone must not inherit the first one's. */
+  const productsOwnerRef = useRef<string | null>(null);
+  /** Whose list is currently in memory: a second engineer on this phone must never see the first one's. */
+  const listOwnerRef = useRef<string | null>(null);
+  const writeCustomers = useCallback((next: Customer[]) => {
+    customersRef.current = next;
+    setCustomers(next);
+  }, []);
+  const writeProducts = useCallback((next: Product[]) => {
+    productsRef.current = next;
+    setProducts(next);
+  }, []);
+  const pendingVisitNotice = (visits: number, orders: number) => [
+    visits > 0 ? `هناك ${visits} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.` : '',
+    orders > 0 ? `هناك ${orders} طلبية محفوظة على الهاتف ولم تصل إلى المكتب بعد.` : '',
+  ].filter(Boolean).join(' ');
   /**
    * True while one sync tick is still running.
    *
@@ -114,8 +162,76 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     }
   }, [user, onSessionExpired]);
 
+  /**
+   * The engineer's slice of the company's customer book — the list a visit is booked from.
+   *
+   * Asked for when the check-in sheet opens and when a shift starts, never on the 15-second tick: the
+   * book changes when the office edits it, not while a man is driving, and a field connection should
+   * not pay for it every quarter-minute.
+   */
+  const loadCustomers = useCallback(async () => {
+    if (!user) { writeCustomers([]); setCustomersNotice(''); listOwnerRef.current = null; return; }
+    if (listOwnerRef.current !== user.id) {
+      listOwnerRef.current = user.id;
+      writeCustomers([]);
+      setCustomersNotice('');
+    }
+    setCustomersLoading(true);
+    try {
+      const res = await myCustomers();
+      if (!mounted.current) return;
+      writeCustomers(Array.isArray(res.customers) ? res.customers : []);
+      setCustomersNotice('');
+    } catch (e) {
+      if (!mounted.current) return;
+      const status = (e as { status?: number }).status ?? 0;
+      if (status === 401) { onSessionExpired(); return; }
+      // Answering an unreachable server with an empty list would tell the engineer he has no
+      // customers, when the office gave him twenty. Keep the last good copy and say it is not fresh.
+      setCustomersNotice(customersRef.current.length
+        ? 'القائمة المعروضة من آخر اتصال — لو المكتب ضاف عميل أو نقل واحد، هتظهر أول ما الشبكة ترجع.'
+        : `تعذر تحميل قائمة العملاء. ${(e as Error).message || ''}`.trim());
+    } finally {
+      if (mounted.current) setCustomersLoading(false);
+    }
+  }, [onSessionExpired, user, writeCustomers]);
+
+  /**
+   * The catalogue, read the same way as the customer book: last good copy stays on screen when the
+   * network is gone, and the notice says it is not fresh rather than pretending otherwise.
+   */
+  const loadProducts = useCallback(async () => {
+    if (!user) { writeProducts([]); setProductsNotice(''); productsOwnerRef.current = null; return; }
+    if (productsOwnerRef.current !== user.id) {
+      productsOwnerRef.current = user.id;
+      writeProducts([]);
+      setProductsNotice('');
+    }
+    setProductsLoading(true);
+    try {
+      const res = await myProducts();
+      if (!mounted.current) return;
+      writeProducts(Array.isArray(res.products) ? res.products : []);
+      setProductsNotice('');
+    } catch (e) {
+      if (!mounted.current) return;
+      const status = (e as { status?: number }).status ?? 0;
+      if (status === 401) { onSessionExpired(); return; }
+      setProductsNotice(productsRef.current.length
+        ? 'القائمة المعروضة من آخر اتصال — أي صنف جديد يضيفه المكتب هيظهر أول ما الشبكة ترجع.'
+        : `تعذر تحميل قائمة الأصناف. ${(e as Error).message || ''}`.trim());
+    } finally {
+      if (mounted.current) setProductsLoading(false);
+    }
+  }, [onSessionExpired, user, writeProducts]);
+
   useEffect(() => {
-    if (!user) { setTrackingActive(false); setSummary(null); setVisits([]); setError(''); return; }
+    if (!user) {
+      setTrackingActive(false); setSummary(null); setVisits([]); setError('');
+      writeCustomers([]); listOwnerRef.current = null;
+      writeProducts([]); productsOwnerRef.current = null;
+      return;
+    }
     void refresh();
     const timer = setInterval(() => {
       if (syncing.current) return;
@@ -127,7 +243,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
           // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
           // leave a stale warning pinned to the screen all day.
           setSyncNotice(result.notice ?? '');
-          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
         }
         // If the OS killed the background service mid-shift, the engineer must know now —
         // not when the manager reports a stale signal.
@@ -142,7 +258,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       if (mounted.current) {
         setPending(result.pending);
         setSyncNotice(result.notice ?? '');
-        setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+        setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
       }
     }).catch(() => undefined);
     return () => clearInterval(timer);
@@ -235,9 +351,12 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         throw e instanceof Error && e.message === BACKGROUND_START_FAILED ? e : new Error('تم بدء الوردية، لكن تعذر تشغيل تتبع الموقع. تأكد من صلاحية الموقع ثم حاول مجددًا.');
       }
       await refresh();
+      // The shift just proved this phone can reach the server, so this is the moment to take the
+      // customer list with him into the field — the check-in sheet falls back to it when the bars die.
+      void loadCustomers();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, user?.id]);
+  }, [loadCustomers, refresh, user?.id]);
 
   const finishShift = useCallback(async () => {
     // Ending the shift with a customer visit still open left the server to close it without a
@@ -284,11 +403,37 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         if (result && mounted.current) {
           setPending(result.pending);
           setSyncNotice(result.notice ?? '');
-          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
         }
         return;
       }
       await refresh();
+    } catch (e) { setError((e as Error).message); throw e; }
+    finally { setBusy(false); }
+  }, [refresh, user?.id]);
+
+  /**
+   * An order is a quantities-only record: no GPS, no shift, no open-visit lock — the office priced
+   * what the yard agreed, and the agreement does not care where the phone was standing. With no
+   * signal the same outbox that carries visits holds it, keyed by the phone's own uuid, so the
+   * office receives the order once even if the phone replays it five times.
+   */
+  const submitOrder = useCallback(async (input: OrderInput) => {
+    setBusy(true); setError('');
+    try {
+      try {
+        await createOrder(input);
+      } catch (e) {
+        if ((e as { status?: number }).status !== 0) throw e;
+        await enqueueOrder({ ...input, recordedAt: Date.now() }, user?.id);
+        setPending(value => value + 1);
+        setOfflineNotice('الطلبية اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        // The regular sync loop retries it. Return only after the durable write succeeds so the
+        // confirmation never says it was saved when the device storage was full.
+        return 'queued' as const;
+      }
+      await refresh();
+      return 'sent' as const;
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
   }, [refresh, user?.id]);
@@ -306,7 +451,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         if (result && mounted.current) {
           setPending(result.pending);
           setSyncNotice(result.notice ?? '');
-          setOfflineNotice(pendingVisitNotice(result.pendingVisits));
+          setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
         }
         return;
       }
@@ -317,7 +462,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
 
   return {
     summary, visits, pending, loading, busy, trackingActive, syncNotice, offlineNotice, backgroundNotice, error,
+    customers, customersLoading, customersNotice, loadCustomers,
+    products, productsLoading, productsNotice, loadProducts,
     clearError: () => setError(''),
-    refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut,
+    refresh, beginShift, resumeTracking, finishShift, checkIn, checkOut, submitOrder,
   };
 }

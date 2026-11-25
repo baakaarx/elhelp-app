@@ -7,8 +7,6 @@ import './src/trackingTask';
 import LoginScreen from './src/LoginScreen';
 import HomeScreen from './src/HomeScreen';
 import VisitsScreen from './src/VisitsScreen';
-import ReportScreen from './src/ReportScreen';
-import DailyReports from './src/DailyReports';
 import SettingsScreen from './src/SettingsScreen';
 import { UNCONFIGURED, me, logout } from './src/api';
 import { clearDeviceData, getToken } from './src/storage';
@@ -21,12 +19,10 @@ import { initializePushHandling } from './src/push';
 import { colors, fonts, radius, space } from './src/theme';
 import type { User } from './src/types';
 
-type Tab = 'home' | 'visits' | 'reports' | 'daily' | 'settings';
+type Tab = 'home' | 'visits' | 'settings';
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'home', label: 'الرئيسية', icon: '◉' },
   { id: 'visits', label: 'الزيارات', icon: '☷' },
-  { id: 'reports', label: 'التقارير', icon: '✎' },
-  { id: 'daily', label: 'اليومي', icon: '▤' },
   { id: 'settings', label: 'حسابي', icon: '⚙' },
 ];
 
@@ -81,7 +77,6 @@ function Root() {
   const insets = useSafeAreaInsets();
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [tab, setTab] = useState<Tab>('home');
-  const [pushRefresh, setPushRefresh] = useState(0);
   const [checking, setChecking] = useState(true);
 
   const onSessionExpired = useCallback(async () => {
@@ -92,9 +87,9 @@ function Root() {
   const field = useField(user ?? null, onSessionExpired);
   const selectTab = useCallback((next: Tab) => {
     setTab(next);
-    // Visits and reports are the tabs engineers open most; refresh them on entry so a
+    // Refresh visits on entry so a
     // stale poll never looks like a broken button.
-    if (next === 'visits' || next === 'reports') void field.refresh();
+    if (next === 'visits') void field.refresh();
   }, [field.refresh]);
 
   const completeLogout = useCallback(async () => {
@@ -133,8 +128,7 @@ function Root() {
     let subscription: { remove: () => void } | undefined;
     const openForNotification = (response: import('expo-notifications').NotificationResponse) => {
       const data = response.notification.request.content.data as { type?: string };
-      if (data.type === 'report_reviewed') { setTab('reports'); setPushRefresh(value => value + 1); }
-      else if (data.type === 'daily_report_reviewed') setTab('daily');
+      if (data.type === 'report_reviewed' || data.type === 'daily_report_reviewed') setTab('home');
       void field.refresh();
     };
     void import('expo-notifications').then(async Notifications => {
@@ -207,13 +201,9 @@ function Root() {
                 user={user}
                 field={field}
                 onOpenVisits={() => selectTab('visits')}
-                onOpenReports={() => selectTab('reports')}
-                onOpenDaily={() => selectTab('daily')}
               />
             )}
             {tab === 'visits' && <VisitsScreen user={user} field={field} />}
-            {tab === 'reports' && <ReportScreen ownerId={user.id} onPending={() => void field.refresh()} refreshKey={pushRefresh} />}
-            {tab === 'daily' && <DailyReports user={user} onDone={() => void field.refresh()} timezone={field.summary?.timezone} />}
             {tab === 'settings' && (
               <SettingsScreen
                 user={user}

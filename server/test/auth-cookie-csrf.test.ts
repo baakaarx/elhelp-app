@@ -17,7 +17,7 @@ test('a same-site sibling cannot use a cookie to stop an engineer shift', async 
   });
   assert.equal(managerLogin.status, 200);
   const manager = { 'X-Mandoub-Token': managerLogin.body.token, 'X-Mandoub-Client': 'admin' };
-  const created = await client.post('/api/reps').set(manager).send({
+  const created = await client.post('/api/reps').set(manager).send({ region: 'منطقة اختبار',
     name: 'مهندس أ', email: 'engineer@csrf.test', password: 'RepPassword123!',
   });
   assert.equal(created.status, 201);

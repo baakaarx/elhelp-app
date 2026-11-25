@@ -26,7 +26,7 @@ async function login(email: string, password: string) {
 
 async function addRep(adminToken: string, name: string, email: string) {
   const result = await client.post('/api/reps').set(headers(adminToken, 'admin'))
-    .send({ name, email, password: 'RepPassword123!' });
+    .send({ region: 'منطقة اختبار', name, email, password: 'RepPassword123!' });
   assert.equal(result.status, 201, JSON.stringify(result.body));
   return result.body.user.id as string;
 }

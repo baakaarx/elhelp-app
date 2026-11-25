@@ -18,6 +18,19 @@ export function parseNumberText(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** Money must not silently turn an ambiguous decimal comma into a larger amount. */
+export function parseMoneyText(value: string): number | null {
+  let text = normalizeDigits(value).trim().replace(/٫/g, '.');
+  if (/[٬,،]/.test(text)) {
+    if (!/^\d{1,3}(?:[٬,،]\d{3})+(?:\.\d+)?$/.test(text)) return null;
+    text = text.replace(/[٬,،]/g, '');
+  }
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+  if ((text.split('.')[1] ?? '').replace(/0+$/, '').length > 2) return null;
+  const amount = Number(text);
+  return Number.isFinite(amount) && amount <= 1_000_000_000 ? amount : null;
+}
+
 export const hhmmss = (ms: number) => {
   const total = Math.max(0, Math.floor(ms / 1000));
   const h = String(Math.floor(total / 3600)).padStart(2, '0');

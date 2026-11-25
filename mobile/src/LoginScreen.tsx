@@ -81,7 +81,7 @@ export default function LoginScreen({ onLogin }: { onLogin: (user: User) => void
             </View>
             <Text style={styles.title}>الهلب جروب</Text>
             <Text style={styles.tagline}>مبيدات وأسمدة زراعية · منذ ١٩٩٣</Text>
-            <Text style={styles.sub}>سجّل الدخول لبدء وردية الميدان وتسجيل زياراتك وتقاريرك.</Text>
+            <Text style={styles.sub}>سجّل الدخول لبدء وردية الميدان وتسجيل زياراتك وطلبياتك.</Text>
           </View>
 
           <View style={styles.card}>

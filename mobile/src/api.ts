@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
-import type { DailyReportInput, GeoPoint, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
+import type { Customer, DailyReportInput, GeoPoint, OrderInput, OrderView, Product, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -71,6 +71,14 @@ export const changeMyPassword = (currentPassword: string, newPassword: string) =
 export const deleteMyAccount = (email: string) =>
   request<{ ok: true }>('/api/me', { method: 'DELETE', body: JSON.stringify({ confirm: true, email }) });
 
+/**
+ * الطلبية بتتبعت من غير GPS ومن غير وردية: هي وعد بالكميات مش بحركة — والضغط نفسه معناه «ابعت»،
+ * فالطابور هنا بيستقبل نفس الجسم لو الشبكة قطعت، والسيرفر بيقبل إعادة الإرسال من غير ما يضاعف.
+ */
+export const createOrder = (order: OrderInput) =>
+  post<{ order: OrderView; duplicate: boolean }>('/api/orders', order, { queued: true });
+export const myOrders = () => get<{ orders: OrderView[] }>('/api/orders?limit=50');
+
 export async function login(email: string, password: string) {
   const res = await post<{ token: string; user: User }>('/api/auth/login', { email: email.trim().toLowerCase(), password });
   await setToken(res.token);
@@ -118,6 +126,21 @@ export const reportMockLocation = (shiftId: string, deviceId: string) =>
 
 export const mySummary = (date?: string) => get<RepSummary>(`/api/me/summary${date ? `?date=${date}` : ''}`);
 export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits${date ? `?date=${date}` : ''}`);
+/**
+ * The engineers's own slice of the company's customer book — the list a visit is booked from. The
+ * server scopes it by session (this endpoint never returns another man's customers) and leaves out
+ * the customers the office stopped. Read-only on purpose: adding and moving customers is the office's
+ * job, on the dashboard.
+ */
+export const myCustomers = () => get<{ customers: Customer[] }>('/api/customers');
+/**
+ * قائمة الأصناف — للقراءة في الميدان.
+ *
+ * No prices arrive on a phone session, and that is the whole design: «بقدّم إيه» question is answered
+ * here, «بكام» is answered by the office. Cached the way the customer book is, because the question gets
+ * asked in a farm with two bars of signal.
+ */
+export const myProducts = () => get<{ products: Product[] }>('/api/products');
 export const myRoute = (userId: string, date?: string) => get<RouteResponse>(`/api/reps/${userId}/route${date ? `?date=${date}` : ''}`);
 /**
  * `recordedAt` is the instant the visit was recorded. It is only sent when the phone had no

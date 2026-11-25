@@ -39,8 +39,8 @@ test.describe('المتابعة الحية والفريق', () => {
     await page.getByRole('button', { name: /فريق الميدان/ }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'فريق الميدان' })).toBeVisible();
     await expect(page.getByRole('heading', { level: 2, name: 'الفريق' })).toBeVisible();
-    await page.getByRole('button', { name: /إنجازات وتقارير/ }).click();
-    await expect(page.getByRole('heading', { level: 1, name: 'إنجازات وتقارير' })).toBeVisible();
+    await page.getByRole('button', { name: /الزيارات والطلبيات/ }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'الزيارات والطلبيات' })).toBeVisible();
     await page.getByRole('button', { name: /هويتي/ }).click();
     await expect(page.getByRole('heading', { name: 'الخصوصية والاحتفاظ' })).toBeVisible();
     await expect(page.getByText(/لا يبدأ التتبع إلا بعد موافقة/)).toBeVisible();
@@ -55,6 +55,9 @@ test.describe('المتابعة الحية والفريق', () => {
     await page.getByLabel('البريد الإلكتروني').fill(email);
     await page.getByLabel('كلمة المرور الأولية').fill('NewRepPassword123!');
     await page.getByLabel('الهاتف').fill('01012345678');
+    await page.getByRole('button', { name: 'إنشاء حساب المهندس' }).click();
+    await expect(page.getByLabel('المنطقة')).toHaveAttribute('required', '');
+    await expect(page.getByRole('status')).toHaveCount(0);
     await page.getByLabel('المنطقة').fill('الإسكندرية');
     await page.getByRole('button', { name: 'إنشاء حساب المهندس' }).click();
 
@@ -67,6 +70,12 @@ test.describe('المتابعة الحية والفريق', () => {
     });
     expect(listedReps.status).toBe(200);
     expect(listedReps.emails).toContain(email);
+    const engineer = page.locator('.rep-list li').filter({ hasText: 'مهندس حساب جديد' });
+    await expect(engineer).toContainText('الإسكندرية');
+    await engineer.getByRole('button', { name: 'تعديل المنطقة' }).click();
+    await page.getByLabel('المنطقة الجديدة').fill('البحيرة');
+    await page.getByRole('button', { name: 'حفظ المنطقة' }).click();
+    await expect(engineer).toContainText('البحيرة');
   });
 
   test('the field alerts panel lists exceptions with a jump-to-rep action', async ({ page }) => {
@@ -75,8 +84,65 @@ test.describe('المتابعة الحية والفريق', () => {
     await expect(panel).toBeVisible();
     await expect(panel.locator('.alert').first()).toBeVisible();
     await expect(panel).toContainText(/زيارة مفتوحة|انقطاع/);
-    await panel.getByRole('button', { name: 'فتح' }).first().click();
-    await expect(page.locator('.selected-summary')).toBeVisible();
+    const alert=panel.locator('.alert').filter({has:page.getByRole('button',{name:'فتح'})}).first();
+    const name=(await alert.locator('strong').textContent())!.split(' · ').at(-1)!;
+    await alert.getByRole('button', { name: 'فتح' }).click();
+    const summary=page.getByRole('region',{name:'تفاصيل المهندس المحدد'});
+    await expect(summary).toContainText(name);
+    await expect(summary).toBeInViewport();
+    await expect(summary).toBeFocused();
+    // Opening the same alert twice should still bring the employee back into view.
+    await alert.getByRole('button', { name: 'فتح' }).click();
+    await expect(summary).toBeInViewport();
+    await expect(summary).toBeFocused();
+  });
+
+  test('opening alerts on mobile shows the right engineer and the date of an older open visit', async ({ page }) => {
+    await page.setViewportSize({width:390,height:844});
+    await signInAsManager(page);
+    const overview=await (await page.request.get('/api/overview')).json();
+    const rep=overview.reps[0];
+    const at=Date.now()-3*86400000;
+    const day=new Intl.DateTimeFormat('en-CA',{timeZone:overview.timezone}).format(at);
+    await page.route(`**/api/visits?date=${day}&repId=${rep.id}`,route=>route.fulfill({json:{visits:[{id:'old-visit',userId:rep.id,customerName:'عميل الزيارة القديمة',purpose:'visit',status:'open',checkedInAt:at,checkedOutAt:null,durationSeconds:null,recordedOffline:false,pendingResult:false,autoClosed:false}]}}));
+    await page.route('**/api/alerts',route=>route.fulfill({json:{alerts:[
+      {id:'test-long-visit',level:'warn',code:'long_open_visit',repId:rep.id,repName:rep.name,title:'زيارة مفتوحة منذ فترة طويلة',detail:'زيارة قديمة',at},
+      {id:'test-missing-rep',level:'warn',code:'stale_gps',repId:'missing-rep',repName:'مهندس غير متاح',title:'تنبيه اختبار',detail:'تفاصيل',at:Date.now()},
+    ],generatedAt:Date.now()}}));
+    await page.getByRole('button',{name:'تحديث',exact:true}).click();
+    const panel=page.getByRole('region',{name:'تنبيهات الميدان'});
+    await panel.locator('.alert').filter({hasText:'زيارة قديمة'}).getByRole('button',{name:'فتح'}).click();
+    const summary=page.getByRole('region',{name:'تفاصيل المهندس المحدد'});
+    await expect(summary).toContainText(rep.name);
+    await expect(summary).toBeFocused();
+    await expect(summary).toBeInViewport();
+    await expect(page.getByLabel('يوم المسار')).toHaveValue(day);
+    await expect(summary).toContainText('عميل الزيارة القديمة');
+    await expect(summary).toContainText('مفتوحة');
+    await panel.locator('.alert').filter({hasText:'مهندس غير متاح'}).getByRole('button',{name:'فتح'}).click();
+    await expect(panel.getByRole('alert')).toContainText('المهندس غير ظاهر في القائمة الحالية');
+    await expect(summary).toContainText(rep.name);
+  });
+
+  test('opening an idle justification jumps to the right engineer and missing engineers show an explanation', async ({ page }) => {
+    await signInAsManager(page);
+    const overview=await (await page.request.get('/api/overview')).json();
+    const rep=overview.reps[0];
+    const at=Date.now()-86400000;
+    const day=new Intl.DateTimeFormat('en-CA',{timeZone:overview.timezone}).format(at);
+    const report=(id:string,userId:string,repName:string)=>({id,userId,repName,shiftId:null,lat:null,lng:null,accuracy:null,reason:'توقف للاختبار',durationMinutes:60,deviceId:'test',createdAt:at});
+    await page.route('**/api/idle-reports?limit=20',route=>route.fulfill({json:{reports:[{...report('newer',rep.id,rep.name),reason:'تبرير أحدث',createdAt:Date.now()}, {...report('one',rep.id,rep.name),reason:'تبرير أقدم مختار'},report('two','missing-rep','مهندس غير متاح')]}}));
+    await page.getByRole('button',{name:'تحديث',exact:true}).click();
+    const panel=page.getByRole('region',{name:'تبريرات الوقوف'});
+    await panel.locator('.alert').filter({hasText:'تبرير أقدم مختار'}).getByRole('button',{name:'فتح'}).click();
+    const summary=page.getByRole('region',{name:'تفاصيل المهندس المحدد'});
+    await expect(summary).toContainText(rep.name);
+    await expect(summary).toContainText('تبرير أقدم مختار');
+    await expect(summary).toBeFocused();
+    await expect(summary).toBeInViewport();
+    await expect(page.getByLabel('يوم المسار')).toHaveValue(day);
+    await panel.locator('.alert').filter({hasText:'مهندس غير متاح'}).getByRole('button',{name:'فتح'}).click();
+    await expect(panel.getByRole('alert')).toContainText('المهندس غير ظاهر في القائمة الحالية');
   });
 
   test('expanding alerts and idle justifications shows every item returned by the API', async ({ page }) => {

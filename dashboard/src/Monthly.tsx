@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, apiBlob } from './api';
 import { ago, durationText, formatNumber } from './session';
 import { localMonth, shiftMonth } from './dates';
@@ -11,20 +11,25 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
   // Derive the default from the server timezone when it arrives; keep only explicit user choices.
   const month = selectedMonth ?? currentMonth;
-  const [data, setData] = useState<MonthlyResponse | null>(null);
+  const key = month;
+  const currentKey = useRef(key); currentKey.current = key;
+  const requestId = useRef(0);
+  const [result, setResult] = useState<{ key: string; data: MonthlyResponse } | null>(null);
+  const data = result?.key === key ? result.data : null;
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     if (!timezone) return;
-    setLoading(true); setError('');
-    try { setData(await api<MonthlyResponse>(`/api/monthly?month=${month}`)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'تعذر تحميل السجل الشهري.'); }
-    finally { setLoading(false); }
+    const id = ++requestId.current;
+    setLoading(true); setError(''); setResult(null);
+    try { const data = await api<MonthlyResponse>(`/api/monthly?month=${month}`); if (id === requestId.current && currentKey.current === key) setResult({ key, data }); }
+    catch (e) { if (id === requestId.current && currentKey.current === key) setError(e instanceof Error ? e.message : 'تعذر تحميل السجل الشهري.'); }
+    finally { if (id === requestId.current && currentKey.current === key) setLoading(false); }
   }, [month, timezone]);
 
-  useEffect(() => { if (timezone) void load(); }, [load, timezone]);
+  useEffect(() => { if (timezone) void load(); return () => { requestId.current++; }; }, [load, timezone]);
 
   const rows = useMemo(() => [...(data?.rows ?? [])].sort((a, b) => b.visits - a.visits || b.dailyReports - a.dailyReports), [data]);
   const totals = useMemo(() => rows.reduce((a, r) => ({
@@ -78,6 +83,8 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
         {error && <p className="error" role="alert">{error}</p>}
       </div>
 
+      {!data && !error && <p role="status">جارٍ تحميل البيانات للفترة المختارة…</p>}
+      {data && <>
       <div className="stats">
         <div className="card stat"><span className="muted small">إجمالي الزيارات</span><strong>{formatNumber(totals.visits)}</strong><small className="muted">{formatNumber(totals.visitsCompleted)} مكتملة</small></div>
         <div className="card stat"><span className="muted small">التقارير اليومية</span><strong>{formatNumber(totals.dailyReports)}</strong><small className="muted">الورقة الرسمية</small></div>
@@ -124,6 +131,7 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
           {reps.length} مهندس على الحساب · البيانات حتى {data?.to ?? month} بتوقيت {data?.timezone ?? 'Africa/Cairo'}.
         </p>
       </div>
+      </>}
     </section>
   );
 }

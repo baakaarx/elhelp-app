@@ -329,7 +329,7 @@ test('the KPI analysis task is gone from the assistant', async () => {
 
 test('collections made while checking out are counted in the KPI report', async () => {
   const open = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
-    id: crypto.randomUUID(), customerName: 'مزرعة التحصيل', purpose: 'collection',
+    id: crypto.randomUUID(), customerId: bookCustomer(store, repId, 'مزرعة التحصيل'), customerName: 'مزرعة التحصيل', purpose: 'collection',
     location: { lat: 31.2, lng: 29.9, accuracy: 8 }, deviceId: 'test-device-001',
   });
   assert.equal(open.status, 201, JSON.stringify(open.body));
@@ -507,7 +507,7 @@ let visitId = '';
 test('a visit check-in stores the customer and opens the visit', async () => {
   visitId = crypto.randomUUID();
   const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
-    id: visitId, customerName: 'مزرعة الزيارة', governorate: 'القاهرة', district: 'مدينة نصر', village: 'القرية',
+    id: visitId, customerId: bookCustomer(store, repId, 'مزرعة الزيارة'), customerName: 'مزرعة الزيارة', governorate: 'القاهرة', district: 'مدينة نصر', village: 'القرية',
     phone: '01000000009', purpose: 'visit', notes: 'اختبار', location: { lat: 31.21, lng: 29.92, accuracy: 7 },
   });
   assert.equal(res.status, 201, JSON.stringify(res.body));
@@ -518,7 +518,7 @@ test('a visit check-in stores the customer and opens the visit', async () => {
 });
 
 test('a second check-in is rejected while a visit is still open', async () => {
-  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id: crypto.randomUUID(), customerName: 'عميل تاني', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  const res = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id: crypto.randomUUID(), customerId: bookCustomer(store, repId, 'عميل تاني'), customerName: 'عميل تاني', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   assert.equal(res.status, 409);
   assert.equal(res.body.openVisitId, visitId);
 });
@@ -545,7 +545,7 @@ test('checking out closes the visit with a measured duration', async () => {
 
 test('a collection checkout is mirrored into the manager reports feed', async () => {
   const id = crypto.randomUUID();
-  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerName: 'مؤسسة التحصيل', purpose: 'collection', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
+  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerId: bookCustomer(store, repId, 'مؤسسة التحصيل'), customerName: 'مؤسسة التحصيل', purpose: 'collection', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
   const out = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({ outcome: 'تحصيل نقدي', amount: 1250 });
   assert.equal(out.status, 200);
   const mirrored = store.get('SELECT * FROM reports WHERE id=?', `visit:${id}`);
@@ -685,7 +685,7 @@ test('the privacy policy is public and states the live retention window', async 
 test('a representative can erase their own account and everything it produced', async () => {
   const email = `erase.${Date.now()}@mandoub.test`;
   const password = 'ErasePassword123!';
-  const created = await admin.post('/api/reps').set(auth(adminToken)).send({ name: 'مهندس حذف', email, password });
+  const created = await admin.post('/api/reps').set(auth(adminToken)).send({ region: 'منطقة اختبار', name: 'مهندس حذف', email, password });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const id = created.body.user.id;
 
@@ -733,7 +733,7 @@ async function freshRep(label: string) {
   freshSeq += 1;
   const email = `${label}.${freshSeq}.${Date.now()}@mandoub.test`;
   const password = 'FreshPassword123!';
-  const created = await admin.post('/api/reps').set(auth(adminToken)).send({ name: `مهندس ${label}`, email, password });
+  const created = await admin.post('/api/reps').set(auth(adminToken)).send({ region: 'منطقة اختبار', name: `مهندس ${label}`, email, password });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const session = await login(request(app), email, password);
   return { email, token: session.body.token as string, id: created.body.user.id as string };
@@ -749,7 +749,7 @@ test('TRUST_PROXY trusts only a local proxy unless configured otherwise', () => 
 
 test('the session cookie is HttpOnly, Lax and never cross-site', async () => {
   const created = await admin.post('/api/reps').set(auth(adminToken))
-    .send({ name: 'مهندس الكوكيز', email: `cookie.${Date.now()}@mandoub.test`, password: 'CookiePassword123!' });
+    .send({ region: 'منطقة اختبار', name: 'مهندس الكوكيز', email: `cookie.${Date.now()}@mandoub.test`, password: 'CookiePassword123!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const res = await request(app).post('/api/auth/login').send({ email: created.body.user.email, password: 'CookiePassword123!' });
   assert.equal(res.status, 200);
@@ -764,7 +764,7 @@ test('the session cookie is HttpOnly, Lax and never cross-site', async () => {
 test('a representative changes their password and the other devices are signed out', async () => {
   const email = `pw.${Date.now()}@mandoub.test`;
   const created = await admin.post('/api/reps').set(auth(adminToken))
-    .send({ name: 'مهندس كلمة المرور', email, password: 'StartPassword1!' });
+    .send({ region: 'منطقة اختبار', name: 'مهندس كلمة المرور', email, password: 'StartPassword1!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
 
   const first = await login(request(app), email, 'StartPassword1!');
@@ -842,7 +842,7 @@ test('the assistant internals are for the manager only', async () => {
 test('an exported CSV never runs a name as a spreadsheet formula', async () => {
   const email = `formula.${Date.now()}@mandoub.test`;
   const name = '=HYPERLINK("http://attacker.test","x")';
-  assert.equal((await admin.post('/api/reps').set(auth(adminToken)).send({ name, email, password: 'FormulaPassword1!' })).status, 201);
+  assert.equal((await admin.post('/api/reps').set(auth(adminToken)).send({ region: 'منطقة اختبار', name, email, password: 'FormulaPassword1!' })).status, 201);
 
   const today = localDate(config.timezone);
   const res = await request(app).get(`/api/kpis.csv?from=${today}&to=${today}`).set(auth(adminToken)).buffer(true).parse(csvParser).expect(200);
@@ -922,7 +922,7 @@ test('one busy office address does not spend another engineer\'s budget', async 
     const adminSession = await client.post('/api/auth/login').send({ email: config.adminEmail, password: config.adminPassword });
     const adminToken = adminSession.body.token as string;
     const created = await client.post('/api/reps').set(auth(adminToken))
-      .send({ name: 'مهندس الشبكة', email: 'nat@mandoub.test', password: 'NatPassword1234!' });
+      .send({ region: 'منطقة اختبار', name: 'مهندس الشبكة', email: 'nat@mandoub.test', password: 'NatPassword1234!' });
     assert.equal(created.status, 201);
     const repSession = await client.post('/api/auth/login').send({ email: 'nat@mandoub.test', password: 'NatPassword1234!' });
     const repToken = repSession.body.token as string;
@@ -946,7 +946,7 @@ test('activity days are counted on the company calendar, not on UTC', async () =
     const adminSession = await client.post('/api/auth/login').send({ email: config.adminEmail, password: config.adminPassword });
     const adminToken = adminSession.body.token as string;
     const created = await client.post('/api/reps').set(auth(adminToken))
-      .send({ name: 'مهندس الأيام', email: 'days@mandoub.test', password: 'DaysPassword1234!' });
+      .send({ region: 'منطقة اختبار', name: 'مهندس الأيام', email: 'days@mandoub.test', password: 'DaysPassword1234!' });
     const engineer = created.body.user as { id: string };
     const repSession = await client.post('/api/auth/login').send({ email: 'days@mandoub.test', password: 'DaysPassword1234!' });
     const repToken = repSession.body.token as string;
@@ -995,6 +995,7 @@ test('a forged token does not buy a fresh rate-limit bucket', async () => {
 // ---- Distance filter: the rewrite must be bit-for-bit the same numbers ---------------------
 
 import { distanceMeters, haversine, type GeoPoint } from '../src/geo.js';
+import { bookCustomer } from './book.js';
 
 /** The original implementation, kept here as the reference the optimised one is checked against. */
 function referenceDistance(points: GeoPoint[]): number {
@@ -1225,7 +1226,7 @@ test("a representative's visit list is today's field log, not every visit ever",
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const older = crypto.randomUUID();
   const visit = await request(app).post('/api/visits/check-in').set(auth(engineer.token))
-    .send({ id: older, customerName: 'مزرعة الأمس', purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 9 } });
+    .send({ id: older, customerId: bookCustomer(store, engineer.id, 'مزرعة الأمس'), customerName: 'مزرعة الأمس', purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 9 } });
   assert.equal(visit.status, 201, JSON.stringify(visit.body));
   // Closed with a real result, so it is a finished visit of yesterday and not one of the two
   // exceptions the engineer's list legitimately carries (still open, or missing its result).
@@ -1339,7 +1340,7 @@ test('Google sign-in only works for an account the manager already created', asy
   setKeySource(async () => [providerKeys.jwk as never]);
   try {
     const created = await admin.post('/api/reps').set(auth(adminToken))
-      .send({ name: 'مهندس جوجل', email: 'gmail.signer@mandoub.test', password: 'FreshPassword123!' });
+      .send({ region: 'منطقة اختبار', name: 'مهندس جوجل', email: 'gmail.signer@mandoub.test', password: 'FreshPassword123!' });
     assert.equal(created.status, 201, JSON.stringify(created.body));
 
     const managerOnPhone = await request(app).post('/api/auth/oauth').set('X-Mandoub-Client', 'rep')
@@ -1402,7 +1403,7 @@ test('Apple signs in on the stored link even when it stops sending the email', a
   setKeySource(async () => [providerKeys.jwk as never]);
   try {
     const created = await admin.post('/api/reps').set(auth(adminToken))
-      .send({ name: 'مهندس أبل', email: 'apple.signer@mandoub.test', password: 'FreshPassword123!' });
+      .send({ region: 'منطقة اختبار', name: 'مهندس أبل', email: 'apple.signer@mandoub.test', password: 'FreshPassword123!' });
     assert.equal(created.status, 201);
 
     const appleClaims = (overrides: Record<string, unknown> = {}) => ({

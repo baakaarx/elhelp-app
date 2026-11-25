@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { bookCustomer } from './book.js';
 
 /**
  * One table saying who may call what, checked for every route at once.
@@ -16,7 +17,7 @@ const config = {
   trustProxy: false, loginAccountLimit: 50, loginRateLimit: { windowMs: 60000, limit: 5000 },
 };
 const instance = createApp(config);
-const { app } = instance;
+const { app, store } = instance;
 const client = request(app);
 test.after(async () => { await instance.close(); });
 const as = (token: string) => ({ 'X-Mandoub-Token': token, 'X-Mandoub-Client': 'rep' });
@@ -55,7 +56,7 @@ test('set the installation up: one manager and two engineers', async () => {
     .send({ deviceId: 'authz-device-b', consentVersion: '1.0', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   assert.ok([200, 201].includes(start.status), JSON.stringify(start.body));
   const visit = await client.post('/api/visits/check-in').set(as(otherRepToken)).send({
-    id: crypto.randomUUID(), customerName: 'عميل ب', governorate: 'الإسكندرية', district: 'سموحة',
+    id: crypto.randomUUID(), customerId: bookCustomer(store, otherRepId, 'عميل ب'), customerName: 'عميل ب', governorate: 'الإسكندرية', district: 'سموحة',
     village: '', phone: '01000000001', purpose: 'visit', notes: '', location: { lat: 31.2, lng: 29.9, accuracy: 8 },
     deviceId: 'authz-device-b',
   });

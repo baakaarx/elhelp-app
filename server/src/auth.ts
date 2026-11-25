@@ -25,7 +25,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 }
 export const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 export function publicUser(row: Row) {
-  return { id: row.id, name: row.name, email: row.email, role: row.role, phone: row.phone, region: row.region, color: row.color, active: !!row.active, approvalStatus: String(row.approval_status || 'approved'), deviceId: String(row.device_id || ''), oauthProvider: String(row.oauth_provider || '') };
+  return { id: row.id, name: row.name, email: row.email, role: row.role, accessScope: row.access_scope || 'full', phone: row.phone, region: row.region, color: row.color, active: !!row.active, approvalStatus: String(row.approval_status || 'approved'), deviceId: String(row.device_id || ''), oauthProvider: String(row.oauth_provider || '') };
 }
 /**
  * Sessions are database rows.
@@ -189,6 +189,13 @@ export function requireAuth(store: Store, role?: ClientRole) {
     const hint = clientHint(req);
     if (hint && user.role !== hint) { res.status(403).json(clientRoleMismatch(hint)); return; }
     if (role && user.role !== role) { res.status(403).json({ error: 'ليست لديك صلاحية لهذا الإجراء.' }); return; }
+    // حساب المخازن له جلسة لوحة ويب، لكن لا يرث صلاحيات المدير حتى لو عرف رابط API.
+    if (user.access_scope === 'warehouse') {
+      const path = req.originalUrl.split('?')[0];
+      const allowed = path === '/api/auth/me' || path === '/api/auth/logout' || path === '/api/me/password'
+        || path === '/api/warehouse' || path.startsWith('/api/warehouse/');
+      if (!allowed) { res.status(403).json({ error: 'حساب المخازن مسموح له بالمخازن والأصناف فقط.' }); return; }
+    }
     res.locals.user = user;
     res.locals.tokenHash = tokenHash(matched);
     // Slide the session forward, and keep the browser cookie alive with it: the row and the

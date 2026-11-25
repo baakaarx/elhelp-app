@@ -6,6 +6,7 @@ import { createApp } from '../src/app.js';
 import { tokenHash } from '../src/auth.js';
 import { AUTO_CLOSED_OUTCOME, Store } from '../src/db.js';
 import { localDate } from '../src/geo.js';
+import { bookForToken } from './book.js';
 
 /**
  * A visit left open when the shift ends used to stay open for good.
@@ -44,7 +45,7 @@ async function makeRep(tag: string) {
   // after the Test object is created, and it then has no server to talk to.
   const adminTokenValue = await admin();
   const created = await client.post('/api/reps').set('Authorization', `Bearer ${adminTokenValue}`)
-    .send({ name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
+    .send({ region: 'منطقة اختبار', name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   // A session row is what the login route writes; minting it here keeps the per-address login
   // limit (15 per quarter of an hour) out of the way of a file that needs a dozen engineers.
@@ -64,7 +65,7 @@ async function openShift(token: string, deviceId: string) {
 async function checkIn(token: string, name = 'مزرعة مفتوحة') {
   const id = randomUUID();
   const res = await client.post('/api/visits/check-in').set('Authorization', `Bearer ${token}`)
-    .send({ id, customerName: name, purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+    .send({ id, customerId: bookForToken(store, token, name), customerName: name, purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return id;
 }
@@ -241,7 +242,7 @@ test('a late collection amount still reaches the manager as a collection', async
   await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
   const id = randomUUID();
   await client.post('/api/visits/check-in').set('Authorization', `Bearer ${rep.token}`)
-    .send({ id, customerName: 'مزرعة تحصيل', purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+    .send({ id, customerId: bookForToken(store, rep.token, 'مزرعة تحصيل'), customerName: 'مزرعة تحصيل', purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   await client.post('/api/shifts/stop').set('Authorization', `Bearer ${rep.token}`);
   const late = await client.post(`/api/visits/${id}/check-out`).set('Authorization', `Bearer ${rep.token}`)
     .send({ outcome: 'تم التحصيل نقدًا', notes: '', amount: 750, location: null });

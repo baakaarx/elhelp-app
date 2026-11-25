@@ -3,6 +3,8 @@ import type { OutboxItem, OutboxKind } from './types';
 export interface Outbox {
   add(kind: OutboxKind, payload: unknown): Promise<void>;
   list(limit?: number): Promise<OutboxItem[]>;
+  /** All field actions in FIFO order, plus a bounded batch of GPS points. */
+  listForReplay(locationLimit?: number): Promise<OutboxItem[]>;
   remove(key: string): Promise<void>;
   bump(key: string): Promise<void>;
   reject(key: string): Promise<void>;

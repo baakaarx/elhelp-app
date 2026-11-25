@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -8,12 +9,20 @@ const STALE_SHIFT_MS = 18 * 3600000;
 /** The value `users.color` defaults to, shared by every account created before this migration. */
 const DEFAULT_REP_COLOR = '#28745b';
 /** Written into `visits.outcome` when the system closed a visit nobody ended. */
+/**
+ * The buyer types an installation starts with, in the order the office reads them.
+ *
+ * They are a starting point, not a fixed list: the office renames them and adds its own (a «موزع» rate
+ * is a real thing in this trade). A new installation and an old database gaining the price list both get
+ * these three; nobody who deleted one ever gets it back on a restart.
+ */
+export const DEFAULT_PRICE_TIERS = ['جملة', 'نصف جملة', 'تجزئة'];
 export const AUTO_CLOSED_OUTCOME = 'أُغلقت تلقائيًا: انتهت الوردية قبل تسجيل النتيجة';
 /**
  * The hourly sweep, and the reason it may fail.
  *
- * `cleanup` runs unattended at three in the morning inside a timer: a full disk, a lock held past
- * `busy_timeout`, or a corrupt index makes it throw — and an exception inside a timer is an
+ * cleanup runs unattended at three in the morning inside a timer: a full disk, a lock held past
+ * busy_timeout, or a corrupt index makes it throw — and an exception inside a timer is an
  * uncaught exception, so Node exits and the whole installation goes dark until someone notices.
  * Losing one sweep costs nothing (the next one is an hour later); losing the process costs the
  * manager the day's trail. So the error is logged and the server keeps serving.
@@ -103,12 +112,213 @@ export class Store {
       CREATE INDEX IF NOT EXISTS daily_reports_date ON daily_reports(report_date);
       CREATE INDEX IF NOT EXISTS daily_reports_time ON daily_reports(created_at);
       CREATE INDEX IF NOT EXISTS daily_report_visits_report ON daily_report_visits(report_id, position);
+      -- ---- What the company sells: the price list and the items -------------------------------
+      --
+      -- The types of buyer, named by the office. This is what «same farm, two prices» means in this
+      -- database: a customer carries one of these, and an item carries one price per type.
+      CREATE TABLE IF NOT EXISTS price_tiers (
+        id TEXT PRIMARY KEY,
+        -- A type is named or it is not a type: this name is what the price list header reads and what an
+        -- invoice explains itself with, and an empty one is a row no screen can label. The route asks for
+        -- the same thing; a CHECK is what keeps a hand-edited row from becoming the bug instead.
+        name TEXT NOT NULL CHECK(length(trim(name)) >= 2),
+        -- The order the columns are shown in. Prices are read left to right — from the man who buys the
+        -- most to the one who buys one bottle — so the office decides it, not the alphabet.
+        position INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      -- Two types with the same name would make «سعر الجملة» mean two different numbers. The indexes of
+      -- these three tables are created after the migrations (see ensureIndexes), not here.
+
+      -- Pesticides and fertilizers, sold by the pack. The unit column has no default on purpose: a «كرتونة»
+      -- guessed for an item that ships in bottles is a price read as twelve times its value, and the
+      -- invoice looks finished while the number is wrong. An item cannot be entered without saying what
+      -- one unit of it is.
+      CREATE TABLE IF NOT EXISTS products (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('pesticide','fertilizer','other')),
+        unit TEXT NOT NULL,
+        -- What is inside that pack — «٥٠٠ مل»، «٥٠ كجم». Text, and never used in arithmetic: it is what
+        -- a man reads on the screen to know he is pricing the bag he is standing next to.
+        unit_size TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      -- «يوريا ٥٠ كجم – شيكارة» and «يوريا ٢٥ كجم – شيكارة» are two items; the same item entered twice
+      -- under one pack is the duplicate that double-counts a sale. The route trims the text before it
+      -- gets here, because this index compares what it is given.
+
+      -- One price per item per buyer type. There is no single price column on the item on purpose: one
+      -- number there is what gets quoted from memory to a man who buys at another rate. An item with no
+      -- price for a type is a normal state — the office prices that order by hand.
+      CREATE TABLE IF NOT EXISTS warehouses (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS warehouse_stock (
+        warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        milli_qty INTEGER NOT NULL DEFAULT 0 CHECK(milli_qty >= 0),
+        PRIMARY KEY (warehouse_id, product_id)
+      );
+      CREATE TABLE IF NOT EXISTS inventory_movements (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('opening','in','out','transfer')),
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        from_warehouse_id TEXT REFERENCES warehouses(id) ON DELETE RESTRICT,
+        to_warehouse_id TEXT REFERENCES warehouses(id) ON DELETE RESTRICT,
+        milli_qty INTEGER NOT NULL CHECK(milli_qty >= 0), note TEXT NOT NULL DEFAULT '',
+        actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        actor_name TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS inventory_movements_time ON inventory_movements(created_at DESC);
+      CREATE TABLE IF NOT EXISTS inventory_migrations (name TEXT PRIMARY KEY);
+      -- Confirmed sales and customer balances are independent of priced orders and old collection reports.
+      CREATE TABLE IF NOT EXISTS office_sales_v1 (
+        id TEXT PRIMARY KEY, order_id TEXT UNIQUE, customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+        total_piasters INTEGER NOT NULL CHECK(total_piasters >= 0), paid_piasters INTEGER NOT NULL CHECK(paid_piasters >= 0),
+        actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, actor_name TEXT NOT NULL,
+        request_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS office_sales_v1_customer_time ON office_sales_v1(customer_id,created_at);
+      -- A stable invoice number is assigned once when a confirmed sale commits.
+      CREATE TABLE IF NOT EXISTS office_invoice_numbers_v1 (
+        number INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id TEXT NOT NULL UNIQUE REFERENCES office_sales_v1(id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS office_sales_lines_v1 (
+        id TEXT PRIMARY KEY, sale_id TEXT NOT NULL REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        product_name TEXT NOT NULL, unit TEXT NOT NULL, unit_size TEXT NOT NULL,
+        milli_qty INTEGER NOT NULL CHECK(milli_qty > 0), price_piasters INTEGER NOT NULL CHECK(price_piasters >= 0),
+        line_piasters INTEGER NOT NULL CHECK(line_piasters >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS office_sales_lines_v1_sale ON office_sales_lines_v1(sale_id);
+      -- Attribution is fixed at confirmation, never derived from today's customer assignment.
+      -- A missing row means a sale from before attribution existed; a row with a NULL rep is deliberate.
+      CREATE TABLE IF NOT EXISTS office_sale_rep_v1 (
+        sale_id TEXT PRIMARY KEY REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        rep_name TEXT NOT NULL DEFAULT '', source TEXT NOT NULL CHECK(source IN ('order','direct','none'))
+      );
+      CREATE INDEX IF NOT EXISTS office_sale_rep_v1_rep ON office_sale_rep_v1(rep_id);
+
+      CREATE TABLE IF NOT EXISTS office_debts_v1 (
+        id TEXT PRIMARY KEY, customer_id TEXT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE RESTRICT,
+        amount_piasters INTEGER NOT NULL CHECK(amount_piasters >= 0), actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        actor_name TEXT NOT NULL, request_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS office_receipts_v1 (
+        id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        amount_piasters INTEGER NOT NULL CHECK(amount_piasters > 0), actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        actor_name TEXT NOT NULL, request_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS office_receipts_v1_customer ON office_receipts_v1(customer_id,created_at);
+      -- Corrections are append-only; their original sale or receipt remains intact.
+      CREATE TABLE IF NOT EXISTS office_invoice_snapshots_v1 (
+        sale_id TEXT PRIMARY KEY REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        customer_name TEXT NOT NULL, phone TEXT NOT NULL, governorate TEXT NOT NULL, district TEXT NOT NULL,
+        village TEXT NOT NULL, warehouse_name TEXT NOT NULL, rep_name TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS office_corrections_v1 (
+        id TEXT PRIMARY KEY, sale_id TEXT REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        receipt_id TEXT REFERENCES office_receipts_v1(id) ON DELETE RESTRICT,
+        reason TEXT NOT NULL, cash_kind TEXT CHECK(cash_kind IN ('error','refund')),
+        cash_piasters INTEGER NOT NULL CHECK(cash_piasters >= 0),
+        actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, actor_name TEXT NOT NULL,
+        request_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+        CHECK((sale_id IS NULL) <> (receipt_id IS NULL)),
+        CHECK((cash_kind IS NULL AND cash_piasters=0) OR (cash_kind IS NOT NULL AND cash_piasters>0))
+      );
+      CREATE INDEX IF NOT EXISTS office_corrections_sale ON office_corrections_v1(sale_id);
+      CREATE INDEX IF NOT EXISTS office_corrections_receipt ON office_corrections_v1(receipt_id);
+      CREATE TABLE IF NOT EXISTS office_correction_lines_v1 (
+        correction_id TEXT NOT NULL REFERENCES office_corrections_v1(id) ON DELETE RESTRICT,
+        line_id TEXT NOT NULL REFERENCES office_sales_lines_v1(id) ON DELETE RESTRICT,
+        corrected_milli INTEGER NOT NULL CHECK(corrected_milli>=0),
+        returned_milli INTEGER NOT NULL CHECK(returned_milli>=0),
+        amount_piasters INTEGER NOT NULL CHECK(amount_piasters>=0),
+        stock_kind TEXT CHECK(stock_kind IN ('returned','error')),
+        PRIMARY KEY(correction_id,line_id), CHECK(corrected_milli>0 OR returned_milli>0),
+        CHECK((returned_milli=0 AND stock_kind IS NULL) OR (returned_milli>0 AND stock_kind IS NOT NULL))
+      );
+      CREATE INDEX IF NOT EXISTS office_correction_lines_line ON office_correction_lines_v1(line_id);
+      CREATE VIEW IF NOT EXISTS office_sales_lines_net_v1 AS
+        SELECT l.id,l.sale_id,l.product_id,l.product_name,l.unit,l.unit_size,l.price_piasters,
+          l.milli_qty-COALESCE((SELECT SUM(corrected_milli) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS milli_qty,
+          l.line_piasters-COALESCE((SELECT SUM(amount_piasters) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS line_piasters
+        FROM office_sales_lines_v1 l;
+      CREATE VIEW IF NOT EXISTS office_sales_net_v1 AS
+        SELECT s.id,s.order_id,s.customer_id,s.warehouse_id,s.paid_piasters,s.actor_id,s.actor_name,s.request_json,s.created_at,
+          COALESCE((SELECT SUM(line_piasters) FROM office_sales_lines_net_v1 l WHERE l.sale_id=s.id),0) AS total_piasters
+        FROM office_sales_v1 s WHERE EXISTS(SELECT 1 FROM office_sales_lines_net_v1 l WHERE l.sale_id=s.id AND l.milli_qty>0);
+
+
+
+      CREATE TABLE IF NOT EXISTS product_prices (
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        tier_id TEXT NOT NULL REFERENCES price_tiers(id) ON DELETE CASCADE,
+        -- A negative line is either a mistake or a discount hiding where a discount needs a reason.
+        price REAL NOT NULL CHECK(price >= 0),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (product_id, tier_id)
+      );
+
+      -- ---- The company's customer book ---------------------------------------------------------
+      -- Master data of the sales office: the manager and his team enter it from the dashboard, and an
+      -- engineer never adds a customer from his phone. rep_id is the man the office handed him to,
+      -- and it is deliberately nullable — a name the office typed before deciding who drives that
+      -- area is a real customer, not a half-row waiting for an owner. ON DELETE SET NULL and not
+      -- CASCADE: an engineer leaving the company must not delete his customers, they are the
+      -- company's, and they come back to the unassigned pool to be handed out again.
+      -- One name per owner is enforced by the unique index below (a duplicated customer is a duplicated
+      -- sales figure); the unassigned pool gets the same rule checked in the API instead of an index,
+      -- because a UNIQUE index over rep_id IS NULL would make deleting an engineer fail — his rows
+      -- land in that pool on their way out, and a collision there is a fact to merge, not an error.
+      -- This table is deliberately absent from Store.cleanup(): it is the list, not the log, and
+      -- RETENTION_DAYS must not sweep it.
+      CREATE TABLE IF NOT EXISTS customers (
+        id TEXT PRIMARY KEY,
+        rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL DEFAULT '',
+        governorate TEXT NOT NULL DEFAULT '',
+        district TEXT NOT NULL DEFAULT '',
+        village TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        -- Where the relationship stands. «lost» without a reason is how a refused customer becomes
+        -- nobody's mistake, so the reason is required by the route, not by a CHECK.
+        stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','following','active','dormant','lost')),
+        lost_reason TEXT NOT NULL DEFAULT '',
+        -- Which column of the price list this man buys at. Deliberately not the stage above: «جديد» or
+        -- «برّد» says where the relationship stands, «جملة» says what he pays. Null is normal — a
+        -- customer with no type is priced by hand, and the invoice keeps what was chosen.
+        price_tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS customers_rep_name ON customers(rep_id, name COLLATE NOCASE);
+      CREATE INDEX IF NOT EXISTS customers_rep_active ON customers(rep_id, active, name COLLATE NOCASE);
+      -- The office splits the list by place — «عملاء طنطا لمهندس طنطا» — so an area is a lookup path of
+      -- its own here, not a filter people scroll past.
+      CREATE INDEX IF NOT EXISTS customers_area ON customers(governorate, district, active);
+
       -- Field visits: a rep checks in at a customer, then checks out. The pair is the
       -- auditable record used by the manager timeline and the daily KPIs.
       CREATE TABLE IF NOT EXISTS visits (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        -- The name as it was written on the day. It is copied from the chosen customer rather than
+        -- typed by hand, so the row keeps telling the truth after the office renames the farm — and an
+        -- older visit, whose name was typed freely, still reads the same as it did.
         customer_name TEXT NOT NULL,
+        -- Which row of the company's customer book this visit belongs to. Nullable because the visits
+        -- recorded before the book existed have no row to point at, and rewriting them by name would be
+        -- a guess: «محمود» and «محمود عبد الله» are not proof of one man.
+        customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
         governorate TEXT NOT NULL DEFAULT '',
         district TEXT NOT NULL DEFAULT '',
         village TEXT NOT NULL DEFAULT '',
@@ -133,6 +343,77 @@ export class Store {
       CREATE INDEX IF NOT EXISTS visits_user_time ON visits(user_id, checked_in_at);
       CREATE INDEX IF NOT EXISTS visits_open ON visits(user_id, status);
       CREATE INDEX IF NOT EXISTS visits_created ON visits(created_at);
+
+      -- ---- What the engineer agreed to sell: the order ------------------------------------------
+      --
+      -- An order is the promise made in the yard, before anybody put a number on it. The office prices it
+      -- and the phone never does, so there is no price a field could fill in here, and no rate travelling
+      -- to a screen where it would be read as an offer. The team's move is to price these rows and close
+      -- them; an invoice is a different document on top of a closed order, not a rename of one.
+      --
+      -- It is written against a row of the customer book — the same rule as a visit: a name typed by hand
+      -- is a customer who may not exist. visit_id is a link and not a parent, because the man who takes
+      -- an order by phone from the road must not have to check himself in at his own gate to make the
+      -- paperwork work, and the man who agrees it in the field gets the connection the manager wants.
+      CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        -- Who agreed it, kept beside the customer because «مين قال للمزارع الكمية دي؟» gets asked.
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        -- RESTRICT, never CASCADE: an order is money-talk, and deleting a customer must not quietly un-make
+        -- a promise the company made to him. The office stops the row instead, and the sentence it is
+        -- refused with names what is holding him.
+        customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        -- Nullable, and SET NULL rather than CASCADE: cleanup() sweeps visits under RETENTION_DAYS, and a
+        -- promise made inside a swept visit is still a promise. The order survives; it only stops claiming
+        -- a visit it can no longer point at.
+        visit_id TEXT REFERENCES visits(id) ON DELETE SET NULL,
+        -- draft: on the phone, not sent. sent: the office's turn. priced: the team put the numbers on it
+        -- and closed it. There is no «cancelled» on purpose — a field order going away is a decision
+        -- somebody signs, not a row that disappears, and it will be added with its reason when it is needed.
+        status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','sent','priced')),
+        notes TEXT NOT NULL DEFAULT '',
+        -- The phone's own clock on a replayed order, exactly as visits carry it, so the office can tell
+        -- «أُرسلت من المزرعة» from «أُرسلت لما الشبكة رجعت» instead of guessing.
+        recorded_offline INTEGER NOT NULL DEFAULT 0,
+        -- Written once by the office and never recomputed afterwards: it is what the team said the order
+        -- came to, so editing a catalogue price next month must not silently change a closed agreement.
+        total REAL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        sent_at INTEGER, priced_at INTEGER,
+        -- Which account closed it. A number written into the company's book carries a name with it.
+        priced_by TEXT REFERENCES users(id) ON DELETE SET NULL
+      );
+      -- One line per item per order. Two lines for the same item are not two agreements — they are one
+      -- agreement counted twice, which is exactly what a replayed offline send would do to the numbers.
+      CREATE TABLE IF NOT EXISTS order_lines (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        -- The order the phone showed, kept rather than re-derived, because «٣ شيكارة يوريا» written under
+        -- «١ شيكارة مبيد» is the sentence the office reads in that order.
+        position INTEGER NOT NULL,
+        -- RESTRICT again: the item the office priced against cannot disappear under the line. With this in
+        -- place, the guard on deleting an item — which reads the schema instead of a list — starts refusing
+        -- on its own the day orders exist, and names the rows that hold it.
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        -- The name and the pack as they were when the quantity was agreed. A pack is the only thing that
+        -- makes a quantity mean something, and the office is allowed to change «عبوة» to «كرتونة» tomorrow
+        -- without rewriting what was promised in the yard.
+        product_name TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        unit_size TEXT NOT NULL DEFAULT '',
+        -- Zero is a line nobody needs and a negative is a refund wearing a costume; the ceiling is there
+        -- for the fat finger («٣٠» typed as «٣٠٠٠٠٠») that no screen notices before the warehouse does.
+        qty REAL NOT NULL CHECK(qty > 0 AND qty <= 100000),
+        notes TEXT NOT NULL DEFAULT '',
+        -- ---- what the office fills in, and NULL until it does ----
+        -- Which column of the price list was used, so «ليه السعر ده؟» has an answer. Null together with a
+        -- price means it was typed by hand — the normal state for a customer with no buyer type.
+        tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL,
+        price REAL CHECK(price IS NULL OR price >= 0),
+        created_at INTEGER NOT NULL
+      );
+      -- Deliberately absent from Store.cleanup(): a promise outlives the GPS trail it was made in, and
+      -- RETENTION_DAYS is a promise about locations, not about the company's sales history.
       -- Pending approval for OAuth social login (manager must approve)
       CREATE TABLE IF NOT EXISTS idle_reports (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -217,9 +498,128 @@ export class Store {
       "ALTER TABLE users ADD COLUMN oauth_subject TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
       "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE users ADD COLUMN access_scope TEXT NOT NULL DEFAULT 'full' CHECK(access_scope IN ('full','warehouse'))",
       "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE visits ADD COLUMN recorded_offline INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE visits ADD COLUMN customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL",
+      // The buyer type a customer is quoted at. Nullable, and null means «nobody decided yet» rather
+      // than «جملة by default»: an order for such a customer is priced by hand.
+      "ALTER TABLE customers ADD COLUMN price_tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL",
     ]) { try { this.db.exec(sql); } catch {} }
+    if (!this.all('PRAGMA table_info(users)').some(column => column.name === 'access_scope')) {
+      throw new Error('تعذر إضافة صلاحيات حساب المخازن؛ السيرفر لن يعمل قبل إصلاح قاعدة البيانات.');
+    }
+    // Older databases can contain an unrelated stock_movements table. Preserve it untouched.
+    // Only the previous version of this inventory feature has these exact columns; its movements
+    // can be copied once into the separate ledger without assuming old signed entries are balances.
+    const oldMovementColumns = new Set(this.all('PRAGMA table_info(stock_movements)').map(column => column.name));
+    const inventoryColumns = ['id','kind','product_id','from_warehouse_id','to_warehouse_id','milli_qty','note','actor_id','actor_name','created_at'];
+    if (inventoryColumns.every(column => oldMovementColumns.has(column)) && !this.get("SELECT 1 FROM inventory_migrations WHERE name='copy_v1_movements'")) {
+      this.transaction(() => {
+        this.db.exec(`INSERT INTO inventory_movements (${inventoryColumns.join(',')}) SELECT ${inventoryColumns.join(',')} FROM stock_movements`);
+        this.run("INSERT INTO inventory_migrations(name) VALUES ('copy_v1_movements')");
+      });
+    }
+    // Assign pre-existing test/legacy sales in their recorded order, atomically and only once.
+    // BEGIN IMMEDIATE also serializes startup with another process writing confirmed sales.
+    this.transaction(() => {
+      this.db.exec(`INSERT INTO office_invoice_numbers_v1(sale_id)
+        SELECT s.id FROM office_sales_v1 s WHERE NOT EXISTS
+        (SELECT 1 FROM office_invoice_numbers_v1 n WHERE n.sale_id=s.id)
+        ORDER BY s.created_at,s.rowid`);
+    });
+    this.ensureIndexes();
+    this.checkCatalogueLinks();
+
+    // The check is made here, at seeding time, and not from a flag read before the schema block ran: an
+    // installation whose boot died between creating this table and filling it has to end up with a list
+    // the next time it comes up.
+    if (!this.get('SELECT 1 AS x FROM price_tiers LIMIT 1')) {
+      const now = Date.now();
+      for (const [position, name] of DEFAULT_PRICE_TIERS.entries()) {
+        this.run('INSERT INTO price_tiers(id,name,position,created_at,updated_at) VALUES (?,?,?,?,?)', randomUUID(), name, position, now, now);
+      }
+    }
+  }
+  /**
+   * Every index that touches a column a migration may still be adding, or a table an old installation
+   * can already own under the same name with a different shape.
+   *
+   * Two failures, one rule: the index is asked for after the migrations, and only when the columns it
+   * needs are actually there. On a database that already had the table, the CREATE above is skipped, so
+   * a column that arrives with an ALTER does not exist when the schema block runs — and an installation
+   * that once ran an abandoned version of this file owns a table with the right name and the wrong
+   * columns. In both cases SQLite refuses the index, and a refusal inside this constructor is not a
+   * warning somebody notices: it is a server that never starts. So the mismatch is logged with the
+   * column it is about, and the installation keeps serving.
+   */
+  private ensureIndexes() {
+    const defs: Array<{ table: string; index: string; stmt: string; needs: string[] }> = [
+      { table: 'visits', index: 'visits_customer', stmt: 'CREATE INDEX IF NOT EXISTS visits_customer ON visits(customer_id)', needs: ['customer_id'] },
+      { table: 'price_tiers', index: 'price_tiers_name', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS price_tiers_name ON price_tiers(name COLLATE NOCASE)', needs: ['name'] },
+      { table: 'price_tiers', index: 'price_tiers_active', stmt: 'CREATE INDEX IF NOT EXISTS price_tiers_active ON price_tiers(active, position)', needs: ['active', 'position'] },
+      { table: 'products', index: 'products_name_unit', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS products_name_unit ON products(name COLLATE NOCASE, unit COLLATE NOCASE)', needs: ['name', 'unit'] },
+      { table: 'products', index: 'products_active_category', stmt: 'CREATE INDEX IF NOT EXISTS products_active_category ON products(active, category, name COLLATE NOCASE)', needs: ['active', 'category', 'name'] },
+      { table: 'product_prices', index: 'product_prices_tier', stmt: 'CREATE INDEX IF NOT EXISTS product_prices_tier ON product_prices(tier_id, price)', needs: ['tier_id', 'price'] },
+      { table: 'orders', index: 'orders_rep_time', stmt: 'CREATE INDEX IF NOT EXISTS orders_rep_time ON orders(user_id, created_at)', needs: ['user_id', 'created_at'] },
+      { table: 'orders', index: 'orders_customer_time', stmt: 'CREATE INDEX IF NOT EXISTS orders_customer_time ON orders(customer_id, created_at)', needs: ['customer_id', 'created_at'] },
+      { table: 'orders', index: 'orders_visit', stmt: 'CREATE INDEX IF NOT EXISTS orders_visit ON orders(visit_id)', needs: ['visit_id'] },
+      // The badge on the manager's dashboard is exactly «what is still waiting for the team», so the
+      // queue is an index of its own rather than a scan over every order the company ever wrote.
+      { table: 'orders', index: 'orders_queue', stmt: 'CREATE INDEX IF NOT EXISTS orders_queue ON orders(created_at) WHERE status = \'sent\'', needs: ['status', 'created_at'] },
+      // Unique on the item, not merely on the pair with position: see the note above the table.
+      { table: 'order_lines', index: 'order_lines_item', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS order_lines_item ON order_lines(order_id, product_id)', needs: ['order_id', 'product_id'] },
+      { table: 'order_lines', index: 'order_lines_position', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS order_lines_position ON order_lines(order_id, position)', needs: ['order_id', 'position'] },
+      // What the delete guard on `products` counts, one row per line — without it, deleting an item walks
+      // the whole lines table and the office waits on a spinner to be told no.
+      { table: 'order_lines', index: 'order_lines_product_ref', stmt: 'CREATE INDEX IF NOT EXISTS order_lines_product_ref ON order_lines(product_id)', needs: ['product_id'] },
+    ];
+    for (const def of defs) {
+      const shape = new Set((this.all(`PRAGMA table_info(${def.table})`) as Array<Record<string, any>>).map(col => String(col.name)));
+      const missing = def.needs.filter(column => !shape.has(column));
+      if (missing.length) {
+        // Loud on purpose: a missing index is a slow lookup, but a table whose columns are not the ones
+        // this file expects means the data below is being read with the wrong assumptions.
+        console.error(`[db] skipped index ${def.index}: table ${def.table} does not have ${missing.join(', ')} — this database holds an older shape of that table.`);
+        continue;
+      }
+      try { this.db.exec(def.stmt); } catch (error) {
+        console.error(`[db] could not create index ${def.index}:`, error);
+      }
+    }
+  }
+  /**
+   * The one catalogue fault that no data shows and no boot fails on: a price table whose parent moved.
+   *
+   * Renaming a table drags every child's REFERENCES clause with it, which is how an installation that was
+   * put back by hand ends up with product_prices pointing at products_legacy_rejected_batch. Every read
+   * of the list works, so nothing looks wrong — until the first price is saved, and the office is told
+   * «FOREIGN KEY constraint failed» about a table nobody has seen in months. Saying it here, once, in the
+   * sentence that names the script that fixes it, is the difference between a boot log and a support call.
+   */
+  private checkCatalogueLinks() {
+    const links: Array<[table: string, column: string, parent: string, about: string]> = [
+      ['product_prices', 'product_id', 'products', 'الأصناف ما تتسعّرش على القاعدة دي'],
+      ['product_prices', 'tier_id', 'price_tiers', 'الأصناف ما تتسعّرش على القاعدة دي'],
+      // The order tables are newer than this guard, and the fault costs more here: a line whose parent
+      // moved is a promise the office can open in the list and cannot price.
+      ['order_lines', 'order_id', 'orders', 'الطلبيات ما تتقفلش على القاعدة دي'],
+      ['order_lines', 'product_id', 'products', 'الطلبيات ما تتسعّرش على القاعدة دي'],
+      ['orders', 'customer_id', 'customers', 'الطلبيات ما تركبش على عميل القاعدة دي'],
+      ['orders', 'visit_id', 'visits', 'الطلبيات ما تركبش على زيارة القاعدة دي'],
+    ];
+    for (const [table, column, parent, about] of links) {
+      const columns = new Set((this.all(`PRAGMA table_info(${table})`) as Array<Record<string, any>>).map(col => String(col.name)));
+      // No such column means the table itself is an older shape, which ensureIndexes has already reported
+      // by name; two warnings for one fact teach the operator to ignore both.
+      if (!columns.has(column)) continue;
+      const link = (this.all(`PRAGMA foreign_key_list(${table})`) as Array<Record<string, any>>)
+        .find(fk => String(fk.from) === column);
+      const target = link ? String(link.table).replace(/^["`]/, '').replace(/["`]$/, '') : '';
+      if (target !== parent) {
+        console.error(`[db] ${table}.${column} references ${target || 'nothing'} instead of ${parent} — ${about}. شغّل: node scripts/repair-legacy-catalogue.mjs`);
+      }
+    }
   }
   get(sql: string, ...params: any[]): Row | undefined { return this.db.prepare(sql).get(...params) as Row | undefined; }
   all(sql: string, ...params: any[]): Row[] { return this.db.prepare(sql).all(...params) as Row[]; }

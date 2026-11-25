@@ -43,6 +43,16 @@ export default async function globalSetup() {
     return { Authorization: `Bearer ${repTokens.get(email)}` };
   }
 
+  /**
+   * The office enters a customer before a visit can be recorded on him, so the seed cannot skip
+   * straight to check-in: it would be refused, and every browser test would run on an empty database.
+   */
+  async function book(repId: string, data: { name: string; governorate?: string; district?: string; phone?: string }) {
+    const created = await api.post('/api/customers', { data: { ...data, repId }, headers: admin });
+    if (!created.ok()) throw new Error(`e2e: booking ${data.name} failed (${created.status()}) ${await created.text()}`);
+    return (await created.json()).customer.id as string;
+  }
+
   for (const [index, rep] of E2E_REPS.entries()) {
     const auth = await repAuth(rep.email);
     const location = { lat: 31.2001 + index * 0.01, lng: 29.9187 + index * 0.01, accuracy: 12 };
@@ -70,8 +80,9 @@ export default async function globalSetup() {
   // Engineer 1: a closed visit, a field report and the signed daily report.
   const first = E2E_REPS[0];
   const firstAuth = await repAuth(first.email);
+  const nourId = await book(repIds[0], { name: 'مزرعة النور', governorate: 'البحيرة', district: 'إيتاي البارود', phone: '01000000000' });
   const visit = await api.post('/api/visits/check-in', {
-    data: { id: randomUUID(), customerName: 'مزرعة النور', purpose: 'visit', governorate: 'البحيرة', district: 'إيتاي البارود', location: { lat: 31.21, lng: 29.93, accuracy: 9 } },
+    data: { id: randomUUID(), customerId: nourId, purpose: 'visit', governorate: 'البحيرة', district: 'إيتاي البارود', location: { lat: 31.21, lng: 29.93, accuracy: 9 } },
     headers: firstAuth,
   });
   if (!visit.ok()) throw new Error(`e2e: check-in failed (${visit.status()}) ${await visit.text()}`);
@@ -95,11 +106,42 @@ export default async function globalSetup() {
   });
   if (!daily.ok()) throw new Error(`e2e: daily report failed (${daily.status()}) ${await daily.text()}`);
 
+  // The price list the office typed: one item, priced at one buyer type only, so the screens have both
+  // states to show — a number, and «بلا سعر» next to it. Set through the same routes the dashboard uses.
+  const tiers = (await (await api.get('/api/price-tiers', { headers: admin })).json()).tiers as Array<{ id: string; name: string }>;
+  const wholesale = tiers.find(tier => tier.name === 'جملة')!;
+  const product = await api.post('/api/products', {
+    data: { name: 'يوريا ٤٦٪', category: 'fertilizer', unit: 'شيكارة', unitSize: '٥٠ كجم', notes: 'السعر للشيكارة نفسها' },
+    headers: admin,
+  });
+  if (!product.ok()) throw new Error(`e2e: seeding the catalogue failed (${product.status()}) ${await product.text()}`);
+  const productId = (await product.json()).product.id as string;
+  const priced = await api.put(`/api/products/${productId}/prices`, {
+    data: { prices: [{ tierId: wholesale.id, price: 1150 }] }, headers: admin,
+  });
+  if (!priced.ok()) throw new Error(`e2e: pricing the seeded item failed (${priced.status()}) ${await priced.text()}`);
+  // A customer the office has already handed a buyer type, and one it has not: the book has to read both.
+  const tiered = await api.patch(`/api/customers/${nourId}`, { data: { priceTierId: wholesale.id }, headers: admin });
+  if (!tiered.ok()) throw new Error(`e2e: quoting the seeded customer failed (${tiered.status()}) ${await tiered.text()}`);
+
+  // The queue the office opens to: one order the field already sent, on the customer who holds the
+  // wholesale type, so the pricing sheet has a real prefill to be checked against — 2 × 1150 is
+  // typed by nobody; it arrives on the list price the office itself entered two lines above.
+  const orderCustomerId = await book(repIds[0], { name: 'عميل اختبار الطلبية', governorate: 'البحيرة', district: 'إيتاي البارود' });
+  const orderTier = await api.patch(`/api/customers/${orderCustomerId}`, { data: { priceTierId: wholesale.id }, headers: admin });
+  if (!orderTier.ok()) throw new Error(`e2e: pricing order customer failed (${orderTier.status()})`);
+  const seededOrder = await api.post('/api/orders', {
+    data: { id: randomUUID(), customerId: orderCustomerId, notes: 'التسليم الأحد الصبح', lines: [{ productId, qty: 2 }] },
+    headers: firstAuth,
+  });
+  if (!seededOrder.ok()) throw new Error(`e2e: seeding the field order failed (${seededOrder.status()}) ${await seededOrder.text()}`);
+
   // Engineer 2: a visit left open for hours, so the manager sees the unclosed check-in.
   const second = E2E_REPS[1];
   const secondAuth = await repAuth(second.email);
+  const deltaId = await book(repIds[1], { name: 'مزرعة الدلتا', governorate: 'المنوفية', district: 'شبين الكوم' });
   await api.post('/api/visits/check-in', {
-    data: { id: randomUUID(), customerName: 'مزرعة الدلتا', purpose: 'visit', location: { lat: 31.05, lng: 30.47, accuracy: 14 } },
+    data: { id: randomUUID(), customerId: deltaId, purpose: 'visit', location: { lat: 31.05, lng: 30.47, accuracy: 14 } },
     headers: secondAuth,
   });
 

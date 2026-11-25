@@ -3,8 +3,9 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { colors, fonts, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle } from './ui';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
+import CatalogueSheet from './CatalogueSheet';
 import { dayText, hhmmss, isToday, timeText } from './format';
-import { visitPurposeLabels, type User, type Visit } from './types';
+import { customerStageLabels, visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
 
 export default function VisitsScreen({ user, field }: { user: User; field: FieldBundle }) {
@@ -12,11 +13,18 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   const [filter, setFilter] = useState<'all' | 'open' | 'closed'>('all');
   const [checkInOpen, setCheckInOpen] = useState(false);
   const [checkOutVisit, setCheckOutVisit] = useState<Visit | null>(null);
+  const [catalogueOpen, setCatalogueOpen] = useState(false);
 
   // The ticking clock only exists for the open visit's stopwatch. It used to run on every
   // visit screen: a full re-render of the whole list every second, all day, on a phone that is
   // already tracking GPS — for a number that does not change when nothing is open.
   const openVisitId = field.summary?.openVisit?.id ?? null;
+  // The book is asked for here as well as inside the sheet: this tab is where an engineer lands when
+  // he is still in range of a network, and the list has to be in memory before he walks into a farm
+  // with no signal.
+  useEffect(() => { void field.loadCustomers(); }, [field.loadCustomers]);
+  // Same reason for the catalogue: the «بتبيعوا كبريتات؟» question gets asked in the farm, not in the car.
+  useEffect(() => { void field.loadProducts(); }, [field.loadProducts]);
   useEffect(() => {
     if (!openVisitId) return;
     // Start from the current second: the clock on this screen may be older than the visit.
@@ -48,7 +56,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         <View style={styles.header}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>زيارات اليوم</Text>
-            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'}{measuredClosed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
+            <Text style={styles.sub}>{todayCount} زيارة · {open ? 'واحدة مفتوحة' : 'لا زيارة مفتوحة'} · قائمتك {field.customers.length} عميل{field.products.length ? ` · ${field.products.length} صنف` : ''}{measuredClosed.length ? ` · متوسط ${avgMinutes} دقيقة` : ''}{pendingCount ? ` · ${pendingCount} بدون نتيجة` : ''}{earlierOpen ? ' · زيارة قديمة مفتوحة' : ''}</Text>
           </View>
           <View style={styles.count}><Text style={styles.countText}>{todayCount}</Text></View>
         </View>
@@ -58,6 +66,20 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
             <Body>لازم تبدأ الوردية الأول عشان تقدر تسجّل زيارة — التسجيل مربوط بورديتك وموقعك.</Body>
           </Card>
         )}
+
+        {shift && !field.customersLoading && field.customers.length === 0 && (
+          <Card tone="mint">
+            <Body>
+              قائمتك فاضية من العملاء. مدير المبيعات هو اللي بيضيف عملاء الشركة وبيحدد مين يخدم كل
+              عميل — من غير كده مفيش زيارة تتسجّل، لأن الزيارة بتتربط بعميل من القائمة مش باسم مكتوب.
+            </Body>
+            <Row style={{ marginTop: space.sm }}>
+              <Button size="sm" variant="soft" label="أعد تحميل القائمة" onPress={() => { void field.loadCustomers(); }} />
+            </Row>
+          </Card>
+        )}
+
+        {field.customersNotice ? <Body muted style={{ fontSize: 12 }}>{field.customersNotice}</Body> : null}
 
         {open ? (
           <Card tone="mint" style={styles.openCard}>
@@ -77,6 +99,8 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
         ) : (
           <Button label={shift ? '+ تسجيل زيارة جديدة' : 'ابدأ الوردية من الرئيسية'} onPress={() => { if (shift) setCheckInOpen(true); }} disabled={!shift} icon="◎" />
         )}
+
+        <Button label="قائمة الأصناف اللي بنبيعها" variant="soft" onPress={() => setCatalogueOpen(true)} icon="☷" />
 
         <SectionTitle title="السجل" action={
           <Row style={{ gap: 6 }}>
@@ -126,6 +150,7 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
 
       <CheckInSheet visible={checkInOpen} onClose={() => setCheckInOpen(false)} field={field} user={user} />
       <CheckOutSheet visit={checkOutVisit} onClose={() => setCheckOutVisit(null)} field={field} />
+      <CatalogueSheet visible={catalogueOpen} onClose={() => setCatalogueOpen(false)} field={field} />
     </>
   );
 }
