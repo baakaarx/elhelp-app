@@ -32,7 +32,7 @@ const PASSWORD = 'Rep1234!Rep';
 
 async function makeRep(name: string) {
   const email = `rep.${randomUUID().slice(0, 8)}@orders.test`;
-  const created = await client.post('/api/reps').set(admin).send({ name, email, password: PASSWORD });
+  const created = await client.post('/api/reps').set(admin).send({ region: 'منطقة اختبار', name, email, password: PASSWORD });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   return { id: created.body.user.id as string, name, email, auth: await login(email, PASSWORD, 'rep') };
 }

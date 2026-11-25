@@ -28,7 +28,7 @@ async function admin() {
 async function makeRep(tag: string) {
   const email = `${tag}.${Date.now()}@export.test`;
   const adminValue = await admin();
-  const created = await client.post('/api/reps').set(auth(adminValue)).send({ name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
+  const created = await client.post('/api/reps').set(auth(adminValue)).send({ region: 'منطقة اختبار', name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const id = String(created.body.user.id);
   const token = randomBytes(32).toString('base64url');

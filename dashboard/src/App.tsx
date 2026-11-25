@@ -489,6 +489,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     event.preventDefault();
     setError('');
     setCreatedRepMessage('');
+    if (!newRep.region.trim()) { setError('اكتب منطقة المهندس.'); return; }
     setCreatingRep(true);
     try {
       const result = await post<{ user: User }>('/api/reps', {
@@ -505,6 +506,21 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     } catch (e) { setError(e instanceof Error ? e.message : 'تعذر إنشاء حساب المهندس.'); }
     finally { setCreatingRep(false); }
   }
+  const [regionFor, setRegionFor] = useState<Rep | null>(null);
+  const [regionValue, setRegionValue] = useState('');
+  const [savingRegion, setSavingRegion] = useState(false);
+  async function saveRegion(event: FormEvent) {
+    event.preventDefault();
+    if (!regionFor || !regionValue.trim()) { setError('اكتب منطقة المهندس.'); return; }
+    setSavingRegion(true);
+    try {
+      await patch(`/api/reps/${regionFor.id}`, { region: regionValue.trim() });
+      setCreatedReps(current => current.map(rep => rep.id === regionFor.id ? { ...rep, region: regionValue.trim() } : rep));
+      setRegionFor(null); setError(''); await onChange();
+    } catch (e) { setError(e instanceof Error ? e.message : 'تعذر حفظ المنطقة.'); }
+    finally { setSavingRegion(false); }
+  }
+  const regionButton = (rep: Rep) => <button className="btn ghost sm" onClick={() => { setRegionFor(rep); setRegionValue(rep.region || ''); setError(''); }}>تعديل المنطقة</button>;
   // A representative who forgets their password cannot sign in and cannot be emailed: the
   // manager has to hand out a new one. Kept inline instead of a browser prompt so the field is
   // masked and the rule (ten characters) is visible while typing.
@@ -607,8 +623,8 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 onChange={event => setNewRep(current => ({ ...current, phone: event.target.value }))} />
             </label>
             <label className="field">
-              <span>المنطقة <span className="muted">(اختياري)</span></span>
-              <input maxLength={80} autoComplete="address-level1" value={newRep.region}
+              <span>المنطقة</span>
+              <input required maxLength={80} autoComplete="address-level1" value={newRep.region}
                 onChange={event => setNewRep(current => ({ ...current, region: event.target.value }))} />
             </label>
           </div>
@@ -631,6 +647,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                 <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{(rep as any).oauthProvider ? `دخول عبر ${(rep as any).oauthProvider}` : rep.region || 'بدون منطقة'} · {rep.createdAt ? `انضم ${localDateText(rep.createdAt, timezone)}` : 'تاريخ الانضمام غير مسجّل'}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : <small className="muted small">بدون جهاز بعد</small>}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {regionButton(rep)}
                   {deviceButton(rep)}
                   <button className="btn primary sm" onClick={() => approve(rep, 'approved')}>قبول</button>
                   <button className="btn ghost sm" onClick={() => approve(rep, 'rejected')}>رفض</button>
@@ -650,6 +667,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                 <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                 <span className="grow"><strong>{rep.name}</strong><small dir="ltr">{rep.email}</small><small>{rep.tracking ? '● في وردية الآن' : '○ متصل'} · {rep.region || 'بدون منطقة'} · {formatNumber(rep.visitsToday)} زيارة اليوم · {rep.shiftStartedAt ? `بدأ ${timeText(rep.shiftStartedAt, timezone)}` : ''}</small>{(rep as any).deviceId ? <small className="mono" dir="ltr">📱 {(rep as any).deviceId.slice(0, 12)}…</small> : null}</span>
                 <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {regionButton(rep)}
                   {deviceButton(rep)}
                   {passwordButton(rep)}
                   <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
@@ -666,6 +684,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
                   <li key={rep.id} className="team-row" style={{ opacity: rep.active ? 0.85 : 0.65 }}>
                     <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                     <span className="grow"><strong>{rep.name}</strong><small>{rep.region || 'بدون منطقة'}{rep.active ? '' : ' · الحساب متوقف'}</small></span>
+                    {regionButton(rep)}
                     {deviceButton(rep)}
                     {passwordButton(rep)}
                     <button className={rep.active ? 'btn ghost sm' : 'btn primary sm'} onClick={() => toggle(rep)}>{rep.active ? 'إيقاف' : 'تفعيل'}</button>
@@ -675,6 +694,11 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
               </ul>
             </>
           )}
+          {regionFor && <form className="panel" onSubmit={event => void saveRegion(event)}>
+            <h4>منطقة {regionFor.name}</h4>
+            <div className="filters"><label className="field inline"><span>المنطقة الجديدة</span><input required maxLength={80} value={regionValue} onChange={event => setRegionValue(event.target.value)} /></label>
+            <button className="btn primary sm" disabled={savingRegion}>حفظ المنطقة</button><button type="button" className="btn ghost sm" onClick={() => setRegionFor(null)}>إلغاء</button></div>
+          </form>}
           {passwordFor && (
             <div className="panel" style={{ marginTop: 12, borderColor: '#f0c27a', background: '#fffaf0' }}>
               <h4 className="panel-title">كلمة مرور جديدة لـ {passwordFor.name}</h4>

@@ -47,7 +47,7 @@ const oauthLogin = z.object({
 });
 const newRep = z.object({
   name: z.string().trim().min(2).max(80), email: z.email().max(254).transform(x => x.toLowerCase().trim()),
-  password: z.string().min(10).max(200), phone: z.string().trim().max(30).default(''), region: z.string().trim().max(80).default(''),
+  password: z.string().min(10).max(200), phone: z.string().trim().max(30).default(''), region: z.string().trim().min(1).max(80),
 });
 /**
  * Each engineer needs their own colour: the live map draws one pin per account, and every
@@ -889,7 +889,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.get('/api/reps', adminOnly, (_req, res) => res.json({ reps: overview().reps }));
   app.post('/api/reps', adminOnly, (req, res) => {
     const parsed = newRep.safeParse(req.body);
-    if (!parsed.success) { res.status(400).json({ error: 'راجع الاسم والبريد وكلمة المرور (١٠ أحرف على الأقل).' }); return; }
+    if (!parsed.success) { res.status(400).json({ error: 'راجع الاسم والبريد وكلمة المرور (١٠ أحرف على الأقل)، واكتب منطقة المهندس.' }); return; }
     const data = parsed.data;
     if (store.get('SELECT id FROM users WHERE email=?', data.email)) { res.status(409).json({ error: 'البريد الإلكتروني مستخدم بالفعل.' }); return; }
     const id = randomUUID();
@@ -906,7 +906,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = z.object({
       active: z.boolean().optional(),
       name: z.string().trim().min(2, 'الاسم قصير.').max(80).optional(),
-      region: z.string().trim().max(80).optional(),
+      region: z.string().trim().min(1).max(80).optional(),
     }).strict().refine(value => Object.keys(value).length > 0, { message: 'مفيش حاجة تتغير.' }).safeParse(req.body ?? {});
     const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
     if (!parsed.success || !user) { res.status(400).json({ error: 'بيانات المهندس أو الحالة غير صحيحة.' }); return; }
@@ -1220,11 +1220,12 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (stage) { where.push('c.stage=?'); params.push(stage); }
     const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 80) : '';
     if (q) { where.push('(c.name LIKE ? OR c.phone LIKE ? OR c.village LIKE ? OR c.district LIKE ?)'); params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
-    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 300));
+    const limit = Math.min(500, Math.max(1, Math.floor(Number(req.query.limit) || 300)));
+    const offset = Math.max(0, Math.min(1_000_000, Math.floor(Number(req.query.offset) || 0)));
     const rows = store.all(`${CUSTOMER_SELECT} WHERE ${where.length ? where.join(' AND ') : '1=1'}
-      ORDER BY c.name COLLATE NOCASE LIMIT ?`, ...params, limit) as Array<Record<string, any>>;
+      ORDER BY c.name COLLATE NOCASE, c.id LIMIT ? OFFSET ?`, ...params, limit + 1, offset) as Array<Record<string, any>>;
     res.setHeader('Cache-Control', 'private, no-store');
-    res.json({ customers: rows.map(row => asCustomer(row)!) });
+    res.json({ customers: rows.slice(0, limit).map(row => asCustomer(row)!), hasMore: rows.length > limit });
   });
 
   app.post('/api/customers', adminOnly, (req, res) => {

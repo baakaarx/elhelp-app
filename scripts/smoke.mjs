@@ -105,10 +105,10 @@ check('no token means no answer', (await get('/api/kpis')).status === 401);
 check('a made-up token is refused', (await get('/api/kpis', 'not-a-real-token')).status === 401);
 
 section('the manager creates an engineer');
-const created = await post('/api/reps', admin, { name: 'مهندس الدخان', email: runaway, password: REP_PASSWORD });
+const created = await post('/api/reps', admin, { name: 'مهندس الدخان', email: runaway, password: REP_PASSWORD, region: 'الإسكندرية' });
 check('the account is created', created.status === 201, JSON.stringify(created.body).slice(0, 120));
 const repId = String(created.body?.user?.id || '');
-check('the same address cannot be used twice', [400, 409].includes((await post('/api/reps', admin, { name: 'مهندس مكرر', email: runaway, password: REP_PASSWORD })).status));
+check('the same address cannot be used twice', [400, 409].includes((await post('/api/reps', admin, { name: 'مهندس مكرر', email: runaway, password: REP_PASSWORD, region: 'الإسكندرية' })).status));
 const repLogin = await signIn(runaway, REP_PASSWORD, 'rep');
 const rep = repLogin.body?.token;
 check('the engineer can sign in from the mobile client', Boolean(rep), `${repLogin.status}${limiterHint(repLogin)}`);
@@ -471,7 +471,7 @@ check('and the old password no longer signs in', oldPassword.status === 401, `${
 
 section('an engineer cannot read another engineer paper');
 const otherEmail = `smoke.other.${Date.now()}@smoke.test`;
-const other = await post('/api/reps', admin, { name: 'مهندس تاني', email: otherEmail, password: REP_PASSWORD });
+const other = await post('/api/reps', admin, { name: 'مهندس تاني', email: otherEmail, password: REP_PASSWORD, region: 'البحيرة' });
 check('a second engineer exists', other.status === 201, JSON.stringify(other.body).slice(0, 90));
 const otherLogin = await signIn(otherEmail, REP_PASSWORD, 'rep');
 const otherToken = otherLogin.body?.token;

@@ -41,7 +41,7 @@ async function makeRep(tag: string) {
   // the server and it fails with "Cannot read properties of null (reading 'address')".
   const adminTokenValue = await admin();
   const created = await client.post('/api/reps').set(auth(adminTokenValue))
-    .send({ name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
+    .send({ region: 'منطقة اختبار', name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const id = String(created.body.user.id);
   const token = randomBytes(32).toString('base64url');

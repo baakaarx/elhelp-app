@@ -31,7 +31,7 @@ test('warehouse staff is isolated from office APIs and prices, including direct 
   assert.equal(sales.status,201);
   const loginSales = await client.post('/api/auth/login').send({email:'sales@test.com',password:'SalesPassword123!'});
   assert.equal((await client.get('/api/overview').set('Authorization',`Bearer ${loginSales.body.token}`)).status,200);
-  const rep = await client.post('/api/reps').set(admin).send({name:'مهندس اختبار',email:'rep@warehouse.test',password:'Rep1234!Rep'});
+  const rep = await client.post('/api/reps').set(admin).send({ region: 'منطقة اختبار',name:'مهندس اختبار',email:'rep@warehouse.test',password:'Rep1234!Rep'});
   assert.equal(rep.status,201);
   const repLogin = await client.post('/api/auth/login').send({email:'rep@warehouse.test',password:'Rep1234!Rep'});
   assert.equal((await client.get('/api/warehouse/products').set('Authorization',`Bearer ${repLogin.body.token}`)).status,403);

@@ -55,6 +55,9 @@ test.describe('المتابعة الحية والفريق', () => {
     await page.getByLabel('البريد الإلكتروني').fill(email);
     await page.getByLabel('كلمة المرور الأولية').fill('NewRepPassword123!');
     await page.getByLabel('الهاتف').fill('01012345678');
+    await page.getByRole('button', { name: 'إنشاء حساب المهندس' }).click();
+    await expect(page.getByLabel('المنطقة')).toHaveAttribute('required', '');
+    await expect(page.getByRole('status')).toHaveCount(0);
     await page.getByLabel('المنطقة').fill('الإسكندرية');
     await page.getByRole('button', { name: 'إنشاء حساب المهندس' }).click();
 
@@ -67,6 +70,12 @@ test.describe('المتابعة الحية والفريق', () => {
     });
     expect(listedReps.status).toBe(200);
     expect(listedReps.emails).toContain(email);
+    const engineer = page.locator('.rep-list li').filter({ hasText: 'مهندس حساب جديد' });
+    await expect(engineer).toContainText('الإسكندرية');
+    await engineer.getByRole('button', { name: 'تعديل المنطقة' }).click();
+    await page.getByLabel('المنطقة الجديدة').fill('البحيرة');
+    await page.getByRole('button', { name: 'حفظ المنطقة' }).click();
+    await expect(engineer).toContainText('البحيرة');
   });
 
   test('the field alerts panel lists exceptions with a jump-to-rep action', async ({ page }) => {

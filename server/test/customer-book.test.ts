@@ -34,7 +34,7 @@ const admin = await login(config.adminEmail, config.adminPassword);
 const PASSWORD = 'Rep1234!Rep';
 
 /** An engineer created through the dashboard's own route, so `region` is real data and not a fixture. */
-async function makeRep(name: string, region = '') {
+async function makeRep(name: string, region = 'منطقة اختبار') {
   const email = `rep.${randomUUID().slice(0, 8)}@book.test`;
   const created = await client.post('/api/reps').set(admin).send({ name, email, password: PASSWORD, region });
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -136,7 +136,7 @@ test('the area table groups the list by place and names the engineer who drives 
   assert.equal(row.total, 3);
   assert.equal(row.unassigned, 3);
   assert.equal(row.settled, false, 'three customers with no owner is exactly the row to act on');
-  assert.equal(row.suggestedRepId, null, 'nobody in the team has a region yet, so nothing is proposed');
+  assert.equal(row.suggestedRepId, null, 'no engineer is assigned to this region, so nothing is proposed');
   const heldRow = res.body.areas.find((area: any) => area.bareDistrict === 'المحلة');
   assert.equal(heldRow.settled, true, 'an area one engineer already holds is finished with');
   assert.deepEqual(heldRow.owners.map((owner: any) => [owner.repName, owner.customers]), [['مهندس المحلة', 1]]);
@@ -374,4 +374,32 @@ test('an exact unnamed district never moves customers from other districts', asy
   const moved = await client.post('/api/customers/assign-area').set(admin).send(body);
   assert.equal(moved.body.moved, 1);
   assert.equal((await client.get('/api/customers').set(admin)).body.customers.find((row: any) => row.id === b.body.customer.id).repId, null);
+});
+
+test('new engineer needs a nonblank region and it stays on the account', async () => {
+  const email = `region.${randomUUID()}@book.test`;
+  const input = { name: 'مهندس منطقة', email, password: PASSWORD };
+  for (const region of [undefined, '', '   ']) {
+    const invalid = await client.post('/api/reps').set(admin).send({ ...input, region });
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.body.error, /منطقة/);
+  }
+  const created = await client.post('/api/reps').set(admin).send({ ...input, region: ' طنطا ' });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.user.region, 'طنطا');
+  assert.equal((await client.patch(`/api/reps/${created.body.user.id}`).set(admin).send({ region: ' ' })).status, 400);
+  const updated = await client.patch(`/api/reps/${created.body.user.id}`).set(admin).send({ region: 'المحلة' });
+  assert.equal(updated.body.user.region, 'المحلة');
+});
+
+test('customer pages return every matching customer without overlap', async () => {
+  const tag = randomUUID().slice(0, 8);
+  for (let n = 0; n < 3; n++) assert.equal((await book({ name: `عميل صفحات ${tag} ${n}` })).status, 201);
+  const first = await client.get('/api/customers').query({ q: tag, limit: 2, offset: 0 }).set(admin);
+  const second = await client.get('/api/customers').query({ q: tag, limit: 2, offset: 2 }).set(admin);
+  assert.equal(first.body.customers.length, 2);
+  assert.equal(first.body.hasMore, true);
+  assert.equal(second.body.customers.length, 1);
+  assert.equal(second.body.hasMore, false);
+  assert.equal(new Set([...first.body.customers, ...second.body.customers].map((x: any) => x.id)).size, 3);
 });

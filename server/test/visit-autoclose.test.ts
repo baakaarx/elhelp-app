@@ -45,7 +45,7 @@ async function makeRep(tag: string) {
   // after the Test object is created, and it then has no server to talk to.
   const adminTokenValue = await admin();
   const created = await client.post('/api/reps').set('Authorization', `Bearer ${adminTokenValue}`)
-    .send({ name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
+    .send({ region: 'منطقة اختبار', name: `مهندس ${tag}`, email, password: 'RepPassword123!' });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   // A session row is what the login route writes; minting it here keeps the per-address login
   // limit (15 per quarter of an hour) out of the way of a file that needs a dozen engineers.
