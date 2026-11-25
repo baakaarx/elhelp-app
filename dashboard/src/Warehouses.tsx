@@ -26,6 +26,10 @@ export default function Warehouses({userId}:{userId:string}) {
   const [warehouses,setWarehouses] = useState<Warehouse[]>([]);
   const [legacyHistory,setLegacyHistory] = useState(false);
   const [warehouseId,setWarehouseId] = useState('');
+  const currentWarehouse=useRef(warehouseId);currentWarehouse.current=warehouseId;
+  const stockRequest=useRef(0);
+  const [stockLoadedFor,setStockLoadedFor]=useState(''),[stockLoading,setStockLoading]=useState(false);
+  const stockReady=!!warehouseId && stockLoadedFor===warehouseId;
   const [stock,setStock] = useState<Stock[]>([]);
   const [movements,setMovements] = useState<Movement[]>([]);
   const [newWarehouse,setNewWarehouse] = useState('');
@@ -54,20 +58,30 @@ export default function Warehouses({userId}:{userId:string}) {
     setWarehouseId(current => current || result.warehouses[0]?.id || '');
   }, []);
   const loadStock = useCallback(async () => {
-    if (!warehouseId) { setStock([]); setMovements([]); return; }
-    const [s,m] = await Promise.all([
-      api<{stock:Stock[]}>(`/api/warehouse/stock?warehouseId=${encodeURIComponent(warehouseId)}`),
-      api<{movements:Movement[]}>(`/api/warehouse/movements?warehouseId=${encodeURIComponent(warehouseId)}`),
-    ]);
-    setStock(s.stock); setMovements(m.movements);
+    if (currentWarehouse.current !== warehouseId) return;
+    const request=++stockRequest.current;
+    setStockLoadedFor('');setStock([]);setMovements([]);
+    if (!warehouseId) {setStockLoading(false);return;}
+    setStockLoading(true);
+    try {
+      const [s,m] = await Promise.all([
+        api<{stock:Stock[]}>(`/api/warehouse/stock?warehouseId=${encodeURIComponent(warehouseId)}`),
+        api<{movements:Movement[]}>(`/api/warehouse/movements?warehouseId=${encodeURIComponent(warehouseId)}`),
+      ]);
+      if(request===stockRequest.current && currentWarehouse.current===warehouseId) {
+        setStock(s.stock);setMovements(m.movements);setStockLoadedFor(warehouseId);
+      }
+    } catch(e) {
+      if(request===stockRequest.current && currentWarehouse.current===warehouseId) throw e;
+    } finally {
+      if(request===stockRequest.current && currentWarehouse.current===warehouseId) setStockLoading(false);
+    }
   }, [warehouseId]);
   useEffect(() => { void loadWarehouses().catch(e => setError(e.message)); }, [loadWarehouses]);
-  useEffect(() => { let cancelled = false; if (!warehouseId) { setStock([]); setMovements([]); return; }
-    Promise.all([api<{stock:Stock[]}>(`/api/warehouse/stock?warehouseId=${encodeURIComponent(warehouseId)}`),api<{movements:Movement[]}>(`/api/warehouse/movements?warehouseId=${encodeURIComponent(warehouseId)}`)])
-      .then(([s,m]) => { if (!cancelled) { setStock(s.stock); setMovements(m.movements); } })
-      .catch(e => { if (!cancelled) setError(e.message); });
-    return () => { cancelled = true; };
-  }, [warehouseId]);
+  useEffect(() => {
+    void loadStock().catch(e=>setError(`تعذر تحميل أرصدة المخزن وحركاته. ${e instanceof Error ? e.message : ''}`));
+    return () => {stockRequest.current++;};
+  }, [loadStock]);
   async function perform(task:()=>Promise<void>) {
     setBusy(true); setError(''); setMessage('');
     try { await task(); } catch (e) { setError(e instanceof Error ? e.message : 'تعذر الحفظ.'); } finally { setBusy(false); }
@@ -110,7 +124,7 @@ export default function Warehouses({userId}:{userId:string}) {
   }
   async function submitMovement(event:FormEvent) {
     event.preventDefault();
-    if(pendingRaw || needsRefresh){setError('راجع الحركة المعلقة وحدّث الأرصدة قبل تسجيل حركة تانية.');return;}
+    if(pendingRaw || needsRefresh || !stockReady){setError('راجع الحركة المعلقة وحدّث الأرصدة قبل تسجيل حركة تانية.');return;}
     if (!Number.isFinite(parseQty(qty)) || !hasInputPrecision(qty,3)) { setError('اكتب كمية صحيحة بحد أقصى ٣ أرقام بعد العلامة العشرية.'); return; }
     const body = {id:crypto.randomUUID(),kind,productId,qty:parseQty(qty),note,
       ...(kind === 'opening' || kind === 'in' ? {toWarehouseId:warehouseId} : {fromWarehouseId:warehouseId}),
@@ -126,7 +140,7 @@ export default function Warehouses({userId}:{userId:string}) {
     {error && <p className="error" role="alert">{error}</p>}{message && <p className="ok-text" role="status">{message}</p>}
     <div className="panel">
       <form className="filters warehouse-picker" onSubmit={addWarehouse}><label className="field inline"><span>اسم مخزن جديد</span><input value={newWarehouse} onChange={e=>setNewWarehouse(e.target.value)} minLength={2} maxLength={120} required /></label><button className="btn primary sm" disabled={busy}>إضافة مخزن</button></form>
-      <label className="field inline warehouse-current"><span>المخزن</span><select disabled={busy} value={warehouseId} onChange={e=>{if (e.target.value === warehouseId) return; setWarehouseId(e.target.value); setProductId(''); setDestination(''); setStock([]); setMovements([]);}}><option value="">اختار مخزن</option>{warehouses.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
+      <label className="field inline warehouse-current"><span>المخزن</span><select disabled={busy} value={warehouseId} onChange={e=>{if (e.target.value === warehouseId) return; setWarehouseId(e.target.value); setProductId(''); setDestination(''); setError(''); setStock([]); setMovements([]);}}><option value="">اختار مخزن</option>{warehouses.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
     </div>
     <div className="panel"><h3>إضافة صنف</h3><form className="work-form" onSubmit={addProduct}>
       <label className="field inline"><span>اسم الصنف</span><input required minLength={2} maxLength={120} value={productName} onChange={e=>setProductName(e.target.value)} /></label>
@@ -142,7 +156,7 @@ export default function Warehouses({userId}:{userId:string}) {
         <label className="field inline"><span>حجم العبوة</span><input maxLength={60} value={editUnitSize} onChange={e=>setEditUnitSize(e.target.value)} /></label>
         <button className="btn primary sm" disabled={busy}>حفظ التعديل</button><button type="button" className="btn ghost sm" onClick={()=>setEditing(null)}>إلغاء</button>
       </div><p className="muted small">الوحدة والعبوة ما تتغيرش بعد تسجيل رصيد للصنف.</p></form>}
-      <div className="panel"><h3>تسجيل حركة</h3><form className="work-form" onSubmit={submitMovement}><fieldset disabled={busy || !!pendingRaw || needsRefresh} className="work-form warehouse-movement-fields">
+      <div className="panel"><h3>تسجيل حركة</h3><form className="work-form" onSubmit={submitMovement}><fieldset disabled={busy || !!pendingRaw || needsRefresh || !stockReady} className="work-form warehouse-movement-fields">
         <label className="field inline"><span>نوع الحركة</span><select value={kind} onChange={e=>{setKind(e.target.value as Movement['kind']);}}>{Object.entries(labels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
         <label className="field inline"><span>الصنف</span><select required value={productId} onChange={e=>{setProductId(e.target.value);}}><option value="">اختار الصنف</option>{stock.map(p=><option key={p.id} value={p.id}>{p.name}{p.active ? '' : ' (موقوف)'} · {p.unit}{p.unitSize ? ` ${p.unitSize}` : ''}</option>)}</select></label>
         {kind === 'transfer' && <label className="field inline"><span>إلى مخزن</span><select required value={destination} onChange={e=>{setDestination(e.target.value);}}><option value="">اختار المخزن</option>{warehouses.filter(w=>w.id!==warehouseId).map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>}
@@ -150,12 +164,13 @@ export default function Warehouses({userId}:{userId:string}) {
         <label className="field inline"><span>ملاحظة</span><input maxLength={500} value={note} onChange={e=>{setNote(e.target.value);}} /></label>
         <button className="btn primary sm" disabled={busy}>{busy ? 'جارٍ الحفظ…' : 'حفظ الحركة'}</button>
       </fieldset></form><p className="muted small">لو الرصيد الافتتاحي صفر اكتبه صفر. النقل يحتاج تسجيل الرصيد الافتتاحي في المخزنين.</p></div>
-      <div className="panel"><h3>أرصدة المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف</th><th>الوحدة</th><th>الرصيد</th><th>الحالة</th><th></th></tr></thead><tbody>
+      {!stockReady && (stockLoading ? <p role="status">جارٍ تحميل أرصدة المخزن وحركاته…</p> : <div className="notice">الأرصدة والحركات غير متاحة الآن. حدّثها قبل تسجيل حركة. <button type="button" className="btn ghost sm" disabled={busy} onClick={()=>{setError('');void loadStock().catch(e=>setError(`تعذر تحميل أرصدة المخزن وحركاته. ${e instanceof Error ? e.message : ''}`));}}>إعادة تحميل الأرصدة</button></div>)}
+      {stockReady && <><div className="panel"><h3>أرصدة المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف</th><th>الوحدة</th><th>الرصيد</th><th>الحالة</th><th></th></tr></thead><tbody>
         {stock.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.unit} {p.unitSize}</td><td>{p.qty === null ? 'لم يُسجَّل' : qtyText(p.qty)}</td><td>{p.active ? 'شغال' : 'موقوف'}</td><td><button className="btn ghost sm" onClick={()=>{setEditing(p);setEditName(p.name);setEditCategory(p.category);setEditUnit(p.unit);setEditUnitSize(p.unitSize);editForm.reveal();}}>تعديل</button> <button className="btn ghost sm" disabled={busy} onClick={()=>void perform(async()=>{await patch(`/api/warehouse/products/${p.id}`,{active:!p.active});setMessage(p.active?'الصنف اتوقف.':'الصنف اتفعّل.');try {await loadStock();} catch {setError('حالة الصنف اتغيرت، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}})}>{p.active?'وقف':'تفعيل'}</button></td></tr>)}
       </tbody></table></div>{stock.length===0 && <p className="muted">مفيش أصناف لسه.</p>}</div>
       <div className="panel"><h3>آخر حركات المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الحركة</th><th>الصنف والكمية</th><th>من / إلى</th><th>بواسطة</th><th>الوقت</th><th>ملاحظة</th></tr></thead><tbody>
         {movements.map(m=><tr key={m.id}><td>{labels[m.kind]}</td><td>{m.productName} · {qtyText(m.qty)} {m.unit}</td><td>{m.fromName || '—'} / {m.toName || '—'}</td><td>{m.actorName}</td><td>{timezone ? dateTimeText(m.createdAt,timezone) : 'الوقت غير متاح'}</td><td>{m.note || '—'}</td></tr>)}
-      </tbody></table></div>{movements.length===0 && <p className="muted">مفيش حركات لسه.</p>}</div>
+      </tbody></table></div>{movements.length===0 && <p className="muted">مفيش حركات لسه.</p>}</div></>}
     </>}
   </section>;
 }

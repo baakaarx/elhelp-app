@@ -77,7 +77,7 @@ test('تعذر الاتصال ما يكررش حركة مخزون اتحفظت �
   await page.getByRole('button', {name:'المخازن',exact:true}).click();
   await expect(page.getByRole('button', {name:'حفظ الحركة'})).toBeDisabled();
   await page.getByRole('button', {name:'التأكد من الحركة المعلقة'}).click();
-  await expect(page.getByRole('status')).toContainText('الحركة اتحفظت');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
   expect(ids).toHaveLength(2);
   expect(ids[0]).toBe(ids[1]);
   await expect(second.getByText('لازم تحدّث الصفحة وتتأكد من الأرصدة قبل تسجيل حركة جديدة.')).toBeVisible();
@@ -98,7 +98,7 @@ test('حفظ حركة نجح لكن تحديث الرصيد فشل يوضح ال
   await page.getByLabel('الكمية').fill('7');
   await page.route('**/api/warehouse/stock?*', route => route.abort('failed'));
   await page.getByRole('button', {name:'حفظ الحركة'}).click();
-  await expect(page.getByRole('status')).toContainText('الحركة اتحفظت');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
   await expect(page.getByRole('alert')).toContainText('الحركة اتحفظت، لكن الأرصدة ما اتحدّثتش');
   await expect(page.getByLabel('الكمية')).toHaveValue('');
   await page.unroute('**/api/warehouse/stock?*');
@@ -208,7 +208,7 @@ test('نجاح إضافة المخزن أو الصنف يظل واضحًا لو 
   await page.getByLabel('اسم مخزن جديد').fill(warehouseName);
   await page.route('**/api/warehouse/warehouses',route=>route.request().method()==='GET'?route.abort('failed'):route.continue());
   await page.getByRole('button',{name:'إضافة مخزن'}).click();
-  await expect(page.getByRole('status')).toContainText('المخزن اتضاف');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('المخزن اتضاف');
   await expect(page.getByRole('alert')).toContainText('المخزن اتضاف، لكن القائمة ما اتحدّثتش');
   await page.unroute('**/api/warehouse/warehouses');
   const warehouses=await (await page.request.get('/api/warehouse/warehouses',{headers})).json();
@@ -219,7 +219,7 @@ test('نجاح إضافة المخزن أو الصنف يظل واضحًا لو 
   await page.getByLabel('اسم الصنف').fill(productName);await page.getByLabel('الوحدة',{exact:true}).fill('عبوة');
   await page.route('**/api/warehouse/stock?*',route=>route.abort('failed'));
   await page.getByRole('button',{name:'إضافة صنف'}).click();
-  await expect(page.getByRole('status')).toContainText('الصنف اتضاف');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('الصنف اتضاف');
   await expect(page.getByRole('alert')).toContainText('الصنف اتضاف، لكن القائمة ما اتحدّثتش');
   await page.unroute('**/api/warehouse/stock?*');
   const products=await (await page.request.get('/api/warehouse/products',{headers})).json();
@@ -238,7 +238,7 @@ test('نجاح إنشاء حساب مكتب يظهر بوضوح لو فشل تح
   await page.getByLabel('كلمة المرور',{exact:true}).fill('PasswordForStaff123!');
   await page.route('**/api/staff',route=>route.request().method()==='GET'?route.abort('failed'):route.continue());
   await page.getByRole('button',{name:'إنشاء الحساب'}).click();
-  await expect(page.getByRole('status')).toContainText('اتعمل حساب');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('اتعمل حساب');
   await expect(page.getByRole('alert')).toContainText('الحساب اتعمل، لكن القائمة ما اتحدّثتش');
   await page.unroute('**/api/staff');
   const data=await (await page.request.get('/api/staff',{headers})).json();

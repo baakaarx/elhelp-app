@@ -12,7 +12,7 @@ test('المخازن بأرصدة منفصلة وحساب المخازن معز�
   await page.getByLabel('البريد الإلكتروني').fill(email);
   await page.getByLabel('كلمة المرور', {exact:true}).fill('WarehousePass123!');
   await page.getByRole('button',{name:'إنشاء الحساب'}).click();
-  await expect(page.getByRole('status')).toContainText('اتعمل حساب');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('اتعمل حساب');
   await page.getByRole('button',{name:'المخازن',exact:true}).click();
   await page.getByLabel('اسم مخزن جديد').fill('مخزن اختبار أول');
   await page.getByRole('button',{name:'إضافة مخزن'}).click();
@@ -22,7 +22,7 @@ test('المخازن بأرصدة منفصلة وحساب المخازن معز�
   await page.getByLabel('اسم الصنف').fill('صنف تجريبي للمخزون');
   await page.getByLabel('الوحدة',{exact:true}).fill('شيكارة');
   await page.getByRole('button',{name:'إضافة صنف'}).click();
-  await expect(page.getByRole('status')).toContainText('الصنف اتضاف');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('الصنف اتضاف');
   const stockRow=page.locator('tr').filter({hasText:'صنف تجريبي للمخزون'}).first();
   await expect(stockRow).toContainText('لم يُسجَّل');
   await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption({label:"صنف تجريبي للمخزون · شيكارة"});
@@ -33,7 +33,7 @@ test('المخازن بأرصدة منفصلة وحساب المخازن معز�
   await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption({label:"صنف تجريبي للمخزون · شيكارة"});
   await page.getByLabel('الكمية').fill('5');
   await page.getByRole('button',{name:'حفظ الحركة'}).click();
-  await expect(page.getByRole('status')).toContainText('الحركة اتحفظت');
+  await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
   await page.getByLabel('نوع الحركة').selectOption('transfer');
   await page.getByLabel('إلى مخزن').selectOption({label:'مخزن اختبار تاني'});
   await page.getByLabel('الكمية').fill('2');
