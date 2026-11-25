@@ -567,6 +567,8 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
   }
   const regionForm = useReveal<HTMLFormElement>();
   const passwordPanel = useReveal<HTMLDivElement>();
+  const teamNotice = useReveal<HTMLParagraphElement>();
+  const [actionMessage,setActionMessage] = useState('');
   const [regionFor, setRegionFor] = useState<Rep | null>(null);
   const [regionValue, setRegionValue] = useState('');
   const [savingRegion, setSavingRegion] = useState(false);
@@ -578,11 +580,12 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     try {
       await patch(`/api/reps/${regionFor.id}`, { region: regionValue.trim() });
       setCreatedReps(current => current.map(rep => rep.id === regionFor.id ? { ...rep, region: regionValue.trim() } : rep));
+      setActionMessage(`تم تحديث منطقة ${regionFor.name}.`);teamNotice.reveal();
       setRegionFor(null); setError(''); await onChange();
     } catch (e) { setRegionError(e instanceof Error ? e.message : 'تعذر حفظ المنطقة.'); }
     finally { setSavingRegion(false); }
   }
-  const regionButton = (rep: Rep) => <button className="btn ghost sm" onClick={() => { setRegionFor(rep); setRegionValue(rep.region || ''); setRegionError(''); setError(''); regionForm.reveal(); }}>تعديل المنطقة</button>;
+  const regionButton = (rep: Rep) => <button className="btn ghost sm" onClick={() => { setRegionFor(rep); setRegionValue(rep.region || ''); setActionMessage(''); setRegionError(''); setError(''); regionForm.reveal(); }}>تعديل المنطقة</button>;
   // A representative who forgets their password cannot sign in and cannot be emailed: the
   // manager has to hand out a new one. Kept inline instead of a browser prompt so the field is
   // masked and the rule (ten characters) is visible while typing.
@@ -597,6 +600,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
     try {
       await post(`/api/reps/${passwordFor.id}/password`, { password: passwordValue.trim() });
       setError('');
+      setActionMessage(`تم تغيير كلمة مرور ${passwordFor.name}.`);teamNotice.reveal();
       setPasswordFor(null);
       setPasswordValue('');
       onChange();
@@ -637,7 +641,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
       onConfirm={() => removeRep(rep)} />
   );
   const passwordButton = (rep: Rep) => (
-    <button className="btn ghost sm" onClick={() => { setError(''); setPasswordError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); passwordPanel.reveal(); }}>كلمة المرور</button>
+    <button className="btn ghost sm" onClick={() => { setError(''); setActionMessage(''); setPasswordError(''); setPasswordValue(''); setPasswordFor({ id: rep.id, name: rep.name }); passwordPanel.reveal(); }}>كلمة المرور</button>
   );
   const deviceButton = (rep: Rep) => (rep as any).deviceId ? (
     <button className="btn ghost sm" onClick={() => void resetDevice(rep)}>فك ربط الجهاز</button>
@@ -784,6 +788,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
               </div>
             </div>
           )}
+          {actionMessage && <p className="ok-text reveal-target" role="status" ref={teamNotice.ref} tabIndex={-1}>{actionMessage}</p>}
         </div>
       </div>
     </section>

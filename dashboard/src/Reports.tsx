@@ -13,13 +13,17 @@ export default function Reports({ reps, onReviewed, version = 0, ordersVersion =
   const [repId, setRepId] = useState('all');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    api<{ visits: Visit[] }>('/api/visits').then(res => { if (!cancelled) { setVisits(res.visits); setError(''); } })
-      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'تعذر تحميل الزيارات.'); })
+    setLoading(true); setLoaded(false); setLoadError('');
+    api<{ visits: Visit[] }>('/api/visits').then(res => { if (!cancelled) { setVisits(res.visits); setLoaded(true); setLoadError(''); } })
+      .catch(e => { if (!cancelled) setLoadError(`تعذر تحميل الزيارات. ${e instanceof Error ? e.message : ''}`); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [version]);
+  }, [version, reload]);
   const visibleVisits = useMemo(() => visits.filter(v => (visitStatus === 'all' || v.status === visitStatus) && (repId === 'all' || v.userId === repId)), [visits, visitStatus, repId]);
   async function remove(id: string) {
     try { await del(`/api/visits/${id}`); setVisits(list => list.filter(row => row.id !== id)); setError(''); onReviewed(); }
@@ -29,7 +33,7 @@ export default function Reports({ reps, onReviewed, version = 0, ordersVersion =
     <header className="page-head"><div><h2>الزيارات والطلبيات</h2><p className="muted">زيارات المهندسين والطلبيات المرسلة للمكتب.</p></div>
       {sentOrders > 0 && <span className="pill warn">{formatNumber(sentOrders)} طلبية مستنية فاتورة</span>}</header>
     <div className="tabs" role="tablist">
-      <button role="tab" aria-selected={tab === 'visits'} className={tab === 'visits' ? 'tab active' : 'tab'} onClick={() => setTab('visits')}>الزيارات ({formatNumber(visits.length)})</button>
+      <button role="tab" aria-selected={tab === 'visits'} className={tab === 'visits' ? 'tab active' : 'tab'} onClick={() => setTab('visits')}>الزيارات ({loaded ? formatNumber(visits.length) : '—'})</button>
       <button role="tab" aria-selected={tab === 'orders'} className={tab === 'orders' ? 'tab active' : 'tab'} onClick={() => setTab('orders')}>الطلبيات{sentOrders > 0 ? ` (${formatNumber(sentOrders)} مستنية)` : ''}</button>
     </div>
     {tab === 'orders' ? <Orders timezone={timezone} version={ordersVersion} onDone={onReviewed} /> : <>
@@ -38,7 +42,8 @@ export default function Reports({ reps, onReviewed, version = 0, ordersVersion =
         <label className="field inline"><span>المهندس</span><select value={repId} onChange={e => setRepId(e.target.value)}><option value="all">كل الفريق</option>{reps.map(rep => <option key={rep.id} value={rep.id}>{rep.name}</option>)}</select></label>
       </div>
       {error && <p className="error" role="alert">{error}</p>}
-      {loading ? <p className="muted">جارٍ التحميل…</p> : (
+      {loadError && <div><p className="error" role="alert">{loadError}</p><button className="btn ghost sm" onClick={() => setReload(value => value + 1)}>إعادة تحميل الزيارات</button></div>}
+      {loading ? <p className="muted">جارٍ التحميل…</p> : !loaded ? null : (
         visibleVisits.length === 0 ? <p className="empty">لا توجد زيارات بهذه الفلاتر بعد.</p> : (
           <ul className="stack-list">
             {visibleVisits.map(visit => (

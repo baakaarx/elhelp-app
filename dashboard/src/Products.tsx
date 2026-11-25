@@ -2,7 +2,7 @@ import { useReveal } from './useReveal';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, del, patch, post } from './api';
 import { formatNumber } from './session';
-import { hasInputPrecision, ungroupPrice } from './decimal';
+import { hasInputPrecision, normalizeDecimal, ungroupPrice } from './decimal';
 import { recommendationQty } from './quantity';
 import ConfirmAction from './ConfirmAction';
 import { productCategoryLabels } from './types';
@@ -432,17 +432,25 @@ function TiersPanel({ tiers, onDone }: { tiers: PriceTier[]; onDone: () => void 
   const [saving, setSaving] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; name: string; position: string } | null>(null);
   const [busy, setBusy] = useState('');
+  // Blank means leave the existing order alone (or append a new type).
+  const parsePosition = (text: string): number | undefined | null => {
+    const value = normalizeDecimal(text);
+    if (!value) return undefined;
+    if (!/^\d+$/.test(value) || Number(value) > 99) return null;
+    return Number(value);
+  };
 
   const add = async (event: FormEvent) => {
     event.preventDefault();
     const trimmed = name.trim();
     if (trimmed.length < 2) { setError('اكتب اسم نوع السعر — «جملة»، «نصف جملة»، «تجزئة»…'); return; }
-    if (position.trim() && !Number.isFinite(Number(position))) { setError('الترتيب رقم، أو سيبه فاضي يتحط في آخر القائمة.'); return; }
+    const order = parsePosition(position);
+    if (order === null) { setError('الترتيب لازم يكون عدد صحيح من ٠ إلى ٩٩، أو سيبه فاضي.'); return; }
     setSaving(true);
     setError('');
     setNote('');
     try {
-      await post('/api/price-tiers', { name: trimmed, ...(position.trim() ? { position: Number(position) } : {}) });
+      await post('/api/price-tiers', { name: trimmed, ...(order === undefined ? {} : { position: order }) });
       setName('');
       setPosition('');
       onDone();
@@ -513,11 +521,11 @@ function TiersPanel({ tiers, onDone }: { tiers: PriceTier[]; onDone: () => void 
                           onChange={event => setRenaming({ ...renaming, name: event.target.value })} />
                         <input dir="ltr" style={{ width: 64 }} value={renaming.position} aria-label="ترتيب النوع"
                           onChange={event => setRenaming({ ...renaming, position: event.target.value })} />
-                        <button className="btn primary sm" disabled={busy !== ''} onClick={() => void update(tier, {
-                          name: renaming.name.trim(),
-                          // Left as it was when the box is not a number: a blank position is not «first».
-                          position: Number.isFinite(Number(renaming.position)) ? Math.max(0, Math.trunc(Number(renaming.position))) : tier.position,
-                        })}>احفظ</button>
+                        <button className="btn primary sm" disabled={busy !== ''} onClick={() => {
+                          const order = parsePosition(renaming.position);
+                          if (order === null) { setError('الترتيب لازم يكون عدد صحيح من ٠ إلى ٩٩، أو سيبه فاضي.'); return; }
+                          void update(tier, { name: renaming.name.trim(), ...(order === undefined ? {} : { position: order }) });
+                        }}>احفظ</button>
                         <button className="btn ghost sm" onClick={() => setRenaming(null)}>إلغاء</button>
                       </span>
                     ) : (
