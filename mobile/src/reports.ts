@@ -3,6 +3,7 @@ import { createQueue, type Outbox } from './queue';
 import { sendLocationChunks } from './locationQueue';
 import { replayOutboxActions } from './outboxReplay';
 import { outboxOwnership } from './outboxOwnership';
+import { createOutboxRunner } from './outboxRunner';
 import { getActiveUserId, getOutboxOwner, setActiveUserId, setOutboxOwner } from './storage';
 import type { DailyReportInput, GeoPoint, OutboxItem, ReportInput, VisitInput } from './types';
 
@@ -96,14 +97,10 @@ export interface FlushResult {
   blockedByOwner?: boolean;
 }
 
-const flushing = new Map<string, Promise<FlushResult>>();
+const runFlush = createOutboxRunner<FlushResult>();
 export function flushOutbox(userId?: string, options: { retryRejected?: boolean } = {}): Promise<FlushResult> {
   const key = `${userId ?? activeUserId ?? 'background'}:${options.retryRejected ? 'manual' : 'automatic'}`;
-  const existing = flushing.get(key);
-  if (existing) return existing;
-  const task = flushOnce(userId, options.retryRejected === true).finally(() => { flushing.delete(key); });
-  flushing.set(key, task);
-  return task;
+  return runFlush(key, () => flushOnce(userId, options.retryRejected === true));
 }
 
 async function flushOnce(requestedUserId?: string, retryRejected = false): Promise<FlushResult> {

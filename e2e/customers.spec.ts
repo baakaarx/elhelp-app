@@ -38,6 +38,7 @@ test.describe('قائمة عملاء الشركة', () => {
     await expect(rows(page).filter({ hasText: 'مزرعة النور' })).toContainText('جديد');
     await expect(rows(page).filter({ hasText: 'مزرعة النور' })).toContainText('01000000000');
     await expect(page.getByText('توزيع العملاء على المناطق')).toBeVisible();
+    await expect(page.getByText(/عملاء الشركة كلهم هنا/)).toBeVisible();
   });
 
   test('a customer is entered with no engineer, and the duplicate is refused', async ({ page }) => {
@@ -53,6 +54,10 @@ test.describe('قائمة عملاء الشركة', () => {
     await expect(rows(page).filter({ hasText: unique })).toBeVisible();
     // Not attached to anybody: a real state of the list, so it must be readable and not hidden.
     await expect(ownerOf(rows(page).filter({ hasText: unique }))).toHaveText(/من غير مهندس/);
+    const createdRow = rows(page).filter({ hasText: unique });
+    await createdRow.getByRole('button', { name: 'حذف', exact: true }).click();
+    await expect(createdRow.getByText(/لو عليه طلبيات، الحذف هيترفض/)).toBeVisible();
+    await createdRow.getByRole('button', { name: 'إلغاء' }).click();
 
     await page.getByRole('button', { name: 'عميل جديد' }).click();
     await page.locator('form.panel').getByLabel('اسم العميل / المزرعة').fill(unique);

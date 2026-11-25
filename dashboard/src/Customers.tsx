@@ -201,7 +201,7 @@ export default function Customers({ timezone }: { timezone?: string }) {
         <div>
           <h2>قائمة العملاء</h2>
           <p className="muted">
-            عملاء الشركة كلهوم هنا — المكتب بيضيفهم وبيحدد مين يخدم كل عميل. التليفون بيشوف قائمته هو وبس.
+            عملاء الشركة كلهم هنا — المكتب بيضيفهم وبيحدد مين يخدم كل عميل. التليفون بيشوف قائمته هو وبس.
           </p>
         </div>
         <button className="btn primary" onClick={openCreate}>عميل جديد</button>
@@ -209,7 +209,7 @@ export default function Customers({ timezone }: { timezone?: string }) {
 
       <div className="stats">
         <div className="card stat"><span className="muted small">عملاء الشركة</span><strong>{formatNumber(totals.customers)}</strong><small className="muted">القائمة كلها، الموقوف عليها</small></div>
-        <div className="card stat"><span className="muted small">لسه موزعينش</span><strong>{formatNumber(totals.unassigned)}</strong><small className="muted">من غير مهندس — حالة عادية</small></div>
+        <div className="card stat"><span className="muted small">لسه ما اتوزّعوش</span><strong>{formatNumber(totals.unassigned)}</strong><small className="muted">من غير مهندس — حالة عادية</small></div>
         <div className="card stat"><span className="muted small">مناطق فيها عملاء</span><strong>{formatNumber(totals.areas)}</strong><small className="muted">محافظة / مركز</small></div>
         <div className="card stat"><span className="muted small">الظاهر دلوقتي</span><strong>{formatNumber(customers.length)}</strong><small className="muted">بعد الفلاتر</small></div>
       </div>
@@ -344,8 +344,8 @@ export default function Customers({ timezone }: { timezone?: string }) {
                           label="حذف"
                           confirmLabel="امسحه نهائيًا"
                           detail={customer.visitCount
-                            ? `عليه ${formatNumber(customer.visitCount)} زيارة — الحذف هيمحي تاريخه. الأحسن توقّفه.`
-                            : 'مفيش عليه أي زيارة، الحذف آمن.'}
+                            ? `عليه ${formatNumber(customer.visitCount)} زيارة — الحذف مش مسموح للحفاظ على تاريخه. الأحسن توقّفه.`
+                            : 'مفيش عليه زيارات. لو عليه طلبيات، الحذف هيترفض للحفاظ على تاريخه.'}
                           onConfirm={() => remove(customer)}
                         />
                       </span>
@@ -432,7 +432,7 @@ function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers,
         <div className="filters">
           <label className="field inline">
             <span>سبب الرفض</span>
-            <input required maxLength={300} {...field('lostReason')} placeholder="السعر أعلى من السوق / بيشتری من تاني" />
+            <input required maxLength={300} {...field('lostReason')} placeholder="السعر أعلى من السوق / بيشتري من تاني" />
           </label>
         </div>
       )}
@@ -446,7 +446,7 @@ function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers,
       </div>
       <p className="muted small">
         «نوع السعر» قرار المكتب: المنطقة ما بتقترحش حاجة — المنطقة تقول مين بيخدم العميل، مش بيدفع إيه.
-        الاسم بيتسجّل زي ما هو (بيتم تشذيب المسافات بس) ومفيش تكرار لنفس المهندس — لو الاسم موجود، الهيكلك هيقولك تعدّل السطر الموجود بدل ما تضيف نسخة.
+        الاسم بيتسجّل زي ما هو (بيتم تشذيب المسافات بس) ومفيش تكرار لنفس المهندس — لو الاسم موجود، النظام هيقولك تعدّل السطر الموجود بدل ما تضيف نسخة.
       </p>
       {error && <p className="error" role="alert">{error}</p>}
     </form>

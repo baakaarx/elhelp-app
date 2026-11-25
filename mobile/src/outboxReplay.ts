@@ -37,7 +37,7 @@ export async function replayOutboxActions(
 
     if (item.rejected && !options.retryRejected) {
       if (item.kind === 'visit-checkin') checkInsToRetry.add((payload as QueuedCheckIn).id);
-      notice ||= 'هناك بيانات محفوظة رفضها السيرفر؛ ما زالت على الهاتف ولم نكرر إرسالها تلقائيًا. افتح «مزامنة ما لم يُرسل» لإعادة المحاولة.';
+      notice ||= 'هناك بيانات محفوظة رفضها السيرفر؛ ما زالت على الهاتف ولم نكرر إرسالها تلقائيًا. افتح «حسابي» واضغط «مزامنة الآن» لإعادة المحاولة.';
       continue;
     }
     if (item.rejected && options.retryRejected) await queue.unreject(item.key);

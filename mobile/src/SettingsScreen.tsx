@@ -146,7 +146,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         <SectionTitle title="المزامنة" action={<Pill label={field.pending ? `${field.pending} بالانتظار` : 'كل شيء مُرسل'} tone={field.pending ? 'warn' : 'mint'} />} />
         <Body muted>
           {field.pending
-            ? 'فيه بيانات محفوظة على جهازك (مواقع أو زيارات أو طلبيات) وما اتبعتتش. هتتبعت تلقائيًا لما الشبكة ترجع.'
+            ? 'فيه بيانات محفوظة على جهازك (مواقع أو زيارات أو طلبيات) وما اتبعتتش. هنحاول نبعتها تلقائيًا لما الشبكة ترجع؛ لو السيرفر رفض بيانات، هتظهر رسالة بالمشكلة.'
             : 'كل بياناتك مُرسلة للسيرفر. المزامنة التلقائية كل ١٥ ثانية.'}
         </Body>
         <Row style={{ gap: space.sm }}>
@@ -191,7 +191,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         <SectionTitle title="الخصوصية" />
         <Body>
           موقعك يُسجَّل أثناء الوردية فقط وبعد موافقتك الصريحة، ويُستخدم لمتابعة خط السير وإعداد التقارير.
-          البيانات تُحذف تلقائيًا بعد {field.summary?.retentionDays ?? 365} يومًا، وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
+          نقاط الموقع والزيارات والتقارير تُحذف تلقائيًا بعد {field.summary?.retentionDays ?? 365} يومًا. الطلبيات تفضل محفوظة لحد حذف الحساب. وكل إجراء حساس (بدء/إيقاف وردية، إيقاف حساب، تنزيل تقرير) يُسجَّل في سجل تدقيق.
         </Body>
         <Pressable onPress={() => void Linking.openURL(`${API_BASE}/privacy`)} accessibilityRole="link">
           <Text style={styles.link}>سياسة الخصوصية الكاملة ←</Text>

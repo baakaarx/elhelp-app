@@ -36,5 +36,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   expect(body.order).not.toHaveProperty('total');
   await expect(managerTab.locator('em.badge')).toHaveText('١');
   await expect(manager.locator('.orders-table tbody tr').filter({ hasText: 'مزرعة النور' })).toBeVisible();
+  await page.getByRole('tab', { name: 'حسابي' }).click();
+  await expect(page.getByText(/الطلبيات تفضل محفوظة لحد حذف الحساب/)).toBeVisible();
   await manager.close();
 });

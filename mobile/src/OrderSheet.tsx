@@ -115,7 +115,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
       </View>
 
       <View style={{ gap: 6 }}>
-        <Text style={styles.label}>الأصناف — دوس + على كل صنف بيقدره العميل</Text>
+        <Text style={styles.label}>الأصناف — دوس + على كل صنف طلبه العميل</Text>
         {products.length === 0 && lines.length === 0 ? (
           <Empty
             title={field.productsLoading ? 'جارٍ تحميل الأصناف…' : 'مفيش أصناف في قائمة الشركة لسه'}
@@ -211,7 +211,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
         الأسعار والتسعير عند المكتب وحده — اللي يوصلك هنا هو «اتقفلت» وخلاص. الكمية بتُعدّ بالوحدة المكتوبة تحت اسم الصنف (شيكارة / عبوة / جركن).
       </Body>
       <Body muted style={{ fontSize: 11.5 }}>
-        لو الشبكة قطعت، الطلبية بتتحفظ على الموبايل وبتتحاول تلقائيًا لما ترجع. لو السيرفر رفضها هتظهر رسالة بالمشكلة — متكررّش الطلبية من شاشة تانية.
+        لو الشبكة قطعت، الطلبية بتتحفظ على الموبايل وإرسالها بيتحاول تلقائيًا لما ترجع. لو السيرفر رفضها هتظهر رسالة بالمشكلة — ما تكررش الطلبية من شاشة تانية.
       </Body>
     </Sheet>
   );

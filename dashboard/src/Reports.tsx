@@ -15,7 +15,7 @@ export default function Reports({ reps, onReviewed, version = 0, ordersVersion =
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let cancelled = false;
-    api<{ visits: Visit[] }>('/api/visits').then(res => { if (!cancelled) setVisits(res.visits); })
+    api<{ visits: Visit[] }>('/api/visits').then(res => { if (!cancelled) { setVisits(res.visits); setError(''); } })
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'تعذر تحميل الزيارات.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
