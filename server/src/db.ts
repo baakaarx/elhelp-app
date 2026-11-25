@@ -154,6 +154,27 @@ export class Store {
       -- One price per item per buyer type. There is no single price column on the item on purpose: one
       -- number there is what gets quoted from memory to a man who buys at another rate. An item with no
       -- price for a type is a normal state — the office prices that order by hand.
+      CREATE TABLE IF NOT EXISTS warehouses (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS warehouse_stock (
+        warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        milli_qty INTEGER NOT NULL DEFAULT 0 CHECK(milli_qty >= 0),
+        PRIMARY KEY (warehouse_id, product_id)
+      );
+      CREATE TABLE IF NOT EXISTS stock_movements (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('opening','in','out','transfer')),
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        from_warehouse_id TEXT REFERENCES warehouses(id) ON DELETE RESTRICT,
+        to_warehouse_id TEXT REFERENCES warehouses(id) ON DELETE RESTRICT,
+        milli_qty INTEGER NOT NULL CHECK(milli_qty >= 0), note TEXT NOT NULL DEFAULT '',
+        actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        actor_name TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS stock_movements_time ON stock_movements(created_at DESC);
+
       CREATE TABLE IF NOT EXISTS product_prices (
         product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
         tier_id TEXT NOT NULL REFERENCES price_tiers(id) ON DELETE CASCADE,
@@ -394,6 +415,7 @@ export class Store {
       "ALTER TABLE users ADD COLUMN oauth_subject TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'",
       "ALTER TABLE users ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE users ADD COLUMN access_scope TEXT NOT NULL DEFAULT 'full' CHECK(access_scope IN ('full','warehouse'))",
       "ALTER TABLE visits ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE visits ADD COLUMN recorded_offline INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE visits ADD COLUMN customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL",
@@ -401,6 +423,9 @@ export class Store {
       // than «جملة by default»: an order for such a customer is priced by hand.
       "ALTER TABLE customers ADD COLUMN price_tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL",
     ]) { try { this.db.exec(sql); } catch {} }
+    if (!this.all('PRAGMA table_info(users)').some(column => column.name === 'access_scope')) {
+      throw new Error('تعذر إضافة صلاحيات حساب المخازن؛ السيرفر لن يعمل قبل إصلاح قاعدة البيانات.');
+    }
     this.ensureIndexes();
     this.checkCatalogueLinks();
 

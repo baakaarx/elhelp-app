@@ -13,18 +13,22 @@ import AgentPanel from './AgentPanel';
 import Monthly from './Monthly';
 import Customers from './Customers';
 import Products from './Products';
+import Warehouses from './Warehouses';
+import Staff from './Staff';
 import type { IdleReport, ManagerAlert, Overview, Rep, RepImpact, Report, RouteResponse, User, Visit } from './types';
 import ConfirmAction from './ConfirmAction';
 import { visitPurposeLabels } from './types';
 
-type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'products' | 'team' | 'account' | 'agent';
+type Tab = 'live' | 'performance' | 'monthly' | 'reports' | 'customers' | 'products' | 'team' | 'account' | 'agent' | 'warehouses' | 'staff';
 const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'مركز العمليات', icon: '◈' },
   { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
   { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
   { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
   { id: 'customers', label: 'العملاء', icon: '☰' },
-  { id: 'products', label: 'الأصناف', icon: '₪' },
+  { id: 'products', label: 'الأصناف والأسعار', icon: '₪' },
+  { id: 'warehouses', label: 'المخازن', icon: '▣' },
+  { id: 'staff', label: 'حسابات المكتب', icon: '◉' },
   { id: 'team', label: 'فريق الميدان', icon: '◆' },
   { id: 'agent', label: 'المساعد الذكي', icon: '🤖' },
   { id: 'account', label: 'هويتي', icon: '◉' },
@@ -111,7 +115,7 @@ export default function App() {
   }, [bumpReports, bumpOrders, clearSession]);
 
   useEffect(() => {
-    if (!user || user.role !== 'admin') return;
+    if (!user || user.role !== 'admin' || user.accessScope === 'warehouse') return;
     refresh();
     const socket = io('/', { auth: { token: getToken() }, transports: ['websocket', 'polling'], reconnectionDelayMax: 5000 });
     socketRef.current = socket;
@@ -132,7 +136,7 @@ export default function App() {
   // was always the initial `false` — so a connected dashboard kept asking three endpoints every
   // two seconds instead of every thirty. Re-creating only the timer keeps the socket untouched.
   useEffect(() => {
-    if (!user || user.role !== 'admin') return;
+    if (!user || user.role !== 'admin' || user.accessScope === 'warehouse') return;
     const poll = setInterval(refresh, connected ? 30000 : 2000);
     return () => clearInterval(poll);
   }, [user, refresh, connected]);
@@ -205,6 +209,11 @@ export default function App() {
   if (user === undefined) return <div className="boot">جارٍ التحقق من الجلسة…</div>;
   if (!user) return <Login onLogin={setUser} />;
   if (!isManager(user)) return <EngineerOnlyNotice />;
+  if (user.accessScope === 'warehouse') return <div className="app warehouse-app"><main className="content">
+    <header className="topbar"><div><h1>المخازن</h1><p className="muted small">{user.name}</p></div>
+      <button className="btn ghost sm" onClick={async () => { try { await logout(); } catch {} clearSession(); }}>خروج</button></header>
+    <Warehouses />
+  </main></div>;
 
   return (
     <div className="app">
@@ -366,8 +375,10 @@ export default function App() {
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
         {tab === 'products' && <Products timezone={overview?.timezone} />}
+        {tab === 'warehouses' && <Warehouses />}
+        {tab === 'staff' && <Staff />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
-        {tab === 'agent' && <AgentPanel reps={reps} timezone={overview?.timezone} />}
+        {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={setTab} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
     </div>

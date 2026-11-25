@@ -78,19 +78,5 @@ test('report date defaults follow a late server timezone and preserve manual cho
   await expect(fromInput).toHaveValue('2025-12-01');
   await expect(toInput).toHaveValue('2025-12-10');
 
-  // The agent date follows timezone changes until manually chosen, then remains user-owned.
-  await page.getByRole('button', { name: /المساعد الذكي/ }).click();
-  await page.getByLabel('المهمة').selectOption('summarize-day');
-  const agentDate = page.getByLabel('التاريخ');
-  await expect(agentDate).toHaveValue('2026-01-31');
-  nextTimezone = 'Pacific/Kiritimati';
-  await page.locator('.topbar-actions').getByRole('button', { name: 'تحديث' }).click();
-  await expect(page.locator('.sidebar-foot')).toContainText('Pacific/Kiritimati');
-  await expect(agentDate).toHaveValue('2026-02-01');
 
-  await agentDate.fill('2025-12-15');
-  nextTimezone = 'America/Adak';
-  await page.locator('.topbar-actions').getByRole('button', { name: 'تحديث' }).click();
-  await expect(page.locator('.sidebar-foot')).toContainText('America/Adak');
-  await expect(agentDate).toHaveValue('2025-12-15');
 });

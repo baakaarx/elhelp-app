@@ -18,6 +18,7 @@ import { deleteAccountPage, privacyPage } from './privacy.js';
 import { OauthError, verifyIdToken } from './oauth.js';
 import { verifyTotp } from './totp.js';
 import { createAgentRouter } from './agent/router.js';
+import { createWarehouseRouter, createStaffRouter } from './warehouse.js';
 import { buildXlsx, XLSX_CONTENT_TYPE, type CellValue } from './xlsx.js';
 import { contentSecurityPolicy } from './csp.js';
 import { isPushToken, sendPush } from './push.js';
@@ -295,6 +296,27 @@ export function createApp(overrides: Partial<Config> = {}) {
   }
   const auth = requireAuth(store);
   const adminOnly = requireAuth(store, 'admin');
+  app.use('/api/warehouse', auth, createWarehouseRouter(store));
+  app.use('/api/staff', adminOnly, createStaffRouter(store, id => io.in(`user:${id}`).disconnectSockets(true)));
+  app.get('/api/work-priorities', adminOnly, (_req, res) => {
+    const waitingOrders = store.all(`SELECT o.id,c.name AS customerName,u.name AS repName,o.sent_at AS sentAt
+      FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id
+      WHERE o.status='sent' ORDER BY o.sent_at,o.id LIMIT 10`);
+    const orderCount = Number(store.get("SELECT COUNT(*) AS c FROM orders WHERE status='sent'")?.c || 0);
+    const unassignedCustomers = Number(store.get('SELECT COUNT(*) AS c FROM customers WHERE active=1 AND rep_id IS NULL')?.c || 0);
+    const openVisits = store.all(`SELECT v.id,v.customer_name AS customerName,u.name AS repName,v.checked_in_at AS checkedInAt
+      FROM visits v JOIN users u ON u.id=v.user_id WHERE v.status='open' ORDER BY v.checked_in_at LIMIT 10`);
+    const openVisitCount = Number(store.get("SELECT COUNT(*) AS c FROM visits WHERE status='open'")?.c || 0);
+    const emptyStock = store.all(`SELECT w.name AS warehouseName,p.name AS productName,p.unit,p.unit_size AS unitSize
+      FROM warehouse_stock s JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id
+      WHERE p.active=1 AND s.milli_qty=0 ORDER BY w.name,p.name LIMIT 20`);
+    const emptyStockCount = Number(store.get('SELECT COUNT(*) AS c FROM warehouse_stock s JOIN products p ON p.id=s.product_id WHERE p.active=1 AND s.milli_qty=0')?.c || 0);
+    const warehouses = Number(store.get('SELECT COUNT(*) AS c FROM warehouses')?.c || 0);
+    const uninitialized = Number(store.get(`SELECT COUNT(*) AS c FROM warehouses w CROSS JOIN products p
+      LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id AND s.product_id=p.id WHERE p.active=1 AND s.product_id IS NULL`)?.c || 0);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ waitingOrders,orderCount,unassignedCustomers,openVisits,openVisitCount,emptyStock,emptyStockCount,warehouses,uninitialized });
+  });
   const repOnly = requireAuth(store, 'rep');
   const locationLimiter = rateLimit({ windowMs: 60000, limit: 240, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تحديثات موقع كثيرة جدًا. حاول بعد دقيقة.' } });
   const mockLocationLimiter = rateLimit({ windowMs: 60 * 60000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (_req, res) => String(res.locals.user.id), message: { error: 'تم تسجيل بلاغات كثيرة عن الموقع الوهمي. حاول بعد ساعة.' } });
@@ -615,7 +637,7 @@ export function createApp(overrides: Partial<Config> = {}) {
 
   io.use((socket, next) => {
     const user = sessionUser(store, socket.handshake.auth.token);
-    if (!user) return next(new Error('Unauthorized'));
+    if (!user || user.access_scope === 'warehouse') return next(new Error('Unauthorized'));
     socket.data.user = user;
     const session = store.get('SELECT expires_at FROM sessions WHERE token_hash=?', tokenHash(socket.handshake.auth.token));
     socket.data.expiresAt = session?.expires_at || Date.now();
@@ -837,7 +859,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.status(422).json({ error: 'البريد المكتوب لا يطابق بريد الحساب.', code: 'EMAIL_MISMATCH' }); return;
     }
     if (user.role === 'admin') {
-      const admins = Number(store.get("SELECT COUNT(*) AS c FROM users WHERE role='admin' AND active=1")?.c || 0);
+      const admins = Number(store.get("SELECT COUNT(*) AS c FROM users WHERE role='admin' AND active=1 AND access_scope='full'")?.c || 0);
       // Deleting the only manager would leave an installation nobody can administer.
       if (admins <= 1) {
         res.status(409).json({ error: 'هذا آخر حساب مدير. أضف مديرًا آخر أو احذف الحساب من قاعدة البيانات على السيرفر.', code: 'LAST_ADMIN' }); return;
@@ -1716,6 +1738,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     // An edit that sends no unit keeps the one on the row; one that sends an empty string is refused by
     // min(1) above, because «we never said what this is sold in» is not a thing a price can survive.
     const unit = keep(parsed.data.unit, current.unit).trim();
+    if ((unit !== current.unit || (parsed.data.unitSize !== undefined && parsed.data.unitSize !== current.unit_size))
+      && store.get('SELECT 1 AS x FROM warehouse_stock WHERE product_id=? LIMIT 1', current.id)) {
+      res.status(409).json({ error: 'الصنف له رصيد مسجّل؛ تغيير الوحدة أو العبوة يغيّر معنى الرصيد. أضف صنفًا جديدًا بدلًا من ذلك.' }); return;
+    }
     if (!unit) { res.status(400).json({ error: UNIT_HINT, issues: [{ path: ['unit'], message: UNIT_HINT }] }); return; }
     // Renaming into another item's slot is the same duplicate, so it is refused the same way — and the
     // message says which one is in the way.
@@ -1775,6 +1801,7 @@ export function createApp(overrides: Partial<Config> = {}) {
 
   /** Deleting is only possible while nothing points at the item; otherwise it is stopped. */
   app.delete('/api/products/:id', adminOnly, (req, res) => {
+    if (store.get('SELECT 1 AS x FROM stock_movements WHERE product_id=? LIMIT 1', String(req.params.id)) || store.get('SELECT 1 AS x FROM warehouse_stock WHERE product_id=? LIMIT 1', String(req.params.id))) { res.status(409).json({ error: 'الصنف له سجل مخزون — وقّفه بدل الحذف للحفاظ على الحركات.', code: 'PRODUCT_HAS_STOCK' }); return; }
     const current = store.get('SELECT * FROM products WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
     if (!current) { res.status(404).json({ error: 'الصنف غير موجود.' }); return; }
     const holders = rowsHolding('products', current.id).filter(entry => entry.table !== 'product_prices');

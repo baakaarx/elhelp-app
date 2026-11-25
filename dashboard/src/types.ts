@@ -4,6 +4,7 @@ export interface User {
   name: string;
   email: string;
   role: Role;
+  accessScope?: 'full' | 'warehouse';
   phone: string;
   region: string;
   color: string;

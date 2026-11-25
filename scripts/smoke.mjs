@@ -251,6 +251,28 @@ check('a stopped item cannot enter a new order, but the old line stays readable'
   (await patch(`/api/products/${orderProductId}`, admin, { active: false })).status === 200
   && (await post('/api/orders', rep, { id: crypto.randomUUID(), customerId: bookCustomerId, lines: [{ productId: orderProductId, qty: 1 }] }, 'rep')).status === 400);
 
+section('independent warehouses and restricted staff');
+const whStaff = await post('/api/staff', admin, { name: 'أمين مخزن اختبار', email: `warehouse-${Date.now()}@smoke.test`, password: 'WarehousePassword123!', accessScope: 'warehouse' });
+const whLogin = await post('/api/auth/login', null, { email: whStaff.body?.user?.email, password: 'WarehousePassword123!' });
+const whToken = whLogin.body?.token;
+check('warehouse staff can sign in but cannot see orders or prices', whStaff.status === 201 && whLogin.status === 200 && (await get('/api/orders', whToken)).status === 403 && (await get('/api/price-tiers', whToken)).status === 403);
+const whA = await post('/api/warehouse/warehouses', whToken, { name: `مخزن أ ${Date.now()}` });
+const whB = await post('/api/warehouse/warehouses', whToken, { name: `مخزن ب ${Date.now()}` });
+const whItem = await post('/api/warehouse/products', whToken, { name: `صنف مخازن ${Date.now()}`, category: 'other', unit: 'عبوة' });
+const whProductId = whItem.body?.product?.id;
+const wa = whA.body?.warehouse?.id, wb = whB.body?.warehouse?.id;
+const movement = body => post('/api/warehouse/movements', whToken, { id: crypto.randomUUID(), productId: whProductId, ...body });
+const unknown = await get(`/api/warehouse/stock?warehouseId=${wa}`, whToken);
+check('unrecorded stock is not guessed to be zero', unknown.body?.stock?.find(x => x.id === whProductId)?.qty === null);
+const openingA = await movement({ kind:'opening', toWarehouseId:wa, qty:4 });
+const openingB = await movement({ kind:'opening', toWarehouseId:wb, qty:0 });
+const transfer = await movement({ kind:'transfer', fromWarehouseId:wa, toWarehouseId:wb, qty:1.5 });
+const balanceA = (await get(`/api/warehouse/stock?warehouseId=${wa}`, whToken)).body?.stock?.find(x => x.id === whProductId)?.qty;
+const balanceB = (await get(`/api/warehouse/stock?warehouseId=${wb}`, whToken)).body?.stock?.find(x => x.id === whProductId)?.qty;
+check('a transfer changes both warehouses exactly once', openingA.status === 201 && openingB.status === 201 && transfer.status === 201 && balanceA === 2.5 && balanceB === 1.5);
+check('spending more than the balance is refused', (await movement({ kind:'out', fromWarehouseId:wb, qty:2 })).status === 409);
+check('assistant priorities report real work and distinguish missing opening balances', (await get('/api/work-priorities', admin)).status === 200);
+
 section('a visit is a check-in, a result and a duration');
 const visitId = crypto.randomUUID();
 const checkedIn = await post('/api/visits/check-in', rep, { id: visitId, customerId: bookCustomerId, purpose: 'collection', location: fix(31.2, 29.9, 7) }, 'rep');

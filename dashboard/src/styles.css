@@ -207,6 +207,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ---------- Shell ---------- */
 .app { display: grid; grid-template-columns: 258px 1fr; min-height: 100%; }
+.app.warehouse-app { grid-template-columns: minmax(0, 1fr); }
 .sidebar {
   background:
     radial-gradient(420px 240px at 100% 0%, rgba(47, 168, 220, 0.16), transparent 62%),
