@@ -13,20 +13,20 @@ export function createInsightsRouter(store:Store, timezone:string) {
     try {start=dayBounds(from,timezone).start;end=dayBounds(to,timezone).end;}catch{res.status(400).json({error:'راجع تواريخ الفترة.'});return;}
     if(to<from || (Date.parse(`${to}T00:00:00Z`)-Date.parse(`${from}T00:00:00Z`))/86400000>=366){res.status(400).json({error:'اختار فترة صحيحة لا تزيد عن ٣٦٦ يوم.'});return;}
     const params=[start,end];
-    const totals=store.get('SELECT COUNT(*) AS count,COUNT(DISTINCT customer_id) AS customers,COALESCE(SUM(total_piasters),0) AS amount FROM office_sales_v1 WHERE created_at>=? AND created_at<?',...params)!;
+    const totals=store.get('SELECT COUNT(*) AS count,COUNT(DISTINCT customer_id) AS customers,COALESCE(SUM(total_piasters),0) AS amount FROM office_sales_net_v1 WHERE created_at>=? AND created_at<?',...params)!;
     const customers=store.all(`SELECT c.id,c.name,c.phone,COUNT(*) AS count,SUM(s.total_piasters) AS amount
-      FROM office_sales_v1 s JOIN customers c ON c.id=s.customer_id
+      FROM office_sales_net_v1 s JOIN customers c ON c.id=s.customer_id
       WHERE s.created_at>=? AND s.created_at<? GROUP BY c.id,c.name,c.phone ORDER BY amount DESC,c.name COLLATE NOCASE,c.id LIMIT 10`,...params);
     const productRows=store.all(`SELECT p.id,p.name,l.unit,l.unit_size AS unitSize,SUM(l.milli_qty) AS qty,SUM(l.line_piasters) AS amount
-      FROM office_sales_lines_v1 l JOIN office_sales_v1 s ON s.id=l.sale_id JOIN products p ON p.id=l.product_id
-      WHERE s.created_at>=? AND s.created_at<? GROUP BY p.id,p.name,l.unit,l.unit_size`,...params);
+      FROM office_sales_lines_net_v1 l JOIN office_sales_net_v1 s ON s.id=l.sale_id JOIN products p ON p.id=l.product_id
+      WHERE s.created_at>=? AND s.created_at<? AND l.milli_qty>0 GROUP BY p.id,p.name,l.unit,l.unit_size`,...params);
     // Quantity and revenue are intentionally separate rankings; units across products aren't interchangeable.
     const shapeProduct=(p:Record<string,any>)=>({...p,qty:Number(p.qty)/1000,amount:Number(p.amount)/100});
     // A customer cannot be ranked by a sum of sacks + litres. Rank consumption separately per pack.
     const consumers=store.all(`WITH client_totals AS (
       SELECT l.product_id AS productId,l.unit,l.unit_size AS unitSize,c.id,c.name,c.phone,SUM(l.milli_qty) AS qty,SUM(l.line_piasters) AS amount
-      FROM office_sales_lines_v1 l JOIN office_sales_v1 s ON s.id=l.sale_id JOIN customers c ON c.id=s.customer_id
-      WHERE s.created_at>=? AND s.created_at<? GROUP BY l.product_id,l.unit,l.unit_size,c.id,c.name,c.phone
+      FROM office_sales_lines_net_v1 l JOIN office_sales_net_v1 s ON s.id=l.sale_id JOIN customers c ON c.id=s.customer_id
+      WHERE s.created_at>=? AND s.created_at<? AND l.milli_qty>0 GROUP BY l.product_id,l.unit,l.unit_size,c.id,c.name,c.phone
     ), ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY productId,unit,unitSize ORDER BY qty DESC,amount DESC,name COLLATE NOCASE,id) AS pos FROM client_totals)
       SELECT * FROM ranked WHERE pos<=10 ORDER BY productId,unit,unitSize,pos`,...params);
     const enrich=(p:Record<string,any>)=>({...shapeProduct(p),consumers:consumers.filter(c=>c.productId===p.id&&c.unit===p.unit&&c.unitSize===p.unitSize)
@@ -40,7 +40,7 @@ export function createInsightsRouter(store:Store, timezone:string) {
     const saleRows=store.all(`SELECT CASE WHEN a.sale_id IS NOT NULL THEN a.rep_id ELSE o.user_id END AS id,
       COUNT(*) AS n,SUM(s.total_piasters) AS amount,
       SUM(CASE WHEN a.sale_id IS NULL AND o.user_id IS NOT NULL THEN 1 ELSE 0 END) AS legacy
-      FROM office_sales_v1 s LEFT JOIN office_sale_rep_v1 a ON a.sale_id=s.id
+      FROM office_sales_net_v1 s LEFT JOIN office_sale_rep_v1 a ON a.sale_id=s.id
       LEFT JOIN orders o ON o.id=s.order_id
       WHERE s.created_at>=? AND s.created_at<? GROUP BY CASE WHEN a.sale_id IS NOT NULL THEN a.rep_id ELSE o.user_id END`,...params);
     const reps=store.all("SELECT id,name,region,active FROM users WHERE role='rep' ORDER BY name COLLATE NOCASE,id").map(rep=>{
@@ -52,8 +52,8 @@ export function createInsightsRouter(store:Store, timezone:string) {
     res.json({from,to,timezone,salesCount:Number(totals.count),customerCount:Number(totals.customers),sales:Number(totals.amount)/100,
       customers:customers.map(c=>({...c,count:Number(c.count),amount:Number(c.amount)/100,
         items:store.all(`SELECT p.id,p.name,l.unit,l.unit_size AS unitSize,SUM(l.milli_qty) AS qty,SUM(l.line_piasters) AS amount
-          FROM office_sales_lines_v1 l JOIN office_sales_v1 s ON s.id=l.sale_id JOIN products p ON p.id=l.product_id
-          WHERE s.customer_id=? AND s.created_at>=? AND s.created_at<? GROUP BY p.id,p.name,l.unit,l.unit_size ORDER BY amount DESC,p.name COLLATE NOCASE LIMIT 10`,c.id,...params).map(shapeProduct)})),productsByValue,productsByQty,reps,
+          FROM office_sales_lines_net_v1 l JOIN office_sales_net_v1 s ON s.id=l.sale_id JOIN products p ON p.id=l.product_id
+          WHERE s.customer_id=? AND s.created_at>=? AND s.created_at<? AND l.milli_qty>0 GROUP BY p.id,p.name,l.unit,l.unit_size ORDER BY amount DESC,p.name COLLATE NOCASE LIMIT 10`,c.id,...params).map(shapeProduct)})),productsByValue,productsByQty,reps,
       unassignedCount:Number(unknown?.n||0),unassignedSales:Number(unknown?.amount||0)/100,
       legacyOrders:saleRows.reduce((sum,r)=>sum+Number(r.legacy||0),0)});
   });

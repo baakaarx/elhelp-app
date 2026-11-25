@@ -13,6 +13,9 @@ const exact = (n: number, scale: number) => Math.abs(n * scale - Math.round(n * 
 const bodySale = z.object({ id, customerId:entityId, warehouseId:entityId, orderId:entityId.optional(), repId:entityId.nullable().optional(), paid:money,
   lines:z.array(z.object({productId:entityId,qty:quantity,price:money}).strict()).max(100).default([]) }).strict();
 const bodyEntry = z.object({id,customerId:entityId,amount:money}).strict();
+const correctionBody=z.object({id,reason:z.string().trim().min(5).max(500),balancePiasters:z.number().int().safe(),revision:z.number().int().nonnegative(),
+  lines:z.array(z.object({lineId:entityId,correctedMilli:z.number().int().nonnegative().max(100_000_000),returnedMilli:z.number().int().nonnegative().max(100_000_000),stockKind:z.enum(['returned','error']).nullable()}).strict()).max(100),
+  cash:z.object({kind:z.enum(['error','refund']),amountPiasters:z.number().int().positive().max(100_000_000_000)}).strict().nullable()}).strict();
 
 /** Office-only confirmed sales; a priced order is not itself a sale or a payment. */
 export function createSalesRouter(store: Store) {
@@ -20,8 +23,10 @@ export function createSalesRouter(store: Store) {
   const balance = (customerId: string): number => Number(store.get(`SELECT
     COALESCE((SELECT SUM(amount_piasters) FROM office_debts_v1 WHERE customer_id=?),0)
     + COALESCE((SELECT SUM(total_piasters-paid_piasters) FROM office_sales_v1 WHERE customer_id=?),0)
-    - COALESCE((SELECT SUM(amount_piasters) FROM office_receipts_v1 WHERE customer_id=?),0) AS amount`,customerId,customerId,customerId)?.amount || 0);
-  const duplicate = (table:'office_sales_v1'|'office_receipts_v1'|'office_debts_v1', entryId:string, payload:string, userId:string) => {
+    - COALESCE((SELECT SUM(amount_piasters) FROM office_receipts_v1 WHERE customer_id=?),0)
+    - COALESCE((SELECT SUM(cl.amount_piasters) FROM office_correction_lines_v1 cl JOIN office_corrections_v1 x ON x.id=cl.correction_id JOIN office_sales_v1 s ON s.id=x.sale_id WHERE s.customer_id=?),0)
+    + COALESCE((SELECT SUM(x.cash_piasters) FROM office_corrections_v1 x LEFT JOIN office_sales_v1 s ON s.id=x.sale_id LEFT JOIN office_receipts_v1 r ON r.id=x.receipt_id WHERE COALESCE(s.customer_id,r.customer_id)=?),0) AS amount`,customerId,customerId,customerId,customerId,customerId)?.amount || 0);
+  const duplicate = (table:'office_sales_v1'|'office_receipts_v1'|'office_debts_v1'|'office_corrections_v1', entryId:string, payload:string, userId:string) => {
     const old = store.get(`SELECT actor_id,request_json FROM ${table} WHERE id=?`,entryId);
     if (!old) return 0;
     return old.actor_id === userId && old.request_json === payload ? 1 : -1;
@@ -39,6 +44,7 @@ export function createSalesRouter(store: Store) {
   };
   router.get('/options', (_req,res) => {
     const customers=store.all("SELECT c.id,c.name,c.phone,c.price_tier_id AS priceTierId,EXISTS(SELECT 1 FROM office_debts_v1 d WHERE d.customer_id=c.id) AS hasOpening FROM customers c WHERE c.active=1 ORDER BY c.name COLLATE NOCASE,c.id");
+    const statementCustomers=store.all('SELECT id,name,phone,active FROM customers ORDER BY name COLLATE NOCASE,id');
     const products=store.all("SELECT id,name,unit,unit_size AS unitSize FROM products WHERE active=1 ORDER BY name COLLATE NOCASE,id");
     const warehouses=store.all('SELECT id,name FROM warehouses ORDER BY name COLLATE NOCASE,id');
     const reps=store.all("SELECT id,name,region FROM users WHERE role='rep' AND active=1 ORDER BY name COLLATE NOCASE,id");
@@ -48,10 +54,12 @@ export function createSalesRouter(store: Store) {
       AND NOT EXISTS (SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.priced_at,o.id`);
     const pendingOrders=orders.map(order=>({...order,lines:store.all('SELECT product_id AS productId,product_name AS name,unit,unit_size AS unitSize,qty,price FROM order_lines WHERE order_id=? ORDER BY position',order.id)}));
     const tiers=store.all('SELECT id,name,active FROM price_tiers ORDER BY position,name COLLATE NOCASE');
-    res.json({customers,products,warehouses,reps,prices,tiers,orders:pendingOrders});
+    res.json({customers,statementCustomers,products,warehouses,reps,prices,tiers,orders:pendingOrders});
   });
   // A read-only trace lets the office reconcile the numbers without editing historical entries.
   router.get('/statement/:customerId', (req,res) => {
+    const so=Number(req.query.salesOffset??0),ro=Number(req.query.receiptsOffset??0);
+    if(!Number.isSafeInteger(so)||!Number.isSafeInteger(ro)||so<0||ro<0||so>10000000||ro>10000000){res.status(400).json({error:'راجع صفحة كشف الحساب.'});return;}
     const customer=store.get('SELECT id,name,phone FROM customers WHERE id=?',String(req.params.customerId));
     if(!customer){res.status(404).json({error:'العميل غير موجود.'});return;}
     const opening=store.get('SELECT amount_piasters AS amount,actor_name AS actorName,created_at AS createdAt FROM office_debts_v1 WHERE customer_id=?',customer.id);
@@ -61,39 +69,108 @@ export function createSalesRouter(store: Store) {
       CASE WHEN a.sale_id IS NOT NULL AND a.rep_id IS NULL AND a.rep_name<>'' THEN 1 ELSE 0 END AS repDeleted
       FROM office_sales_v1 s JOIN warehouses w ON w.id=s.warehouse_id
       LEFT JOIN office_sale_rep_v1 a ON a.sale_id=s.id LEFT JOIN orders o ON o.id=s.order_id LEFT JOIN users u ON u.id=o.user_id
-      WHERE s.customer_id=? ORDER BY s.created_at DESC,s.rowid DESC LIMIT 101`,customer.id);
-    const receipts=store.all('SELECT id,amount_piasters AS amount,actor_name AS actorName,created_at AS createdAt FROM office_receipts_v1 WHERE customer_id=? ORDER BY created_at DESC,rowid DESC LIMIT 101',customer.id);
+      WHERE s.customer_id=? ORDER BY s.created_at DESC,s.rowid DESC LIMIT 101 OFFSET ?`,customer.id,so);
+    const receipts=store.all('SELECT id,amount_piasters AS amount,actor_name AS actorName,created_at AS createdAt FROM office_receipts_v1 WHERE customer_id=? ORDER BY created_at DESC,rowid DESC LIMIT 101 OFFSET ?',customer.id,ro);
     const moreSales=sales.length>100,moreReceipts=receipts.length>100;
-    res.json({customer,opening:opening?{...opening,amount:Number(opening.amount)/100}:null,due:balance(String(customer.id))/100,moreSales,moreReceipts,
-      sales:sales.slice(0,100).map(s=>({...s,total:Number(s.total)/100,paid:Number(s.paid)/100,
+    const signed=balance(String(customer.id));
+    res.json({customer,opening:opening?{...opening,amount:Number(opening.amount)/100}:null,balance:signed/100,due:Math.max(signed,0)/100,credit:Math.max(-signed,0)/100,moreSales,moreReceipts,salesOffset:so,receiptsOffset:ro,
+      sales:sales.slice(0,100).map(s=>({...s,total:Number(s.total)/100,paid:Number(s.paid)/100,corrected:!!store.get('SELECT 1 FROM office_corrections_v1 WHERE sale_id=?',s.id),
         lines:store.all('SELECT product_name AS name,unit,unit_size AS unitSize,milli_qty AS qty,price_piasters AS price,line_piasters AS amount FROM office_sales_lines_v1 WHERE sale_id=? ORDER BY rowid',s.id)
           .map(l=>({...l,qty:Number(l.qty)/1000,price:Number(l.price)/100,amount:Number(l.amount)/100}))})),
-      receipts:receipts.slice(0,100).map(r=>({...r,amount:Number(r.amount)/100}))});
+      receipts:receipts.slice(0,100).map(r=>({...r,amount:Number(r.amount)/100,corrected:!!store.get('SELECT 1 FROM office_corrections_v1 WHERE receipt_id=?',r.id)}))});
   });
   router.get('/overview', (_req,res) => {
-    const totals=store.get(`SELECT COUNT(*) AS count,COALESCE(SUM(total_piasters),0) AS sales,COALESCE(SUM(paid_piasters),0) AS salePaid FROM office_sales_v1`)!;
-    const receipts=Number(store.get('SELECT COALESCE(SUM(amount_piasters),0) AS n FROM office_receipts_v1')?.n || 0);
-    const debtors=store.all(`SELECT c.id,c.name,c.phone,
-      COALESCE((SELECT SUM(amount_piasters) FROM office_debts_v1 x WHERE x.customer_id=c.id),0)
-      +COALESCE((SELECT SUM(total_piasters-paid_piasters) FROM office_sales_v1 s WHERE s.customer_id=c.id),0)
-      -COALESCE((SELECT SUM(amount_piasters) FROM office_receipts_v1 r WHERE r.customer_id=c.id),0) AS due
-      FROM customers c WHERE due>0 ORDER BY due DESC,c.name COLLATE NOCASE`);
+    const totals=store.get(`SELECT COUNT(*) AS count,COALESCE(SUM(total_piasters),0) AS sales FROM office_sales_net_v1`)!;
+    const paid=Number(store.get('SELECT COALESCE(SUM(paid_piasters),0) AS n FROM office_sales_v1')?.n||0);
+    const receipts=Number(store.get('SELECT COALESCE(SUM(amount_piasters),0) AS n FROM office_receipts_v1')?.n||0);
+    const cashCorrections=Number(store.get('SELECT COALESCE(SUM(cash_piasters),0) AS n FROM office_corrections_v1')?.n||0);
+    const accounts=store.all('SELECT id,name,phone FROM customers').map(c=>({...c,balance:balance(String(c.id))}));
+    const debtors=accounts.filter(c=>c.balance>0).sort((a,b)=>b.balance-a.balance);
+    const creditors=accounts.filter(c=>c.balance<0).sort((a,b)=>a.balance-b.balance);
     const latest=store.all(`SELECT s.id,s.order_id AS orderId,c.name AS customerName,w.name AS warehouseName,
-      s.total_piasters AS total,s.paid_piasters AS paid,s.created_at AS createdAt FROM office_sales_v1 s
+      s.total_piasters AS total,s.paid_piasters AS paid,s.created_at AS createdAt, EXISTS(SELECT 1 FROM office_corrections_v1 x WHERE x.sale_id=s.id) AS corrected FROM office_sales_v1 s
       JOIN customers c ON c.id=s.customer_id JOIN warehouses w ON w.id=s.warehouse_id ORDER BY s.created_at DESC,s.rowid DESC LIMIT 50`);
     const soldItems=store.all(`SELECT product_name AS name,unit,unit_size AS unitSize,SUM(milli_qty) AS qty,SUM(line_piasters) AS amount
-      FROM office_sales_lines_v1 GROUP BY product_id,product_name,unit,unit_size ORDER BY amount DESC,name COLLATE NOCASE`);
-    const payments=store.all(`SELECT c.name AS customerName,r.amount_piasters AS amount,r.created_at AS createdAt
+      FROM office_sales_lines_net_v1 WHERE milli_qty>0 GROUP BY product_id,product_name,unit,unit_size ORDER BY amount DESC,name COLLATE NOCASE`);
+    const payments=store.all(`SELECT c.name AS customerName,r.amount_piasters AS amount,r.created_at AS createdAt, EXISTS(SELECT 1 FROM office_corrections_v1 x WHERE x.receipt_id=r.id) AS corrected
       FROM office_receipts_v1 r JOIN customers c ON c.id=r.customer_id ORDER BY r.created_at DESC,r.rowid DESC LIMIT 50`);
     const stock=store.all(`SELECT w.id AS warehouseId,w.name AS warehouseName,p.id AS productId,p.name AS productName,p.unit,p.unit_size AS unitSize,
       s.milli_qty AS qty FROM warehouses w CROSS JOIN products p LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id AND s.product_id=p.id
       WHERE p.active=1 ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE`);
-    res.json({ count:Number(totals.count), sales:Number(totals.sales)/100, collected:(Number(totals.salePaid)+receipts)/100,
-      due:debtors.reduce((sum,row)=>sum+Number(row.due),0)/100,
-      debtors:debtors.map(x=>({...x,due:Number(x.due)/100})), latest:latest.map(x=>({...x,total:Number(x.total)/100,paid:Number(x.paid)/100})),
+    res.json({ count:Number(totals.count), sales:Number(totals.sales)/100, collected:(paid+receipts-cashCorrections)/100,
+      due:debtors.reduce((sum,row)=>sum+row.balance,0)/100,credit:creditors.reduce((sum,row)=>sum-row.balance,0)/100,
+      debtors:debtors.map(x=>({...x,due:x.balance/100})),creditors:creditors.map(x=>({...x,credit:-x.balance/100})), latest:latest.map(x=>({...x,total:Number(x.total)/100,paid:Number(x.paid)/100})),
       soldItems:soldItems.map(x=>({...x,qty:Number(x.qty)/1000,amount:Number(x.amount)/100})),
       payments:payments.map(x=>({...x,amount:Number(x.amount)/100})),
       stock:stock.map(x=>({...x,qty:x.qty===null?null:Number(x.qty)/1000})) });
+  });
+  // All amounts sent to the correction API are integer piasters / thousandths of a unit.
+  // Corrections and physical returns are independent: a return may be recorded later, but
+  // cannot exceed the corrected quantity. Cash corrections can never exceed the original payment.
+  function detail(type:string,targetId:string) {
+    if(type!=='sale'&&type!=='receipt')return null;
+    const sale=type==='sale';
+    const record=sale?store.get(`SELECT s.id,s.customer_id AS customerId,s.warehouse_id AS warehouseId,s.total_piasters AS total,
+      s.paid_piasters AS paid,s.created_at AS createdAt,s.actor_name AS actorName,c.name AS currentName,c.phone AS currentPhone,
+      c.governorate AS currentGovernorate,c.district AS currentDistrict,c.village AS currentVillage,w.name AS currentWarehouse
+      FROM office_sales_v1 s JOIN customers c ON c.id=s.customer_id JOIN warehouses w ON w.id=s.warehouse_id WHERE s.id=?`,targetId):
+      store.get('SELECT r.id,r.customer_id AS customerId,r.amount_piasters AS paid,r.created_at AS createdAt,r.actor_name AS actorName,c.name AS currentName FROM office_receipts_v1 r JOIN customers c ON c.id=r.customer_id WHERE r.id=?',targetId);
+    if(!record)return null;
+    const key=sale?'sale_id':'receipt_id';
+    const events=store.all(`SELECT id,reason,cash_kind AS cashKind,cash_piasters AS cash,actor_name AS actorName,created_at AS createdAt FROM office_corrections_v1 WHERE ${key}=? ORDER BY created_at,rowid`,targetId)
+      .map(e=>({...e,lines:store.all(`SELECT l.product_name AS name,l.unit,l.unit_size AS unitSize,cl.corrected_milli AS corrected,cl.returned_milli AS returned,cl.amount_piasters AS amount,cl.stock_kind AS stockKind
+         FROM office_correction_lines_v1 cl JOIN office_sales_lines_v1 l ON l.id=cl.line_id WHERE cl.correction_id=? ORDER BY l.rowid`,e.id)}));
+    const lines=sale?store.all(`SELECT l.id,l.product_name AS name,l.unit,l.unit_size AS unitSize,l.milli_qty AS qty,l.price_piasters AS price,l.line_piasters AS amount,
+      COALESCE((SELECT SUM(corrected_milli) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS corrected,
+      COALESCE((SELECT SUM(returned_milli) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS returned,
+      COALESCE((SELECT SUM(amount_piasters) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS correctedAmount
+      FROM office_sales_lines_v1 l WHERE l.sale_id=? ORDER BY l.rowid`,targetId):[];
+    const snapshot=sale?store.get('SELECT customer_name AS customerName,phone,governorate,district,village,warehouse_name AS warehouseName,rep_name AS repName FROM office_invoice_snapshots_v1 WHERE sale_id=?',targetId):null;
+    return {type,record,lines,events,revision:events.length,balancePiasters:balance(String(record.customerId)),
+      cashRemaining:Number(record.paid)-Number(store.get(`SELECT COALESCE(SUM(cash_piasters),0) AS n FROM office_corrections_v1 WHERE ${key}=?`,targetId)?.n||0),snapshot:snapshot??null};
+  }
+  router.get('/corrections/:type/:targetId',(req,res)=>{
+    const result=detail(String(req.params.type),String(req.params.targetId));
+    if(!result){res.status(404).json({error:'العملية غير موجودة.'});return;}
+    res.setHeader('Cache-Control','private, no-store');res.json(result);
+  });
+  router.post('/corrections/:type/:targetId',(req,res)=>{
+    const type=String(req.params.type),targetId=String(req.params.targetId), parsed=correctionBody.safeParse(req.body);
+    if(!parsed.success || (type!=='sale'&&type!=='receipt')){res.status(400).json({error:'راجع بيانات التصحيح وسببه.'});return;}
+    const data=parsed.data,actor=res.locals.user,request=JSON.stringify({type,targetId,...data});
+    const old=duplicate('office_corrections_v1',data.id,request,actor.id);
+    if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    try {store.transaction(()=>{
+      const current=detail(type,targetId);if(!current)throw Error('NOT_FOUND');
+      if(current.balancePiasters!==data.balancePiasters || current.revision!==data.revision)throw Error('STALE');
+      if(new Set(data.lines.map(l=>l.lineId)).size!==data.lines.length || (type==='receipt'&&data.lines.length))throw Error('LINES');
+      if(!data.cash&&!data.lines.some(l=>l.correctedMilli||l.returnedMilli))throw Error('EMPTY');
+      if(data.cash && data.cash.amountPiasters>current.cashRemaining)throw Error('CASH');
+      const calculated=data.lines.map(x=>{
+        const line=current.lines.find(l=>l.id===x.lineId);if(!line || (!x.correctedMilli&&!x.returnedMilli) || (!!x.returnedMilli !== !!x.stockKind))throw Error('LINES');
+        const corrected=Number(line.corrected)+x.correctedMilli, returned=Number(line.returned)+x.returnedMilli;
+        if(corrected>Number(line.qty)||returned>corrected)throw Error('QUANTITY');
+        // Cumulative rounding means splitting a correction cannot create or lose piasters.
+        const cumulative=Number((BigInt(corrected)*BigInt(Number(line.price))+500n)/1000n);
+        const amount=cumulative-Number(line.correctedAmount);
+        if(amount<0||cumulative>Number(line.amount))throw Error('QUANTITY');
+        return {...x,line,amount};
+      });
+      const now=Date.now();
+      store.run('INSERT INTO office_corrections_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',data.id,type==='sale'?targetId:null,type==='receipt'?targetId:null,data.reason,data.cash?.kind??null,data.cash?.amountPiasters??0,actor.id,actor.name,request,now);
+      for(const x of calculated){
+        store.run('INSERT INTO office_correction_lines_v1 VALUES(?,?,?,?,?,?)',data.id,x.lineId,x.correctedMilli,x.returnedMilli,x.amount,x.stockKind);
+        if(x.returnedMilli){
+          const stock=store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=(SELECT product_id FROM office_sales_lines_v1 WHERE id=?)',current.record.warehouseId,x.lineId);
+          if(!stock || Number(stock.milli_qty)>Number.MAX_SAFE_INTEGER-x.returnedMilli)throw Error('STOCK');
+          const product=store.get('SELECT product_id FROM office_sales_lines_v1 WHERE id=?',x.lineId)!;
+          store.run('UPDATE warehouse_stock SET milli_qty=milli_qty+? WHERE warehouse_id=? AND product_id=?',x.returnedMilli,current.record.warehouseId,product.product_id);
+          store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'in',?,NULL,?,?,?,?,?,?)",randomUUID(),product.product_id,current.record.warehouseId,x.returnedMilli,`${x.stockKind==='error'?'تصحيح خصم مخزون بالخطأ':'إرجاع بضاعة'} للبيعة ${targetId} - تصحيح ${data.id}`,actor.id,actor.name,now);
+        }
+      }
+      store.audit(actor.id,'sales.correction',{correctionId:data.id,type,targetId});
+    });}catch(e){const code=(e as Error).message;const errors:Record<string,string>={NOT_FOUND:'العملية غير موجودة.',STALE:'الحساب أو التصحيحات اتغيرت؛ افتح العملية وراجعها من جديد.',LINES:'راجع أصناف التصحيح.',EMPTY:'حدد تغييرًا واحدًا على الأقل.',CASH:'المبلغ أكبر من المدفوع المتبقي في العملية.',QUANTITY:'الكمية أكبر من المسموح أو البضاعة المرتجعة أكبر من الكمية المصححة.',STOCK:'تعذر إضافة المرتجع للمخزن؛ راجع المسؤول.'};if(errors[code]){res.status(409).json({error:errors[code],code});return;}throw e;}
+    res.status(201).json({ok:true,duplicate:false});
   });
   router.post('/', (req,res) => {
     const parsed=bodySale.safeParse(req.body); if (!parsed.success) {res.status(400).json({error:'راجع العميل والمخزن والأصناف والمبالغ.'});return;}
@@ -102,8 +179,8 @@ export function createSalesRouter(store: Store) {
     if (old) {res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
     try {
       store.transaction(()=>{
-        const customer=store.get('SELECT id,active FROM customers WHERE id=?',data.customerId); if (!customer?.active) throw Error('CUSTOMER');
-        if (!store.get('SELECT id FROM warehouses WHERE id=?',data.warehouseId)) throw Error('WAREHOUSE');
+        const customer=store.get('SELECT id,active,name,phone,governorate,district,village FROM customers WHERE id=?',data.customerId); if (!customer?.active) throw Error('CUSTOMER');
+        const warehouse=store.get('SELECT id,name FROM warehouses WHERE id=?',data.warehouseId); if (!warehouse) throw Error('WAREHOUSE');
         if (!exact(data.paid,100)) throw Error('PRECISION');
         let lines: {productId:string;qty:number;price:number;name:string;unit:string;unitSize:string}[]=[];
         let pricedOrderTotal: number | undefined;
@@ -136,6 +213,7 @@ export function createSalesRouter(store: Store) {
         const now=Date.now();
         store.run('INSERT INTO office_sales_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',data.id,data.orderId??null,data.customerId,data.warehouseId,total,paid,actor.id,actor.name,request,now);
         store.run('INSERT INTO office_sale_rep_v1(sale_id,rep_id,rep_name,source) VALUES(?,?,?,?)',data.id,saleRep?.id??null,saleRep?.name??'',data.orderId?'order':saleRep?'direct':'none');
+        store.run('INSERT INTO office_invoice_snapshots_v1 VALUES(?,?,?,?,?,?,?,?)',data.id,customer.name,customer.phone,customer.governorate,customer.district,customer.village,warehouse.name,saleRep?.name??'');
         for (const line of calculated) {
           if (!store.get('SELECT 1 FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',data.warehouseId,line.productId)) throw Error('NO_OPENING');
           if (!store.run('UPDATE warehouse_stock SET milli_qty=milli_qty-? WHERE warehouse_id=? AND product_id=? AND milli_qty>=?',line.qtyMilli,data.warehouseId,line.productId,line.qtyMilli).changes) throw Error('SHORT');

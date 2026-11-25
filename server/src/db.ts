@@ -212,6 +212,45 @@ export class Store {
         actor_name TEXT NOT NULL, request_json TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS office_receipts_v1_customer ON office_receipts_v1(customer_id,created_at);
+      -- Corrections are append-only; their original sale or receipt remains intact.
+      CREATE TABLE IF NOT EXISTS office_invoice_snapshots_v1 (
+        sale_id TEXT PRIMARY KEY REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        customer_name TEXT NOT NULL, phone TEXT NOT NULL, governorate TEXT NOT NULL, district TEXT NOT NULL,
+        village TEXT NOT NULL, warehouse_name TEXT NOT NULL, rep_name TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS office_corrections_v1 (
+        id TEXT PRIMARY KEY, sale_id TEXT REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        receipt_id TEXT REFERENCES office_receipts_v1(id) ON DELETE RESTRICT,
+        reason TEXT NOT NULL, cash_kind TEXT CHECK(cash_kind IN ('error','refund')),
+        cash_piasters INTEGER NOT NULL CHECK(cash_piasters >= 0),
+        actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, actor_name TEXT NOT NULL,
+        request_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+        CHECK((sale_id IS NULL) <> (receipt_id IS NULL)),
+        CHECK((cash_kind IS NULL AND cash_piasters=0) OR (cash_kind IS NOT NULL AND cash_piasters>0))
+      );
+      CREATE INDEX IF NOT EXISTS office_corrections_sale ON office_corrections_v1(sale_id);
+      CREATE INDEX IF NOT EXISTS office_corrections_receipt ON office_corrections_v1(receipt_id);
+      CREATE TABLE IF NOT EXISTS office_correction_lines_v1 (
+        correction_id TEXT NOT NULL REFERENCES office_corrections_v1(id) ON DELETE RESTRICT,
+        line_id TEXT NOT NULL REFERENCES office_sales_lines_v1(id) ON DELETE RESTRICT,
+        corrected_milli INTEGER NOT NULL CHECK(corrected_milli>=0),
+        returned_milli INTEGER NOT NULL CHECK(returned_milli>=0),
+        amount_piasters INTEGER NOT NULL CHECK(amount_piasters>=0),
+        stock_kind TEXT CHECK(stock_kind IN ('returned','error')),
+        PRIMARY KEY(correction_id,line_id), CHECK(corrected_milli>0 OR returned_milli>0),
+        CHECK((returned_milli=0 AND stock_kind IS NULL) OR (returned_milli>0 AND stock_kind IS NOT NULL))
+      );
+      CREATE INDEX IF NOT EXISTS office_correction_lines_line ON office_correction_lines_v1(line_id);
+      CREATE VIEW IF NOT EXISTS office_sales_lines_net_v1 AS
+        SELECT l.id,l.sale_id,l.product_id,l.product_name,l.unit,l.unit_size,l.price_piasters,
+          l.milli_qty-COALESCE((SELECT SUM(corrected_milli) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS milli_qty,
+          l.line_piasters-COALESCE((SELECT SUM(amount_piasters) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS line_piasters
+        FROM office_sales_lines_v1 l;
+      CREATE VIEW IF NOT EXISTS office_sales_net_v1 AS
+        SELECT s.id,s.order_id,s.customer_id,s.warehouse_id,s.paid_piasters,s.actor_id,s.actor_name,s.request_json,s.created_at,
+          COALESCE((SELECT SUM(line_piasters) FROM office_sales_lines_net_v1 l WHERE l.sale_id=s.id),0) AS total_piasters
+        FROM office_sales_v1 s WHERE EXISTS(SELECT 1 FROM office_sales_lines_net_v1 l WHERE l.sale_id=s.id AND l.milli_qty>0);
+
 
 
       CREATE TABLE IF NOT EXISTS product_prices (
