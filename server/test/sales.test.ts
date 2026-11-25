@@ -80,3 +80,44 @@ test('removing an engineer preserves the customer and confirmed financial histor
  assert.equal(report.debtors.find((r:any)=>r.id===customer).name,'عميل مبيعات');
  assert.equal((await client.delete(`/api/customers/${customer}`).set(auth)).status,409);
 });
+
+test('customer statement shows the recorded opening, sales, line items and receipts',async()=>{
+ const statement=await client.get(`/api/sales/statement/${customer}`).set(auth);
+ assert.equal(statement.status,200); assert.equal(statement.body.opening.amount,100);
+ assert.equal(statement.body.due,109.13);assert.equal(statement.body.sales.length,2);
+ assert.equal(statement.body.sales[1].lines[0].price,10.25);assert.equal(statement.body.sales[1].lines[0].qty,2.5);
+ assert.equal(statement.body.receipts[0].amount,20.5);
+ const token=(await client.post('/api/auth/login').send({email:'wh@sales.test',password:'Warehouse12345!'})).body.token;
+ assert.equal((await client.get(`/api/sales/statement/${customer}`).set('Authorization',`Bearer ${token}`)).status,403);
+});
+
+test('competing receipts cannot overpay a customer balance',async()=>{
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل دفعات متزامنة'})).body.customer.id;
+ await client.post('/api/sales/opening').set(auth).send({id:randomUUID(),customerId:cust,amount:100});
+ const results=await Promise.all([1,2].map(()=>client.post('/api/sales/receipts').set(auth).send({id:randomUUID(),customerId:cust,amount:70})));
+ assert.deepEqual(results.map(r=>r.status).sort(),[201,409]);
+ assert.equal((await client.get(`/api/sales/statement/${cust}`).set(auth)).body.due,30);
+});
+
+test('a priced order whose rounded total differs is not silently changed into a sale',async()=>{
+ const rep=(await client.post('/api/reps').set(auth).send({name:'مهندس تقريب',email:'round@sales.test',password:'Password12345!',region:'طنطا'})).body.user.id;
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل تقريب',repId:rep})).body.customer.id;
+ const second=(await client.post('/api/warehouse/products').set(auth).send({name:'صنف تقريب',category:'other',unit:'عبوة'})).body.product.id;
+ await client.post('/api/warehouse/movements').set(auth).send({id:randomUUID(),kind:'opening',productId:second,toWarehouseId:wh,qty:1});
+ const repAuth={Authorization:`Bearer ${(await client.post('/api/auth/login').send({email:'round@sales.test',password:'Password12345!'})).body.token}`};
+ const orderId=randomUUID();
+ assert.equal((await client.post('/api/orders').set(repAuth).send({id:orderId,customerId:cust,lines:[{productId:prod,qty:0.005},{productId:second,qty:0.005}],send:true})).status,201);
+ const priced=await client.post(`/api/orders/${orderId}/price`).set(auth).send({lines:[{productId:prod,price:1},{productId:second,price:1}]});
+ assert.equal(priced.body.order.total,0.01);
+ const before=await stock();const sale=await client.post('/api/sales').set(auth).send({id:randomUUID(),orderId,customerId:cust,warehouseId:wh,paid:0});
+ assert.equal(sale.status,409);assert.equal(sale.body.code,'ORDER_TOTAL');assert.equal(await stock(),before);
+ assert.equal((await client.get(`/api/sales/statement/${cust}`).set(auth)).body.sales.length,0);
+});
+
+test('two simultaneous submissions of the same sale id record and deduct only once',async()=>{
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل عملية متكررة'})).body.customer.id;
+ const before=await stock();const input={id:randomUUID(),customerId:cust,warehouseId:wh,paid:1,lines:[{productId:prod,qty:1,price:2}]};
+ const results=await Promise.all([client.post('/api/sales').set(auth).send(input),client.post('/api/sales').set(auth).send(input)]);
+ assert.deepEqual(results.map(r=>r.status).sort(),[200,201]);assert.equal(await stock(),before-1);
+ const statement=(await client.get(`/api/sales/statement/${cust}`).set(auth)).body;assert.equal(statement.sales.length,1);assert.equal(statement.due,1);
+});

@@ -29,7 +29,7 @@ export function createSalesRouter(store: Store) {
   const fail = (code:string) => {
     const errors:Record<string,string> = {
       CUSTOMER:'اختار عميل شغال من القائمة.', WAREHOUSE:'اختار مخزن صحيح.', ORDER:'الطلبية مش متسعّرة أو تخص عميل تاني.',
-      ORDER_SOLD:'الطلبية دي اتسجّلت كبيعة قبل كده.', PRODUCT:'الصنف غير موجود أو موقوف.',
+      ORDER_SOLD:'الطلبية دي اتسجّلت كبيعة قبل كده.', ORDER_TOTAL:'إجمالي الطلبية المتسعّرة مختلف عن حساب البيعة بالقرش. راجع المسؤول قبل التسجيل.', PRODUCT:'الصنف غير موجود أو موقوف.',
       DUPLICATE_PRODUCT:'اختار كل صنف مرة واحدة.', PRECISION:'الكمية تقبل ٣ أرقام عشرية والسعر رقمين عشريين.',
       NO_OPENING:'سجّل الرصيد الافتتاحي للصنف في المخزن الأول.', SHORT:'الكمية المطلوبة أكبر من رصيد المخزن.',
       PAID:'المبلغ المدفوع أكبر من إجمالي البيعة.', BIG:'إجمالي البيعة أكبر من المسموح.',
@@ -48,6 +48,21 @@ export function createSalesRouter(store: Store) {
     const pendingOrders=orders.map(order=>({...order,lines:store.all('SELECT product_id AS productId,product_name AS name,unit,unit_size AS unitSize,qty,price FROM order_lines WHERE order_id=? ORDER BY position',order.id)}));
     const tiers=store.all('SELECT id,name,active FROM price_tiers ORDER BY position,name COLLATE NOCASE');
     res.json({customers,products,warehouses,prices,tiers,orders:pendingOrders});
+  });
+  // A read-only trace lets the office reconcile the numbers without editing historical entries.
+  router.get('/statement/:customerId', (req,res) => {
+    const customer=store.get('SELECT id,name,phone FROM customers WHERE id=?',String(req.params.customerId));
+    if(!customer){res.status(404).json({error:'العميل غير موجود.'});return;}
+    const opening=store.get('SELECT amount_piasters AS amount,actor_name AS actorName,created_at AS createdAt FROM office_debts_v1 WHERE customer_id=?',customer.id);
+    const sales=store.all(`SELECT id,total_piasters AS total,paid_piasters AS paid,actor_name AS actorName,created_at AS createdAt,order_id AS orderId,
+      (SELECT name FROM warehouses WHERE id=s.warehouse_id) AS warehouseName FROM office_sales_v1 s WHERE customer_id=? ORDER BY created_at DESC,rowid DESC LIMIT 101`,customer.id);
+    const receipts=store.all('SELECT id,amount_piasters AS amount,actor_name AS actorName,created_at AS createdAt FROM office_receipts_v1 WHERE customer_id=? ORDER BY created_at DESC,rowid DESC LIMIT 101',customer.id);
+    const moreSales=sales.length>100,moreReceipts=receipts.length>100;
+    res.json({customer,opening:opening?{...opening,amount:Number(opening.amount)/100}:null,due:balance(String(customer.id))/100,moreSales,moreReceipts,
+      sales:sales.slice(0,100).map(s=>({...s,total:Number(s.total)/100,paid:Number(s.paid)/100,
+        lines:store.all('SELECT product_name AS name,unit,unit_size AS unitSize,milli_qty AS qty,price_piasters AS price,line_piasters AS amount FROM office_sales_lines_v1 WHERE sale_id=? ORDER BY rowid',s.id)
+          .map(l=>({...l,qty:Number(l.qty)/1000,price:Number(l.price)/100,amount:Number(l.amount)/100}))})),
+      receipts:receipts.slice(0,100).map(r=>({...r,amount:Number(r.amount)/100}))});
   });
   router.get('/overview', (_req,res) => {
     const totals=store.get(`SELECT COUNT(*) AS count,COALESCE(SUM(total_piasters),0) AS sales,COALESCE(SUM(paid_piasters),0) AS salePaid FROM office_sales_v1`)!;
@@ -85,11 +100,14 @@ export function createSalesRouter(store: Store) {
         if (!store.get('SELECT id FROM warehouses WHERE id=?',data.warehouseId)) throw Error('WAREHOUSE');
         if (!exact(data.paid,100)) throw Error('PRECISION');
         let lines: {productId:string;qty:number;price:number;name:string;unit:string;unitSize:string}[]=[];
+        let pricedOrderTotal: number | undefined;
         if (data.orderId) {
           if(data.lines.length) throw Error('ORDER');
-          const order=store.get("SELECT id,customer_id FROM orders WHERE id=? AND status='priced'",data.orderId);
+          const order=store.get("SELECT id,customer_id,total FROM orders WHERE id=? AND status='priced'",data.orderId);
           if(!order || order.customer_id!==data.customerId) throw Error('ORDER');
           if(store.get('SELECT id FROM office_sales_v1 WHERE order_id=?',data.orderId)) throw Error('ORDER_SOLD');
+          if(typeof order.total!=='number' || !Number.isFinite(order.total) || !exact(order.total,100)) throw Error('ORDER_TOTAL');
+          pricedOrderTotal=cents(order.total);
           lines=store.all('SELECT product_id AS productId,qty,price,product_name AS name,unit,unit_size AS unitSize FROM order_lines WHERE order_id=? ORDER BY position',data.orderId) as typeof lines;
         } else {
           if (!data.lines.length) throw Error('PRODUCT');
@@ -102,6 +120,9 @@ export function createSalesRouter(store: Store) {
           total+=amount; if(!Number.isSafeInteger(total)||total>100_000_000_000)throw Error('BIG');
           return {...line,qtyMilli:milli(line.qty),priceCents:cents(line.price),amount};
         });
+        // A priced order has a previously agreed total. Never silently charge a different amount
+        // because its historic whole-order rounding differs from the sales ledger's line rounding.
+        if(pricedOrderTotal!==undefined && pricedOrderTotal!==total) throw Error('ORDER_TOTAL');
         const paid=cents(data.paid); if (paid>total) throw Error('PAID');
         const now=Date.now();
         store.run('INSERT INTO office_sales_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',data.id,data.orderId??null,data.customerId,data.warehouseId,total,paid,actor.id,actor.name,request,now);
@@ -113,7 +134,7 @@ export function createSalesRouter(store: Store) {
         }
         store.audit(actor.id,'sales.confirm',{saleId:data.id,customerId:data.customerId,orderId:data.orderId??null});
       });
-    } catch(e) { const code=(e as Error).message; if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_SOLD','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    } catch(e) { const code=(e as Error).message; if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_SOLD','ORDER_TOTAL','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
     res.status(201).json({ok:true,duplicate:false});
   });
   router.post('/opening', (req,res) => {
