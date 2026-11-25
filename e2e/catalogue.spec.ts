@@ -67,6 +67,12 @@ test.describe('قائمة الأصناف والأسعار', () => {
     await openCatalogue(page);
     const row = productRow(page, 'يوريا ٤٦٪');
     await row.locator('td').nth(4).getByRole('button').click();
+    await row.getByLabel('سعر يوريا ٤٦٪ — نصف جملة').fill('1,5');
+    await row.getByRole('button', { name: 'حفظ' }).click();
+    await expect(page.getByText(/استخدم النقطة أو ٫ للكسور/)).toBeVisible();
+    await row.getByLabel('سعر يوريا ٤٦٪ — نصف جملة').fill('0.00000001');
+    await row.getByRole('button', { name: 'حفظ' }).click();
+    await expect(page.getByText(/استخدم النقطة أو ٫ للكسور/)).toBeVisible();
     await row.getByLabel('سعر يوريا ٤٦٪ — نصف جملة').fill('1220');
     await row.getByRole('button', { name: 'حفظ' }).click();
     await expectNumber(row.locator('td').nth(4), '1220');

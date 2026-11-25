@@ -195,3 +195,34 @@ test('historical priced recommendations can be invoiced with new quantities and 
  const statement=(await client.get(`/api/sales/statement/${cust}`).set(auth)).body;assert.equal(statement.sales[0].total,7);assert.equal(statement.sales[0].lines[0].qty,1);
  assert.ok(!(await client.get('/api/orders?status=sent').set(auth)).body.orders.some((o:any)=>o.id===orderId));
 });
+
+
+test('near-zero and excess precision cannot be silently rounded in sales, receipts or openings',async()=>{
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل دقة مالية'})).body.customer.id;
+ const before=await stock();
+ for(const line of [{qty:1,price:0.00000001},{qty:1.000000001,price:10},{qty:1,price:1.000000001}]){
+  const r=await client.post('/api/sales').set(auth).send({id:randomUUID(),customerId:cust,warehouseId:wh,paid:0,lines:[{productId:prod,...line}]});
+  assert.equal(r.status,409);assert.equal(r.body.code,'PRECISION');
+ }
+ const paid=await client.post('/api/sales').set(auth).send({id:randomUUID(),customerId:cust,warehouseId:wh,paid:0.00000001,lines:[{productId:prod,qty:1,price:2}]});
+ assert.equal(paid.body.code,'PRECISION');
+ assert.equal((await client.post('/api/sales/opening').set(auth).send({id:randomUUID(),customerId:cust,amount:0.00000001})).status,400);
+ assert.equal((await client.post('/api/sales/receipts').set(auth).send({id:randomUUID(),customerId:cust,amount:0.00000001})).status,400);
+ assert.equal(await stock(),before);
+ assert.equal((await client.get(`/api/sales/statement/${cust}`).set(auth)).body.sales.length,0);
+ assert.equal((await client.post('/api/sales/opening').set(auth).send({id:randomUUID(),customerId:cust,amount:0.29})).status,201);
+ assert.equal((await client.post('/api/sales/receipts').set(auth).send({id:randomUUID(),customerId:cust,amount:0.29})).status,201);
+ assert.equal((await client.get(`/api/sales/statement/${cust}`).set(auth)).body.balance,0);
+});
+
+test('a retry of a previously accepted near-zero entry remains idempotent after precision validation',async()=>{
+ const cust=(await client.post('/api/customers').set(auth).send({name:'عميل إعادة عملية تاريخية'})).body.customer.id;
+ const id=randomUUID(), body={id,customerId:cust,amount:0.00000001};
+ app.store.run('INSERT INTO office_debts_v1 VALUES(?,?,?,?,?,?,?)',id,cust,0,adminLogin.body.user.id,adminLogin.body.user.name,JSON.stringify(body),Date.now());
+ const response=await client.post('/api/sales/opening').set(auth).send(body);
+ assert.equal(response.status,200);assert.equal(response.body.duplicate,true);
+ const receiptId=randomUUID(), receipt={id:receiptId,customerId:cust,amount:1.000000001};
+ app.store.run('INSERT INTO office_receipts_v1 VALUES(?,?,?,?,?,?,?)',receiptId,cust,100,adminLogin.body.user.id,adminLogin.body.user.name,JSON.stringify(receipt),Date.now());
+ const retry=await client.post('/api/sales/receipts').set(auth).send(receipt);
+ assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);
+});

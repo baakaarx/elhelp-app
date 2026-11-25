@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { hasDecimalPrecision } from './decimal.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Store } from './db.js';
@@ -87,7 +88,6 @@ export function createWarehouseRouter(store: Store) {
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'بيانات حركة المخزون غير صحيحة.' }); return; }
     const m = parsed.data, scaled = m.qty * 1000, milli = Math.round(scaled);
-    if (Math.abs(scaled - milli) > 0.00001 || (m.kind !== 'opening' && milli < 1)) { res.status(400).json({ error: 'الكمية تقبل لحد ٣ أرقام بعد العلامة العشرية.' }); return; }
     const from = m.kind === 'in' || m.kind === 'opening' ? null : m.fromWarehouseId ?? null, to = m.kind === 'out' ? null : m.toWarehouseId ?? null;
     if ((m.kind !== 'in' && m.kind !== 'opening' && !from) || (m.kind !== 'out' && !to) || (from && to && from === to) || ((m.kind === 'in' || m.kind === 'opening') && m.fromWarehouseId) || (m.kind === 'out' && m.toWarehouseId)) { res.status(400).json({ error: 'اختار مخازن الحركة بشكل صحيح.' }); return; }
     const existing = store.get('SELECT * FROM inventory_movements WHERE id=?', m.id);
@@ -95,6 +95,7 @@ export function createWarehouseRouter(store: Store) {
       if (existing.actor_id !== res.locals.user.id || existing.kind !== m.kind || existing.product_id !== m.productId || existing.from_warehouse_id !== from || existing.to_warehouse_id !== to || Number(existing.milli_qty) !== milli || existing.note !== m.note) { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.' }); return; }
       res.json({ ok:true, duplicate:true }); return;
     }
+    if (!hasDecimalPrecision(m.qty,3) || (m.kind !== 'opening' && milli < 1)) { res.status(400).json({ error: 'الكمية تقبل لحد ٣ أرقام بعد العلامة العشرية.' }); return; }
     const item = product(m.productId);
     if (!item) { res.status(400).json({ error: 'الصنف غير موجود.' }); return; }
     if ((from && !store.get('SELECT id FROM warehouses WHERE id=?', from)) || (to && !store.get('SELECT id FROM warehouses WHERE id=?', to))) { res.status(400).json({ error: 'المخزن غير موجود.' }); return; }

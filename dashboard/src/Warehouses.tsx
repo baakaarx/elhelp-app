@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, patch, post } from './api';
 import { dateTimeText } from './dates';
+import { hasInputPrecision } from './decimal';
 
 type Warehouse = { id:string; name:string };
 type Stock = { id:string; name:string; category:string; unit:string; unitSize:string; active:boolean; qty:number|null };
@@ -106,7 +107,7 @@ export default function Warehouses({userId}:{userId:string}) {
   async function submitMovement(event:FormEvent) {
     event.preventDefault();
     if(pendingRaw || needsRefresh){setError('راجع الحركة المعلقة وحدّث الأرصدة قبل تسجيل حركة تانية.');return;}
-    if (!Number.isFinite(parseQty(qty))) { setError('اكتب كمية صحيحة.'); return; }
+    if (!Number.isFinite(parseQty(qty)) || !hasInputPrecision(qty,3)) { setError('اكتب كمية صحيحة بحد أقصى ٣ أرقام بعد العلامة العشرية.'); return; }
     const body = {id:crypto.randomUUID(),kind,productId,qty:parseQty(qty),note,
       ...(kind === 'opening' || kind === 'in' ? {toWarehouseId:warehouseId} : {fromWarehouseId:warehouseId}),
       ...(kind === 'transfer' ? {toWarehouseId:destination} : {})};

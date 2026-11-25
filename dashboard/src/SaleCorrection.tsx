@@ -1,23 +1,24 @@
 import {useState, type FormEvent} from 'react';
+import {hasInputPrecision} from './decimal';
 import {CorrectionHistory, cashP, qtyM, type Detail} from './SaleInvoice';
 
 type LineInput={lineId:string;correctedMilli:number;returnedMilli:number;stockKind:'returned'|'error'|null};
 export type CorrectionPayload={reason:string;balancePiasters:number;revision:number;lines:LineInput[];cash:{kind:'error'|'refund';amountPiasters:number}|null};
 const parse=(s:string)=>{const v=s.trim().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).replace('٫','.');return v===''?0:/^\d+(\.\d+)?$/.test(v)?Number(v):NaN;};
-const exact=(n:number,scale:number)=>Number.isFinite(n)&&n>=0&&Math.abs(n*scale-Math.round(n*scale))<0.00001;
+const exact=(text:string,places:number)=>text.trim()==='' || (hasInputPrecision(text,places) && Number.isFinite(parse(text)));
 const account=(p:number)=>p<0?`رصيد لصالح العميل ${cashP(-p)}`:`باقي على العميل ${cashP(p)}`;
 export default function SaleCorrection({detail,timezone,busy,onBack,onSave}:{detail:Detail;timezone?:string;busy:boolean;onBack:()=>void;onSave:(v:CorrectionPayload)=>Promise<void>}){
  const [reason,setReason]=useState(''),[cashKind,setCashKind]=useState(''),[cash,setCash]=useState(''),[inputs,setInputs]=useState<Record<string,{corrected:string;returned:string;stockKind:string}>>({}),[review,setReview]=useState<CorrectionPayload|null>(null),[error,setError]=useState('');
  const setLine=(id:string,k:'corrected'|'returned'|'stockKind',v:string)=>setInputs(old=>({...old,[id]:{corrected:old[id]?.corrected??'',returned:old[id]?.returned??'',stockKind:old[id]?.stockKind??'',[k]:v}}));
  function prepare(e:FormEvent){e.preventDefault();setError('');const lines:LineInput[]=[];
   for(const l of detail.lines){const q=parse(inputs[l.id]?.corrected??''),r=parse(inputs[l.id]?.returned??'');
-   if(!exact(q,1000)||!exact(r,1000)){setError('الكمية تقبل حتى ٣ أرقام عشرية.');return;}
+   if(!exact(inputs[l.id]?.corrected??'',3)||!exact(inputs[l.id]?.returned??'',3)){setError('الكمية تقبل حتى ٣ أرقام عشرية.');return;}
    const qm=Math.round(q*1000),rm=Math.round(r*1000);
    if(l.corrected+qm>l.qty||l.returned+rm>l.corrected+qm){setError(`راجع كمية ${l.name}: لا تتجاوز المباع أو الكمية المصححة.`);return;}
    const kind=inputs[l.id]?.stockKind??'';if(rm&&kind!=='returned'&&kind!=='error'){setError(`حدد حالة البضاعة للصنف ${l.name}.`);return;}
    if(qm||rm)lines.push({lineId:l.id,correctedMilli:qm,returnedMilli:rm,stockKind:rm?kind as 'returned'|'error':null});
   }
-  const value=parse(cash);if(!exact(value,100)||value*100>detail.cashRemaining+0.00001){setError('راجع مبلغ التصحيح: لا يتجاوز المدفوع المتبقي ويقبل رقمين عشريين.');return;}
+  const value=parse(cash);if(!exact(cash,2)||Math.round(value*100)>detail.cashRemaining){setError('راجع مبلغ التصحيح: لا يتجاوز المدفوع المتبقي ويقبل رقمين عشريين.');return;}
   const money=Math.round(value*100);if(money&&cashKind!=='refund'&&cashKind!=='error'){setError('اختار حالة المبلغ.');return;}
   if(!money&&cashKind){setError('اكتب مبلغ التصحيح أو اختار لا تغيير.');return;}
   if(!lines.length&&!money){setError('حدد تصحيحًا واحدًا على الأقل.');return;}

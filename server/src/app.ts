@@ -1,4 +1,5 @@
 import { createInsightsRouter } from './insights.js';
+import { hasDecimalPrecision } from './decimal.js';
 import { createSalesRouter } from './sales.js';
 import express from 'express';
 import cors from 'cors';
@@ -1659,7 +1660,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     tierId: z.uuid(),
     // null clears the price: «no price for this type yet» stays true rather than becoming zero, and a
     // zero price is a free item in every report that adds up later.
-    price: z.number().nonnegative('السعر ما يقلش عن صفر.').nullable(),
+    price: z.number().nonnegative('السعر ما يقلش عن صفر.').max(1_000_000_000,'السعر أكبر من المسموح.').refine(value=>hasDecimalPrecision(value,2), 'السعر يقبل رقمين بعد العلامة العشرية فقط.').nullable(),
   }).strict()).max(40).default([]);
   const newProduct = productFields.extend({ prices: priceEdits }).strict();
   // Same rule as the customer book: the row keeps its category, its pack text and its notes unless the

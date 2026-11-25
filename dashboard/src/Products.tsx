@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { ApiError, api, del, patch, post } from './api';
 import { formatNumber } from './session';
+import { hasInputPrecision, ungroupPrice } from './decimal';
+import { recommendationQty } from './quantity';
 import ConfirmAction from './ConfirmAction';
 import { productCategoryLabels } from './types';
 import type { PriceTier, Product, ProductCategory } from './types';
@@ -21,7 +23,7 @@ import type { PriceTier, Product, ProductCategory } from './types';
  */
 const messageOf = (error: unknown, fallback: string) => (error instanceof ApiError && error.message ? error.message : fallback);
 /** Arabic digits like the rest of the dashboard, but a price keeps its piastres: 12.5 must not round to 13. */
-const money = (value: number) => new Intl.NumberFormat('ar-EG', { maximumFractionDigits: 2 }).format(value);
+const money = (value: number) => recommendationQty(value);
 const CATEGORIES = Object.keys(productCategoryLabels) as ProductCategory[];
 const EMPTY_FORM = { name: '', category: 'other' as ProductCategory, unit: '', unitSize: '', notes: '' };
 const NONE = '';
@@ -182,9 +184,10 @@ export default function Products(_props: { timezone?: string }) {
       setPriceError('سيبت السعر فاضي. لو عايز تمسحه اضغط «امسح»، ولو عايز تكتبه اكتب رقم.');
       return;
     }
-    const parsed = Number(raw.replace(/[٬,]/g, ''));
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      setPriceError(`«${raw}» مش رقم. اكتب سعر موجب لـ«${product.name}» تحت «${tier.name}»، أو اضغط «امسح».`);
+    const normalized = ungroupPrice(raw);
+    const parsed = Number(normalized);
+    if (!normalized || !hasInputPrecision(normalized,2) || !Number.isFinite(parsed) || parsed < 0 || parsed > 1_000_000_000) {
+      setPriceError(`راجع سعر «${product.name}» تحت «${tier.name}»: اكتب رقمًا صحيحًا بحد أقصى رقمين عشريين، واستخدم النقطة أو ٫ للكسور.`);
       return;
     }
     void writePrice(product, tier, parsed);

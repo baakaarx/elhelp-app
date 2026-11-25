@@ -132,6 +132,14 @@ test('المراجعة تمنع الحفظ بالخطأ والتبويبان ي�
  await form.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(w.id);
  await form.getByRole('combobox',{name:'المهندس المسؤول'}).selectOption('none');
  await form.getByRole('textbox',{name:'الكمية'}).fill('1');await form.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('2');
+ await form.getByRole('textbox',{name:'سعر الوحدة (ج.م)'}).fill('0.00000001');
+ await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
+ await expect(page.getByRole('alert')).toContainText('المبالغ حتى رقمين');
+ await form.getByRole('textbox',{name:'سعر الوحدة (ج.م)'}).fill('10');
+ await form.getByRole('textbox',{name:'الكمية'}).fill('1.00000000000000000001');
+ await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
+ await expect(page.getByRole('alert')).toContainText('الكمية حتى ٣ أرقام');
+ await form.getByRole('textbox',{name:'الكمية'}).fill('1');
  await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  const review=page.getByLabel('مراجعة العملية');await expect(review).toContainText(c.name);await expect(review).toContainText(w.name);await expect(review).toContainText(p.name);
  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width+1);
@@ -210,6 +218,10 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');const pdfDoc=await getDocument({data:new Uint8Array(pdf),useSystemFonts:true}).promise;const text=await (await pdfDoc.getPage(1)).getTextContent();expect(text.items.map(x=>'str' in x?x.str:'').join(' ')).not.toContain('TEST_BROWSER_ADDRESS');expect((pdf.toString('latin1').match(/\/Type\s*\/Page\b/g)||[]).length).toBe(1);await page.emulateMedia({media:'screen'});
  await page.getByRole('button',{name:'رجوع للحساب'}).click();await statement.locator('summary').first().click();await statement.getByRole('button',{name:'تصحيح أو تسجيل مرتجع'}).click();
  await page.setViewportSize({width:390,height:844});const size=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(size.scroll).toBeLessThanOrEqual(size.width+1);
+ await page.getByRole('textbox',{name:'سبب التصحيح'}).fill('تصحيح صنف ومبلغ مسجل بالخطأ');
+ await page.getByRole('textbox',{name:`كمية إضافية لتصحيح البيع - ${p.name}`}).fill('0.000000001');
+ await page.getByRole('button',{name:'مراجعة التصحيح'}).click();
+ await expect(page.getByRole('alert')).toContainText('الكمية تقبل حتى ٣ أرقام عشرية');
  await page.getByRole('textbox',{name:`كمية إضافية لتصحيح البيع - ${p.name}`}).fill('0.5');
  await page.getByRole('combobox',{name:'حالة المبلغ'}).selectOption('error');
  await page.getByRole('textbox',{name:'المبلغ المصحح (ج.م)'}).fill('10');

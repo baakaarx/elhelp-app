@@ -126,3 +126,28 @@ test('inbound stock and transfers reject unsafe integer balances without changin
   assert.equal(instance.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w2,p)?.milli_qty,Number.MAX_SAFE_INTEGER);
   assert.equal((await client.get(`/api/warehouse/movements?warehouseId=${w2}`).set(admin)).body.movements.length,1);
 });
+
+
+test('stock rejects excess precision, including near zero, without initializing a balance',async()=>{
+  const w=(await client.post('/api/warehouse/warehouses').set(admin).send({name:'مخزن دقة إضافية'})).body.warehouse.id;
+  const p=(await client.post('/api/warehouse/products').set(admin).send({name:'صنف دقة إضافية',category:'other',unit:'عبوة'})).body.product.id;
+  for(const qty of [0.000000001,1.000000001]) {
+    const result=await client.post('/api/warehouse/movements').set(admin).send({id:randomUUID(),kind:'opening',productId:p,toWarehouseId:w,qty});
+    assert.equal(result.status,400);
+  }
+  const stock=(await client.get(`/api/warehouse/stock?warehouseId=${w}`).set(admin)).body.stock.find((x:any)=>x.id===p);
+  assert.equal(stock.qty,null);
+  assert.equal((await client.post('/api/warehouse/movements').set(admin).send({id:randomUUID(),kind:'opening',productId:p,toWarehouseId:w,qty:1.001})).status,201);
+});
+
+
+test('previously recorded movement with legacy fractional input remains safe to retry', async()=>{
+  const w=(await client.post('/api/warehouse/warehouses').set(admin).send({name:'مخزن محاولة قديمة'})).body.warehouse.id;
+  const p=(await client.post('/api/warehouse/products').set(admin).send({name:'صنف محاولة قديمة',category:'other',unit:'عبوة'})).body.product.id;
+  const id=randomUUID(),qty=1.000000001;
+  instance.store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES(?,?,?)',w,p,1000);
+  instance.store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'opening',?,NULL,?,1000,'',?,?,?)",id,p,w,adminLogin.body.user.id,adminLogin.body.user.name,Date.now());
+  const result=await client.post('/api/warehouse/movements').set(admin).send({id,kind:'opening',productId:p,toWarehouseId:w,qty});
+  assert.equal(result.status,200);assert.equal(result.body.duplicate,true);
+  assert.equal((await client.get(`/api/warehouse/stock?warehouseId=${w}`).set(admin)).body.stock.find((x:any)=>x.id===p).qty,1);
+});

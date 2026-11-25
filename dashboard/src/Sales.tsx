@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, post } from './api';
 import { dateTimeText } from './dates';
+import { hasInputPrecision } from './decimal';
 import { recommendationQty } from './quantity';
 import { formatNumber } from './session';
 import Products from './Products';
@@ -43,7 +44,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   useEffect(()=>{void load();},[load]);
   const selectedOrder=options?.orders.find(o=>o.id===orderId);
   const currentLines = lines.map(l=>({qty:parse(l.qty),price:parse(l.price)}));
-  const validLines=currentLines.length>0 && currentLines.every(l=>Number.isFinite(l.qty)&&l.qty>0&&l.qty<=100_000&&Math.abs(l.qty*1000-Math.round(l.qty*1000))<0.00001&&Number.isFinite(l.price)&&l.price>=0&&l.price<=1_000_000_000&&Math.abs(l.price*100-Math.round(l.price*100))<0.00001);
+  const validLines=currentLines.length>0 && currentLines.every((l,i)=>Number.isFinite(l.qty)&&l.qty>0&&l.qty<=100_000&&hasInputPrecision(lines[i].qty,3)&&Number.isFinite(l.price)&&l.price>=0&&l.price<=1_000_000_000&&hasInputPrecision(lines[i].price,2));
   const total=validLines?currentLines.reduce((sum,l)=>sum+Number((BigInt(Math.round(l.qty*1000))*BigInt(Math.round(l.price*100))+500n)/1000n),0)/100:0;
   const paidValue=parse(paid);
   const changeLine=(key:string, patch:Partial<Line>)=>{saleRequest.current='';setLines(prev=>prev.map(line=>line.key===key?{...line,...patch}:line));};
@@ -84,13 +85,13 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
     await refreshAfter('اتأكدنا من العملية واتحدّثت الأرقام.');
   }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}setError(err(e));}finally{setBusy(false);}}
   function saveSale(event:FormEvent) {event.preventDefault();setError('');setMessage('');
-    if(!validLines || !Number.isFinite(paidValue) || paidValue<0 || paidValue>total || Math.abs(paidValue*100-Math.round(paidValue*100))>0.00001){setError('راجع الكميات والأسعار والمبلغ المدفوع.');return;}
+    if(!validLines || !Number.isFinite(paidValue) || paidValue<0 || paidValue>total || !hasInputPrecision(paid,2)){setError('راجع الكميات والأسعار والمبلغ المدفوع: الكمية حتى ٣ أرقام عشرية، والمبالغ حتى رقمين.');return;}
     if(mode==='direct' && (lines.some(l=>!l.productId) || new Set(lines.map(l=>l.productId)).size!==lines.length)){setError('اختار كل صنف مرة واحدة.');return;}
     if(mode==='order' && !selectedOrder){setError('اختار طلبية مرسلة.');return;}
     setReview('sale');
   }
   function entry(event:FormEvent,kind:'receipt'|'opening'){event.preventDefault();setError('');setMessage('');const value=parse(kind==='receipt'?receiptAmount:openingAmount);
-    if(!Number.isFinite(value)||value<0||value>1_000_000_000||(kind==='receipt'&&value===0)||Math.abs(value*100-Math.round(value*100))>0.00001){setError('اكتب مبلغ صحيح بالجنيه والقرش.');return;}
+    if(!Number.isFinite(value)||value<0||value>1_000_000_000||(kind==='receipt'&&value===0)||!hasInputPrecision(kind==='receipt'?receiptAmount:openingAmount,2)){setError('اكتب مبلغ صحيح بالجنيه والقرش.');return;}
     if(kind==='receipt' && value>(report?.debtors.find(c=>c.id===receiptCustomer)?.due??0)){setError('الدفعة أكبر من المبلغ المسجّل على العميل.');return;}
     setReview(kind);
   }
@@ -115,7 +116,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
     await sendOperation({path:`/api/sales/corrections/${detail.type}/${encodeURIComponent(detail.record.id)}`,body:{id:crypto.randomUUID(),...values},kind:'correction'});
     setDetail(null);setDetailMode(null);await refreshAfter('التصحيح اتحفظ. راجع الحساب بعد التحديث.');
   }catch(e){setError(err(e));}finally{setBusy(false);}}
-  async function savePrice(event:FormEvent){event.preventDefault();setError('');setMessage('');const value=parse(priceInput);if(!Number.isFinite(value)||value<0||Math.abs(value*100-Math.round(value*100))>0.00001){setError('اكتب سعر صحيح بالجنيه والقرش.');return;}setBusy(true);try{
+  async function savePrice(event:FormEvent){event.preventDefault();setError('');setMessage('');const value=parse(priceInput);if(!Number.isFinite(value)||value<0||value>1_000_000_000||!hasInputPrecision(priceInput,2)){setError('اكتب سعر صحيح بالجنيه والقرش.');return;}setBusy(true);try{
     await api(`/api/products/${priceProduct}/prices`,{method:'PUT',body:JSON.stringify({prices:[{tierId:priceTier,price:value}]})});await refreshAfter('السعر اتحفظ.');
   }catch(e){setError(err(e));}finally{setBusy(false);}}
   const selectPrice=(product:string,tier:string)=>{setPriceProduct(product);setPriceTier(tier);const value=options?.prices.find(p=>p.productId===product&&p.tierId===tier)?.price;setPriceInput(value===undefined?'':String(value));};

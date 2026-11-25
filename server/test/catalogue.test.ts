@@ -288,3 +288,15 @@ test('the phone is handed a name and a pack — and nothing else', async () => {
   assert.equal(full.notes, 'الجراكن الفاضية ترجع للمخزن', 'the office still reads what it wrote');
   assert.equal(full.prices.length, 1, '…with the rates');
 });
+
+
+test('catalogue rejects prices below a piastre or above sale limit without replacing the old price', async () => {
+  const tier=tierByName('جملة');
+  const added=await addProduct({name:'سعر بدقة زائدة',unit:'عبوة',prices:[{tierId:tier,price:10.25}]});
+  const id=added.body.product.id;
+  for(const price of [0.00000001,10.000000001,1_000_000_001]) {
+    assert.equal((await client.put(`/api/products/${id}/prices`).set(admin).send({prices:[{tierId:tier,price}]})).status,400);
+  }
+  const listed=await client.get('/api/products?q='+encodeURIComponent('سعر بدقة زائدة')).set(admin);
+  assert.equal(listed.body.products[0].prices[0].price,10.25);
+});

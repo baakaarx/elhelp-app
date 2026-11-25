@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { hasDecimalPrecision } from './decimal.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { invoicePdf } from './invoicePdf.js';
 import { z } from 'zod';
@@ -10,7 +11,7 @@ const money = z.number().finite().nonnegative().max(1_000_000_000);
 const quantity = z.number().finite().positive().max(100_000);
 const cents = (n: number) => Math.round(n * 100);
 const milli = (n: number) => Math.round(n * 1000);
-const exact = (n: number, scale: number) => Math.abs(n * scale - Math.round(n * scale)) < 0.00001;
+const exact = (n: number, scale: number) => hasDecimalPrecision(n, scale === 100 ? 2 : 3);
 const bodySale = z.object({ id, customerId:entityId, warehouseId:entityId, orderId:entityId.optional(), repId:entityId.nullable().optional(), paid:money,
   lines:z.array(z.object({productId:entityId,qty:quantity,price:money}).strict()).max(100).default([]) }).strict();
 const bodyEntry = z.object({id,customerId:entityId,amount:money}).strict();
@@ -207,7 +208,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
           const recommended=store.all('SELECT product_id AS productId,qty,price,product_name AS name,unit,unit_size AS unitSize FROM order_lines WHERE order_id=? ORDER BY position',data.orderId);
           if(order.status==='priced' && !data.lines.length) {
             // Older office-priced orders remain frozen; never silently overwrite their agreement.
-            if(typeof order.total!=='number' || !Number.isFinite(order.total) || !exact(order.total,100)) throw Error('ORDER_TOTAL');
+            if(typeof order.total!=='number' || !Number.isFinite(order.total) || Math.abs(order.total*100-Math.round(order.total*100)) >= 0.00001) throw Error('ORDER_TOTAL');
             pricedOrderTotal=cents(order.total);
             lines=recommended as typeof lines;
           } else {
@@ -256,9 +257,10 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     res.status(201).json({ok:true,duplicate:false});
   });
   router.post('/opening', (req,res) => {
-    const parsed=bodyEntry.safeParse(req.body);if(!parsed.success||!exact(parsed.success?parsed.data.amount:0,100)){res.status(400).json({error:'اكتب المديونية بالجنيه والقرش.'});return;}
+    const parsed=bodyEntry.safeParse(req.body);if(!parsed.success){res.status(400).json({error:'اكتب المديونية بالجنيه والقرش.'});return;}
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user, old=duplicate('office_debts_v1',data.id,request,actor.id);
     if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    if(!exact(data.amount,100)){res.status(400).json({error:'اكتب المديونية بالجنيه والقرش.'});return;}
     try { store.transaction(()=>{
       if(!store.get('SELECT 1 FROM customers WHERE id=? AND active=1',data.customerId))throw Error('CUSTOMER');
       if(store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=?',data.customerId))throw Error('OPENING');
@@ -268,9 +270,10 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     res.status(201).json({ok:true,duplicate:false});
   });
   router.post('/receipts', (req,res) => {
-    const parsed=bodyEntry.safeParse(req.body);if(!parsed.success||!exact(parsed.success?parsed.data.amount:0,100)||!(parsed.success&&parsed.data.amount>0)){res.status(400).json({error:'اكتب مبلغ الدفعة بالجنيه والقرش.'});return;}
+    const parsed=bodyEntry.safeParse(req.body);if(!parsed.success){res.status(400).json({error:'اكتب مبلغ الدفعة بالجنيه والقرش.'});return;}
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user, old=duplicate('office_receipts_v1',data.id,request,actor.id);
     if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    if(!exact(data.amount,100)||data.amount<=0){res.status(400).json({error:'اكتب مبلغ الدفعة بالجنيه والقرش.'});return;}
     try {store.transaction(()=>{
       if(!store.get('SELECT 1 FROM customers WHERE id=?',data.customerId))throw Error('CUSTOMER');
       if(cents(data.amount)>balance(data.customerId))throw Error('PAYMENT');
