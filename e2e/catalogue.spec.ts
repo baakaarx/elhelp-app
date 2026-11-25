@@ -37,7 +37,9 @@ const expectNumber = (cell: Locator, value: string) => expect.poll(() => cellNum
 
 async function openCatalogue(page: Page) {
   await signInAsManager(page);
-  await page.locator('button.nav-item').filter({ hasText: 'الأصناف' }).click();
+  await page.locator('button.nav-item').filter({ hasText: 'المبيعات' }).click();
+  await page.getByRole('button', { name: 'تعديل الأسعار' }).click();
+  await page.getByRole('button', { name: 'إدارة الأصناف وأنواع الأسعار' }).click();
   await expect(page.getByRole('heading', { level: 2, name: 'قائمة الأصناف والأسعار' })).toBeVisible();
 }
 

@@ -1,3 +1,4 @@
+import { createSalesRouter } from './sales.js';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -298,6 +299,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const adminOnly = requireAuth(store, 'admin');
   app.use('/api/warehouse', auth, createWarehouseRouter(store));
   app.use('/api/staff', adminOnly, createStaffRouter(store, id => io.in(`user:${id}`).disconnectSockets(true)));
+  app.use('/api/sales', adminOnly, createSalesRouter(store));
   app.get('/api/work-priorities', adminOnly, (_req, res) => {
     const waitingOrders = store.all(`SELECT o.id,c.name AS customerName,u.name AS repName,o.sent_at AS sentAt
       FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id
@@ -1351,6 +1353,11 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (orders) {
       res.status(409).json({ error: `العميل عليه ${orders} طلبية — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, code: 'CUSTOMER_HAS_ORDERS' });
       return;
+    }
+    if (store.get('SELECT 1 FROM office_sales_v1 WHERE customer_id=? LIMIT 1', current.id)
+      || store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=? LIMIT 1', current.id)
+      || store.get('SELECT 1 FROM office_receipts_v1 WHERE customer_id=? LIMIT 1', current.id)) {
+      res.status(409).json({ error: 'العميل عليه سجل مبيعات أو مديونية — وقّفه بدل الحذف للحفاظ على الحساب.', code: 'CUSTOMER_HAS_SALES' }); return;
     }
     store.run('DELETE FROM customers WHERE id=?', current.id);
     store.audit(res.locals.user.id, 'customer.delete', { name: current.name, repId: current.rep_id ?? null });

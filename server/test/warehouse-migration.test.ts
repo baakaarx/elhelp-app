@@ -60,3 +60,24 @@ test('prior inventory ledger is copied once without losing balances or reimporti
     assert.equal(store.get('SELECT COUNT(*) AS n FROM stock_movements')?.n, 1);
   } finally { store.close(); rmSync(dir, { recursive:true, force:true }); }
 });
+
+test('old sales tables are preserved and are not mistaken for the new financial ledger', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sales-legacy-'));
+  const dbPath = join(dir, 'app.db');
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`CREATE TABLE sales_records(id TEXT PRIMARY KEY, value REAL); INSERT INTO sales_records VALUES('old',123);
+    CREATE TABLE sales_lines(id TEXT PRIMARY KEY, text TEXT); INSERT INTO sales_lines VALUES('old-line','legacy');
+    CREATE TABLE sales_receipts(id TEXT PRIMARY KEY, value REAL); INSERT INTO sales_receipts VALUES('old-payment',17);
+    CREATE TABLE sales_opening_debts(id TEXT PRIMARY KEY, value REAL); INSERT INTO sales_opening_debts VALUES('old-debt',8);`);
+  legacy.close();
+  const instance = createApp({ ...config, dbPath });
+  try {
+    const client=request(instance.app);
+    const login=await client.post('/api/auth/login').send({ email:config.adminEmail,password:config.adminPassword });
+    const report=await client.get('/api/sales/overview').set({ Authorization:`Bearer ${login.body.token}` });
+    assert.equal(report.status,200);assert.equal(report.body.sales,0);assert.equal(report.body.due,0);
+    assert.equal(instance.store.get('SELECT value FROM sales_records WHERE id=?','old')?.value,123);
+    assert.equal(instance.store.get('SELECT value FROM sales_receipts WHERE id=?','old-payment')?.value,17);
+    assert.equal(instance.store.get('SELECT value FROM sales_opening_debts WHERE id=?','old-debt')?.value,8);
+  } finally {await instance.close();rmSync(dir,{recursive:true,force:true});}
+});

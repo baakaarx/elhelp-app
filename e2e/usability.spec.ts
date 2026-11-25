@@ -36,7 +36,7 @@ test('رسالة الحقول المطلوبة والبريد غير الصحي�
 test('الأزرار والنماذج مناسبة للشاشات الصغيرة والجداول تتحرك داخلها', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page);
-  for (const tab of ['العملاء', 'الأصناف والأسعار', 'المخازن', 'حسابات المكتب', 'فريق الميدان', 'الزيارات والطلبيات']) {
+  for (const tab of ['العملاء', 'المبيعات', 'المخازن', 'حسابات المكتب', 'فريق الميدان', 'الزيارات والطلبيات']) {
     await page.getByRole('button', { name: tab, exact: tab !== 'الزيارات والطلبيات' }).first().click();
     await expect(page.locator('main')).toBeVisible();
     const dimensions = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));

@@ -175,6 +175,35 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS inventory_movements_time ON inventory_movements(created_at DESC);
       CREATE TABLE IF NOT EXISTS inventory_migrations (name TEXT PRIMARY KEY);
+      -- Confirmed sales and customer balances are independent of priced orders and old collection reports.
+      CREATE TABLE IF NOT EXISTS office_sales_v1 (
+        id TEXT PRIMARY KEY, order_id TEXT UNIQUE, customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+        total_piasters INTEGER NOT NULL CHECK(total_piasters >= 0), paid_piasters INTEGER NOT NULL CHECK(paid_piasters >= 0),
+        actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, actor_name TEXT NOT NULL,
+        request_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS office_sales_v1_customer_time ON office_sales_v1(customer_id,created_at);
+      CREATE TABLE IF NOT EXISTS office_sales_lines_v1 (
+        id TEXT PRIMARY KEY, sale_id TEXT NOT NULL REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        product_name TEXT NOT NULL, unit TEXT NOT NULL, unit_size TEXT NOT NULL,
+        milli_qty INTEGER NOT NULL CHECK(milli_qty > 0), price_piasters INTEGER NOT NULL CHECK(price_piasters >= 0),
+        line_piasters INTEGER NOT NULL CHECK(line_piasters >= 0)
+      );
+      CREATE INDEX IF NOT EXISTS office_sales_lines_v1_sale ON office_sales_lines_v1(sale_id);
+      CREATE TABLE IF NOT EXISTS office_debts_v1 (
+        id TEXT PRIMARY KEY, customer_id TEXT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE RESTRICT,
+        amount_piasters INTEGER NOT NULL CHECK(amount_piasters >= 0), actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        actor_name TEXT NOT NULL, request_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS office_receipts_v1 (
+        id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        amount_piasters INTEGER NOT NULL CHECK(amount_piasters > 0), actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        actor_name TEXT NOT NULL, request_json TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS office_receipts_v1_customer ON office_receipts_v1(customer_id,created_at);
+
 
       CREATE TABLE IF NOT EXISTS product_prices (
         product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,

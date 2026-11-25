@@ -12,7 +12,7 @@ import Performance from './Performance';
 import AgentPanel from './AgentPanel';
 import Monthly from './Monthly';
 import Customers from './Customers';
-import Products from './Products';
+import Sales from './Sales';
 import Warehouses from './Warehouses';
 import Staff from './Staff';
 import type { IdleReport, ManagerAlert, Overview, Rep, RepImpact, Report, RouteResponse, User, Visit } from './types';
@@ -26,7 +26,7 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
   { id: 'reports', label: 'الزيارات والطلبيات', icon: '✦' },
   { id: 'customers', label: 'العملاء', icon: '☰' },
-  { id: 'products', label: 'الأصناف والأسعار', icon: '₪' },
+  { id: 'products', label: 'المبيعات', icon: '₪' },
   { id: 'warehouses', label: 'المخازن', icon: '▣' },
   { id: 'staff', label: 'حسابات المكتب', icon: '◉' },
   { id: 'team', label: 'فريق الميدان', icon: '◆' },
@@ -396,7 +396,7 @@ export default function App() {
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
-        {tab === 'products' && <Products timezone={overview?.timezone} />}
+        {tab === 'products' && <Sales timezone={overview?.timezone} userId={user.id} />}
         {tab === 'warehouses' && <Warehouses />}
         {tab === 'staff' && <Staff />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}

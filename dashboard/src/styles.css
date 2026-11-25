@@ -515,3 +515,10 @@ input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
 }
 
 .notice { background: #fff7e0; border: 1px solid #ecd89b; color: #624a0b; border-radius: 12px; padding: 10px 14px; }
+
+.sales-table { min-width: 580px; }
+.sale-line { display: grid; grid-template-columns: minmax(200px,2fr) repeat(2,minmax(120px,1fr)) auto; gap: 10px; align-items: end; }
+.sale-order-lines { display: grid; gap: 4px; margin: 12px 0; }
+.sales-page details { margin-top: 16px; }
+.sales-page summary { cursor: pointer; font-weight: 700; }
+@media (max-width: 780px) { .sale-line { grid-template-columns: 1fr; } }
