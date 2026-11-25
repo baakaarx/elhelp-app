@@ -192,6 +192,15 @@ export class Store {
         line_piasters INTEGER NOT NULL CHECK(line_piasters >= 0)
       );
       CREATE INDEX IF NOT EXISTS office_sales_lines_v1_sale ON office_sales_lines_v1(sale_id);
+      -- Attribution is fixed at confirmation, never derived from today's customer assignment.
+      -- A missing row means a sale from before attribution existed; a row with a NULL rep is deliberate.
+      CREATE TABLE IF NOT EXISTS office_sale_rep_v1 (
+        sale_id TEXT PRIMARY KEY REFERENCES office_sales_v1(id) ON DELETE RESTRICT,
+        rep_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        rep_name TEXT NOT NULL DEFAULT '', source TEXT NOT NULL CHECK(source IN ('order','direct','none'))
+      );
+      CREATE INDEX IF NOT EXISTS office_sale_rep_v1_rep ON office_sale_rep_v1(rep_id);
+
       CREATE TABLE IF NOT EXISTS office_debts_v1 (
         id TEXT PRIMARY KEY, customer_id TEXT NOT NULL UNIQUE REFERENCES customers(id) ON DELETE RESTRICT,
         amount_piasters INTEGER NOT NULL CHECK(amount_piasters >= 0), actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,

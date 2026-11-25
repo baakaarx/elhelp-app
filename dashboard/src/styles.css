@@ -522,3 +522,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
 .sales-page details { margin-top: 16px; }
 .sales-page summary { cursor: pointer; font-weight: 700; }
 @media (max-width: 780px) { .sale-line { grid-template-columns: 1fr; } }
+
+.agent-insights summary { cursor:pointer; }
+.agent-insights .insight-customer { padding:10px 0; border-bottom:1px solid var(--line); }
+.agent-insights details.panel h3 { margin-top:16px; }

@@ -7,9 +7,9 @@ import Products from './Products';
 type Customer = { id:string;name:string;phone:string;priceTierId:string|null;hasOpening:number };
 type Product = { id:string;name:string;unit:string;unitSize:string };
 type OrderLine = {productId:string;name:string;qty:number;price:number;unit:string;unitSize:string};
-type Options = {customers:Customer[];products:Product[];warehouses:{id:string;name:string}[];prices:{productId:string;tierId:string;price:number}[];tiers:{id:string;name:string;active:number}[];orders:{id:string;customerId:string;customerName:string;total:number;pricedAt:number;lines:OrderLine[]}[]};
+type Options = {customers:Customer[];products:Product[];warehouses:{id:string;name:string}[];reps:{id:string;name:string;region:string}[];prices:{productId:string;tierId:string;price:number}[];tiers:{id:string;name:string;active:number}[];orders:{id:string;customerId:string;customerName:string;total:number;pricedAt:number;repName:string;lines:OrderLine[]}[]};
 type Report = {count:number;sales:number;collected:number;due:number;debtors:{id:string;name:string;phone:string;due:number}[];latest:{id:string;orderId:string|null;customerName:string;warehouseName:string;total:number;paid:number;createdAt:number}[];payments:{customerName:string;amount:number;createdAt:number}[];soldItems:{name:string;unit:string;unitSize:string;qty:number;amount:number}[];stock:{warehouseId:string;warehouseName:string;productId:string;productName:string;unit:string;unitSize:string;qty:number|null}[]};
-type Statement={customer:{name:string;phone:string};opening:{amount:number;actorName:string;createdAt:number}|null;due:number;moreSales:boolean;moreReceipts:boolean;sales:{id:string;total:number;paid:number;warehouseName:string;actorName:string;createdAt:number;lines:{name:string;unit:string;unitSize:string;qty:number;price:number;amount:number}[]}[];receipts:{id:string;amount:number;actorName:string;createdAt:number}[]};
+type Statement={customer:{name:string;phone:string};opening:{amount:number;actorName:string;createdAt:number}|null;due:number;moreSales:boolean;moreReceipts:boolean;sales:{id:string;total:number;paid:number;warehouseName:string;actorName:string;repName:string;repSource:string;repDeleted:number;createdAt:number;lines:{name:string;unit:string;unitSize:string;qty:number;price:number;amount:number}[]}[];receipts:{id:string;amount:number;actorName:string;createdAt:number}[]};
 type Line = {key:string;productId:string;qty:string;price:string;priceEdited:boolean};
 const emptyLine=():Line=>({key:crypto.randomUUID(),productId:'',qty:'',price:'',priceEdited:false});
 const parse = (text:string) => {const s=text.trim().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).replace('٫','.');return /^\d+(\.\d+)?$/.test(s)?Number(s):NaN;};
@@ -28,6 +28,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const [needsRefresh,setNeedsRefresh]=useState(false);
   const [review,setReview]=useState<'sale'|'receipt'|'opening'|null>(null);
   const [showSale,setShowSale]=useState(false),[mode,setMode]=useState<'direct'|'order'>('direct');
+  const [repChoice,setRepChoice]=useState('');
   const [customerId,setCustomerId]=useState(''),[warehouseId,setWarehouseId]=useState(''),[orderId,setOrderId]=useState(''),[paid,setPaid]=useState(''),[lines,setLines]=useState<Line[]>([emptyLine()]);
   const [receiptCustomer,setReceiptCustomer]=useState(''),[receiptAmount,setReceiptAmount]=useState('');
   const [openingCustomer,setOpeningCustomer]=useState(''),[openingAmount,setOpeningAmount]=useState('');
@@ -75,7 +76,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   }
   async function retryPending(){if(!pending)return;setBusy(true);setError('');try {
     await sendOperation(pending);setReview(null);saleRequest.current='';receiptRequest.current='';openingRequest.current='';
-    setShowSale(false);setLines([emptyLine()]);setPaid('');setOrderId('');setReceiptCustomer('');setReceiptAmount('');setOpeningCustomer('');setOpeningAmount('');
+    setShowSale(false);setRepChoice('');setLines([emptyLine()]);setPaid('');setOrderId('');setReceiptCustomer('');setReceiptAmount('');setOpeningCustomer('');setOpeningAmount('');
     await refreshAfter('اتأكدنا من العملية واتحدّثت الأرقام.');
   }catch(e){setError(err(e));}finally{setBusy(false);}}
   function saveSale(event:FormEvent) {event.preventDefault();setError('');setMessage('');
@@ -92,8 +93,8 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   async function confirmReview(){if(!review)return;setError('');setMessage('');setBusy(true);
     try {
       if(review==='sale'){
-        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:[]}:{lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parse(l.price)}))})};
-        await sendOperation({path:'/api/sales',body,kind:'sale'});saleRequest.current='';setPaid('');setOrderId('');setLines([emptyLine()]);setShowSale(false);setReview(null);await refreshAfter('البيعة اتسجلت واتخصمت من المخزن.');
+        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:[]}:{repId:repChoice==='none'?null:repChoice,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parse(l.price)}))})};
+        await sendOperation({path:'/api/sales',body,kind:'sale'});saleRequest.current='';setPaid('');setOrderId('');setLines([emptyLine()]);setShowSale(false);setRepChoice('');setReview(null);await refreshAfter('البيعة اتسجلت واتخصمت من المخزن.');
       } else {
         const ref=review==='receipt'?receiptRequest:openingRequest;
         await sendOperation({path:`/api/sales/${review==='receipt'?'receipts':'opening'}`,body:{id:ref.current||(ref.current=crypto.randomUUID()),customerId:review==='receipt'?receiptCustomer:openingCustomer,amount:parse(review==='receipt'?receiptAmount:openingAmount)},kind:review});
@@ -117,6 +118,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
       {review==='sale'?<>
         <p><strong>العميل:</strong> {options.customers.find(c=>c.id===customerId)?.name} {options.customers.find(c=>c.id===customerId)?.phone} · رقم {customerId.slice(-6)}</p>
         <p><strong>المخزن:</strong> {options.warehouses.find(w=>w.id===warehouseId)?.name}</p>
+        <p><strong>المهندس:</strong> {mode==='order'?selectedOrder?.repName:repChoice==='none'?'بدون مهندس':options.reps.find(r=>r.id===repChoice)?.name}</p>
         {mode==='order'&&selectedOrder&&<p><strong>الطلبية:</strong> {dateTimeText(selectedOrder.pricedAt,timezone)} · رقم {selectedOrder.id.slice(-8)}</p>}
         <ul className="sale-order-lines">{(mode==='order'?selectedOrder?.lines??[]:lines.map(l=>{const p=options.products.find(x=>x.id===l.productId);return {productId:l.productId,name:p?.name??'',unit:p?.unit??'',unitSize:p?.unitSize??'',qty:parse(l.qty),price:parse(l.price)};})).map(l=><li key={l.productId}><strong>{l.name}</strong> · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} للوحدة</li>)}</ul>
         <p><strong>الإجمالي: {cash(total)} · المدفوع الآن: {cash(paidValue)} · الباقي من البيعة: {cash(Math.round((total-paidValue)*100)/100)}</strong></p>
@@ -139,6 +141,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         <label className="field"><span>طريقة البيع</span><select value={mode} onChange={e=>{setMode(e.target.value as typeof mode);setOrderId('');saleRequest.current='';}}><option value="direct">بيعة مباشرة</option><option value="order">من طلبية متسعّرة</option></select></label>
         {mode==='order'&&<label className="field"><span>الطلبية</span><select required value={orderId} onChange={e=>{const o=options.orders.find(x=>x.id===e.target.value);setOrderId(e.target.value);setCustomerId(o?.customerId||'');saleRequest.current='';}}><option value="">اختار طلبية</option>{options.orders.map(o=><option key={o.id} value={o.id}>{o.customerName} · {dateTimeText(o.pricedAt,timezone)} · {cash(o.total)} · {o.id.slice(-8)}</option>)}</select></label>}
         <label className="field"><span>العميل</span><select required value={customerId} disabled={mode==='order'} onChange={e=>{setCustomerId(e.target.value);setLines(ls=>ls.map(l=>l.priceEdited?l:{...l,price:suggested(l.productId,e.target.value)}));saleRequest.current='';}}><option value="">اختار العميل</option>{options.customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.phone?` · ${c.phone}`:''} · رقم {c.id.slice(-6)}</option>)}</select></label>
+        {mode==='direct'?<label className="field"><span>المهندس المسؤول</span><select required value={repChoice} onChange={e=>{setRepChoice(e.target.value);saleRequest.current='';}}><option value="">اختار المهندس أو بدون مهندس</option><option value="none">بدون مهندس</option>{options.reps.map(r=><option key={r.id} value={r.id}>{r.name} · {r.region} · {r.id.slice(-6)}</option>)}</select></label>:selectedOrder&&<p><strong>مهندس الطلبية:</strong> {selectedOrder.repName}</p>}
         <label className="field"><span>المخزن</span><select required value={warehouseId} onChange={e=>{setWarehouseId(e.target.value);saleRequest.current='';}}><option value="">اختار المخزن</option>{options.warehouses.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
       </div>
       {mode==='direct'&&customerId&&options.orders.some(o=>o.customerId===customerId)&&<p className="notice">للعميل طلبيات متسعّرة لم تُسجّل كبيعة. لو دي نفس البيعة، اختار «من طلبية متسعّرة» عشان ما تتكررش.</p>}
@@ -164,7 +167,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
         <button className="btn ghost sm" disabled={!statementCustomer||statementBusy} onClick={()=>void showStatement()}>عرض الحساب</button></div>
         {statement&&<div aria-label="حساب العميل"><h4>{statement.customer.name} {statement.customer.phone}</h4><p><strong>الباقي المسجّل: {cash(statement.due)}</strong></p>
         <p>المديونية القديمة: {statement.opening?`${cash(statement.opening.amount)} · ${statement.opening.actorName} · ${dateTimeText(statement.opening.createdAt,timezone)}`:'لم تُسجّل بعد — الباقي قد يكون غير مكتمل.'}</p>
-        <h4>البيعات</h4>{!statement.sales.length?<p className="muted">لا توجد بيعات مسجلة.</p>:statement.sales.map(s=><details key={s.id}><summary>{dateTimeText(s.createdAt,timezone)} · {cash(s.total)} · رقم {s.id.slice(-8)}</summary><p>المخزن: {s.warehouseName} · المسجّل: {s.actorName} · المدفوع وقت البيع: {cash(s.paid)}</p><ul className="sale-order-lines">{s.lines.map((l,i)=><li key={i}>{l.name} · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} = {cash(l.amount)}</li>)}</ul></details>)}
+        <h4>البيعات</h4>{!statement.sales.length?<p className="muted">لا توجد بيعات مسجلة.</p>:statement.sales.map(s=><details key={s.id}><summary>{dateTimeText(s.createdAt,timezone)} · {cash(s.total)} · رقم {s.id.slice(-8)}</summary><p>المخزن: {s.warehouseName} · المهندس: {s.repName||'غير محدد'}{s.repDeleted?' (حساب محذوف)':s.repSource==='legacy'?' (من الطلبية القديمة)':''} · المسجّل: {s.actorName} · المدفوع وقت البيع: {cash(s.paid)}</p><ul className="sale-order-lines">{s.lines.map((l,i)=><li key={i}>{l.name} · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} = {cash(l.amount)}</li>)}</ul></details>)}
         {statement.moreSales&&<p className="muted small">المعروض آخر ١٠٠ بيعة فقط.</p>}<h4>الدفعات اللاحقة</h4>{!statement.receipts.length?<p className="muted">لا توجد دفعات لاحقة مسجلة.</p>:<ul className="stack-list">{statement.receipts.map(r=><li key={r.id}>{dateTimeText(r.createdAt,timezone)} · {cash(r.amount)} · {r.actorName} · رقم {r.id.slice(-8)}</li>)}</ul>}{statement.moreReceipts&&<p className="muted small">المعروض آخر ١٠٠ دفعة فقط.</p>}</div>}
       </div>
       <div className="panel"><h3>المباع حسب الصنف</h3>{report.soldItems.length===0?<p className="muted">مفيش بيعات مؤكدة لسه.</p>:<div className="kpi-table-wrap"><table className="kpi-table sales-table"><thead><tr><th>الصنف</th><th>الكمية المباعة</th><th>قيمة البيع</th></tr></thead><tbody>{report.soldItems.map((p,i)=><tr key={i}><td>{p.name}</td><td>{qtyText(p.qty)} {p.unit} {p.unitSize}</td><td>{cash(p.amount)}</td></tr>)}</tbody></table></div>}</div>

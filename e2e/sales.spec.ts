@@ -28,6 +28,7 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  const saleForm=page.locator('form').filter({has:page.getByRole('heading',{name:'تسجيل بيعة'})});
  await saleForm.getByRole('combobox',{name:'العميل',exact:true}).selectOption(c.id);
  await saleForm.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(w.id);
+ await saleForm.getByRole('combobox',{name:'المهندس المسؤول'}).selectOption(rep.id);
  await page.getByRole('combobox',{name:'الصنف ١'}).selectOption(p.id);
  await saleForm.getByRole('textbox',{name:'الكمية',exact:true}).fill('٢٫٥');
  await saleForm.getByRole('textbox',{name:'سعر الوحدة (ج.م)'}).fill('10');
@@ -88,6 +89,16 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await page.getByRole('button',{name:'عرض الحساب'}).click();
  const statement=page.getByLabel('حساب العميل');await expect(statement).toContainText(c.name);await expect(statement).toContainText('المديونية القديمة');await expect(statement).toContainText('٨');
  await statement.locator('summary').first().click();await expect(statement).toContainText(p.name);
+ await page.getByRole('button',{name:'المساعد الذكي',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'تحليل المبيعات والأداء'})).toBeVisible();
+ const team=page.locator('.panel').filter({has:page.getByRole('heading',{name:'أداء المهندسين'})});
+ await expect(team).toContainText(rep.name);await expect(team).toContainText('٤٥');
+ const customersPanel=page.locator('.panel').filter({has:page.getByRole('heading',{name:'أعلى العملاء شراءً بالقيمة'})});
+ await expect(customersPanel).toContainText(c.name);await customersPanel.locator('summary').filter({hasText:c.name}).click();await expect(customersPanel).toContainText(p.name);
+ await expect(page.getByRole('heading',{name:'الأصناف الأعلى مبيعًا بالقيمة'})).toBeVisible();
+ await expect(page.getByText('ما بنحسبش الربح', {exact:false})).toBeVisible();
+ await page.setViewportSize({width:390,height:844});
+ const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width+1);
 });
 
 test('المراجعة تمنع الحفظ بالخطأ والتبويبان يتعاملان مع العملية المعلقة بأمان',async({page,context})=>{
@@ -110,6 +121,7 @@ test('المراجعة تمنع الحفظ بالخطأ والتبويبان ي�
  await form.getByRole('combobox',{name:'العميل',exact:true}).selectOption(c.id);
  await expect(form.getByRole('textbox',{name:'سعر الوحدة (ج.م)'})).toHaveValue('10');
  await form.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(w.id);
+ await form.getByRole('combobox',{name:'المهندس المسؤول'}).selectOption('none');
  await form.getByRole('textbox',{name:'الكمية'}).fill('1');await form.getByRole('textbox',{name:'المدفوع دلوقتي (ج.م)'}).fill('2');
  await page.getByRole('button',{name:'مراجعة البيعة'}).click();
  const review=page.getByLabel('مراجعة العملية');await expect(review).toContainText(c.name);await expect(review).toContainText(w.name);await expect(review).toContainText(p.name);

@@ -400,7 +400,7 @@ export default function App() {
         {tab === 'warehouses' && <Warehouses />}
         {tab === 'staff' && <Staff />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
-        {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={setTab} />}
+        {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={setTab} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
     </div>

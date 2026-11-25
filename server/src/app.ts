@@ -1,3 +1,4 @@
+import { createInsightsRouter } from './insights.js';
 import { createSalesRouter } from './sales.js';
 import express from 'express';
 import cors from 'cors';
@@ -300,6 +301,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.use('/api/warehouse', auth, createWarehouseRouter(store));
   app.use('/api/staff', adminOnly, createStaffRouter(store, id => io.in(`user:${id}`).disconnectSockets(true)));
   app.use('/api/sales', adminOnly, createSalesRouter(store));
+  app.use('/api/sales-insights', adminOnly, createInsightsRouter(store,config.timezone));
   app.get('/api/work-priorities', adminOnly, (_req, res) => {
     const waitingOrders = store.all(`SELECT o.id,c.name AS customerName,u.name AS repName,o.sent_at AS sentAt
       FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id

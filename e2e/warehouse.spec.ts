@@ -40,8 +40,9 @@ test('المخازن بأرصدة منفصلة وحساب المخازن معز�
   await page.getByRole('button',{name:'حفظ الحركة'}).click();
   await expect(page.locator('tr').filter({hasText:'صنف تجريبي للمخزون'}).first()).toContainText('3');
   await page.getByRole('button',{name:/المساعد الذكي/}).click();
-  await expect(page.getByRole('heading',{name:'أولويات الشغل'})).toBeVisible();
-  await expect(page.getByText(/رصيد افتتاحي لسه ما اتسجّلش/)).toBeVisible();
+  await expect(page.getByRole('heading',{name:'تحليل المبيعات والأداء'})).toBeVisible();
+  await page.getByText('أولويات الشغل الحالية').click();
+  await expect(page.getByText(/رصيد افتتاحي غير مسجّل/)).toBeVisible();
 
   const context=await browser.newContext();
   const wh=await context.newPage();
