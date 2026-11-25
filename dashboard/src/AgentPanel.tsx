@@ -21,7 +21,8 @@ const cash=(v:number)=>`${v.toLocaleString('ar-EG',{maximumFractionDigits:2})} �
 const quantity=(v:number)=>v.toLocaleString('ar-EG',{maximumFractionDigits:3});
 
 export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:ManagerAlert[]; onNavigate:(tab:'reports'|'customers'|'live'|'warehouses')=>void;timezone?:string }) {
-  const [priorities,setPriorities]=useState<Priorities|null>(null), [priorityError,setPriorityError]=useState('');
+  const [priorities,setPriorities]=useState<Priorities|null>(null), [priorityError,setPriorityError]=useState(''), [priorityLoading,setPriorityLoading]=useState(true);
+  const priorityRequest=useRef(0);
   const [range,setRange]=useState<{from:string;to:string}|null>(null);
   const from=range?.from??dayBefore(29,timezone), to=range?.to??localDay(timezone);
   const [data,setData]=useState<Insights|null>(null),[error,setError]=useState(''),[loading,setLoading]=useState(true);
@@ -34,9 +35,9 @@ export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:Ma
     catch(e){if(version===requestVersion.current)setError(e instanceof Error?e.message:'تعذر تحميل التحليل.');}
     finally{if(version===requestVersion.current)setLoading(false);}
   },[from,to,timezone]);
-  const loadPriorities=useCallback(async()=>{try{setPriorities(await api<Priorities>('/api/work-priorities'));setPriorityError('');}catch(e){setPriorityError(e instanceof Error?e.message:'تعذر تحميل الأولويات.');}},[]);
+  const loadPriorities=useCallback(async()=>{const request=++priorityRequest.current;setPriorities(null);setPriorityError('');setPriorityLoading(true);try{const result=await api<Priorities>('/api/work-priorities');if(request===priorityRequest.current)setPriorities(result);}catch(e){if(request===priorityRequest.current)setPriorityError(e instanceof Error?e.message:'تعذر تحميل الأولويات.');}finally{if(request===priorityRequest.current)setPriorityLoading(false);}},[]);
   useEffect(()=>{void load();return()=>{requestVersion.current++;};},[load]);
-  useEffect(()=>{void loadPriorities();},[loadPriorities]);
+  useEffect(()=>{void loadPriorities();return()=>{priorityRequest.current++;};},[loadPriorities]);
   const fieldAlerts=alerts.filter(a=>a.code!=='orders_awaiting_pricing');
   const preset=(days:number)=>{if(timezone)setRange({from:dayBefore(days-1,timezone),to:localDay(timezone)});};
   return <section className="page agent-insights"><header className="page-head"><div><h2>تحليل المبيعات والأداء</h2><p className="muted">أرقام محسوبة من البيانات المسجلة؛ المساعد لا ينفّذ عمليات من نفسه.</p></div><button className="btn ghost sm" onClick={()=>{void load();void loadPriorities();}} disabled={loading||!timezone}>تحديث التحليل</button></header>
@@ -54,7 +55,7 @@ export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:Ma
       <ProductTable title="الأصناف الأعلى مبيعًا بالقيمة" rows={data.productsByValue} note="افتح أي صنف لتشوف العملاء الأكثر شراءً له بالكمية." />
       <ProductTable title="الأصناف الأعلى مبيعًا بعدد العبوات" rows={data.productsByQty} note="الترتيب بعدد الوحدات المسجلة لكل صنف؛ حجم ونوع العبوة قد يختلفان من صنف لآخر." />
     </>}
-    <details className="panel"><summary><strong>أولويات الشغل الحالية</strong></summary>{priorityError&&<p className="error">{priorityError}</p>}{!priorities?<p className="muted">جارٍ تحميل الأولويات…</p>:<>
+    <details className="panel"><summary><strong>أولويات الشغل الحالية</strong></summary>{priorityError&&<p className="error" role="alert">تعذر تحميل الأولويات. {priorityError}</p>}{priorityLoading?<p className="muted">جارٍ تحميل الأولويات…</p>:priorities&&<>
       <h3>المبيعات</h3><p>{formatNumber(priorities.orderCount)} طلبية مستنية فاتورة · {formatNumber(priorities.unassignedCustomers)} عميل شغال من غير مهندس.</p>
       {priorities.waitingOrders.length>0&&<ul>{priorities.waitingOrders.map(o=><li key={o.id}>{o.customerName} · {o.repName} · {ago(o.sentAt)}</li>)}</ul>}
       <div className="filters"><button className="btn ghost sm" onClick={()=>onNavigate('reports')}>افتح الطلبيات والزيارات</button><button className="btn ghost sm" onClick={()=>onNavigate('customers')}>افتح العملاء</button></div>
