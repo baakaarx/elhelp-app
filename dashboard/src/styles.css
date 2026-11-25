@@ -489,3 +489,27 @@ dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .boot.redirect { gap: 8px; text-align: center; padding: 24px; }
 .boot.redirect p { margin-top: 8px; }
 .boot.redirect a { font-weight: 600; }
+
+/* Clear, consistent forms for the daily office and warehouse tasks. */
+.work-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; align-items: end; margin-block: 12px; }
+.work-form .field.inline { display: grid; align-items: start; min-width: 0; }
+.work-form .field.inline > span { white-space: normal; }
+.work-form .btn { justify-self: start; min-height: 44px; }
+.warehouse-picker { margin-bottom: 16px; }
+.warehouse-current { max-width: 480px; }
+.assignment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.assignment-actions .rowpick { border-color: var(--line); background: #fff; min-height: 40px; }
+.staff-row { overflow-wrap: anywhere; display: grid; gap: 8px; }
+.page-head { flex-wrap: wrap; }
+input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
+.error[role="alert"] { background: #fdecec; border: 1px solid #f3cccc; border-radius: 12px; padding: 10px 14px; }
+.ok-text[role="status"] { background: #e9f7f0; border: 1px solid #c7e8d5; border-radius: 12px; padding: 10px 14px; color: #17633d; }
+.btn:focus-visible { outline: 3px solid var(--sky-500); outline-offset: 2px; }
+@media (max-width: 780px) {
+  .page-head { align-items: flex-start; }
+  .team-row { flex-wrap: wrap; }
+  .team-row .grow { min-width: 150px; }
+  .customers-table .kpi-table, .orders-table .kpi-table { min-width: 740px; }
+  .panel { padding: 14px; }
+  .work-form .btn { width: 100%; }
+}

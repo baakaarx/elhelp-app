@@ -68,10 +68,10 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
           </form>
           <div className="login-engineer-note" role="note">
             <strong>حسابات المهندسين</strong>
-            <p>مهندسو Android يستخدمون APK، ومهندسو iPhone يستخدمون موقع المهندس. هذه اللوحة مخصصة للمديرين فقط؛ اطلب رابط موقع المهندس من مسؤول الشركة.</p>
+            <p>مهندسو Android يستخدمون APK، ومهندسو iPhone يستخدمون موقع المهندس. هذه اللوحة لحسابات المكتب والمخازن؛ اطلب رابط موقع المهندس من مسؤول الشركة.</p>
           </div>
           <div className="login-hint">
-            <p className="muted small">🔒 بياناتك محمية بمعايير دولية. الموقع يُجمع أثناء المهمة فقط بموافقتك، ويُحذف تلقائياً بعد مدة الاحتفاظ.</p>
+            <p className="muted small">🔒 الموقع بيتجمع أثناء المهمة بموافقة المهندس، وبيُحذف بعد مدة الاحتفاظ.</p>
           </div>
         </div>
       </div>

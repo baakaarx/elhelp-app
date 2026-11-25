@@ -20,7 +20,16 @@ async function apiResponse(path: string, init: RequestInit = {}, fallbackMessage
   if (token) headers.set('X-Mandoub-Token', token);
   headers.set('X-Mandoub-Client', 'admin');
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const res = await fetch(path, { ...init, headers, credentials: 'include', cache: 'no-store' });
+  let res: Response;
+  try {
+    res = await fetch(path, { ...init, headers, credentials: 'include', cache: 'no-store' });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    const changesData = init.method && !['GET', 'HEAD'].includes(init.method.toUpperCase()) && !path.startsWith('/api/auth/login') && !path.startsWith('/api/auth/oauth');
+    throw new ApiError(changesData
+      ? 'تعذر الاتصال بالسيرفر. ممكن يكون الطلب اتحفظ؛ راجع النتيجة قبل ما تكرره.'
+      : 'تعذر الاتصال بالسيرفر. راجع الإنترنت وحاول تاني.', 0, 'NETWORK_ERROR');
+  }
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   if (!res.ok) {
     const body = isJson ? await res.json().catch(() => null) : null;

@@ -54,7 +54,7 @@ test.describe('قائمة الأصناف والأسعار', () => {
     await expect(row.locator('td').nth(5)).toContainText('بلا سعر');
     // The header of every price column says what the number is the price of.
     await expect(page.locator('.products-table thead th').nth(3)).toContainText('سعر الوحدة');
-    await expect(page.getByText('مش الكرتونة ولا الطرد')).toBeVisible();
+    await expect(page.getByText('كل سعر للعبوة المكتوبة', { exact: false })).toBeVisible();
     // And the buyer types are listed below with the counts the office works from: one item priced under
     // جملة, and one customer quoted at it.
     await expectNumber(tierRow(page, 'جملة').locator('td').nth(2), '1');
@@ -91,11 +91,11 @@ test.describe('قائمة الأصناف والأسعار', () => {
     await form.getByLabel('اسم الصنف').fill(unique);
     // The field the office used to skip is marked required in the form itself — the screen does not let
     // the question be deferred to the server.
-    await expect(form.getByLabel('العبوة اللي بيتبيعها')).toHaveJSProperty('required', true);
+    await expect(form.getByLabel('العبوة', { exact: true })).toHaveJSProperty('required', true);
     await form.getByRole('button', { name: 'حفظ' }).click();
     await expect(productRow(page, unique)).toHaveCount(0);
 
-    await form.getByLabel('العبوة اللي بيتبيعها').fill('شيكارة');
+    await form.getByLabel('العبوة', { exact: true }).fill('شيكارة');
     await form.getByRole('button', { name: 'حفظ' }).click();
     await expect(productRow(page, unique)).toBeVisible();
 
@@ -103,12 +103,12 @@ test.describe('قائمة الأصناف والأسعار', () => {
     await page.getByRole('button', { name: 'صنف جديد' }).click();
     const again = page.locator('form.panel');
     await again.getByLabel('اسم الصنف').fill(` ${unique} `);
-    await again.getByLabel('العبوة اللي بيتبيعها').fill(' شيكارة ');
+    await again.getByLabel('العبوة', { exact: true }).fill(' شيكارة ');
     await again.getByRole('button', { name: 'حفظ' }).click();
     await expect(again.getByRole('alert')).toContainText('قائمة الأصناف');
     await expect(productRow(page, unique)).toHaveCount(1);
     // …while the same poison in another pack is a different item and is allowed.
-    await again.getByLabel('العبوة اللي بيتبيعها').fill('جركن');
+    await again.getByLabel('العبوة', { exact: true }).fill('جركن');
     await again.getByRole('button', { name: 'حفظ' }).click();
     // A different pack is a different item, so the name now appears twice on purpose — once per pack.
     await expect(productRow(page, unique)).toHaveCount(2);

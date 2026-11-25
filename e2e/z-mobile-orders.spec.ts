@@ -7,7 +7,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   await manager.goto('/');
   await submitLogin(manager, E2E_ADMIN.email, E2E_ADMIN.password);
   await expect(manager.getByRole('button', { name: 'خروج' })).toBeVisible();
-  const managerTab = manager.locator('button.nav-item').filter({ hasText: 'إنجازات وتقارير' });
+  const managerTab = manager.locator('button.nav-item').filter({ hasText: 'الزيارات والطلبيات' });
   await managerTab.click();
   await manager.getByRole('tab', { name: /الطلبيات/ }).click();
   await expect(manager.getByText(/مفيش طلبية مستنية التسعير/)).toBeVisible();

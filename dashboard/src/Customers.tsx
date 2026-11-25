@@ -210,13 +210,13 @@ export default function Customers(_props: { timezone?: string }) {
 
       <div className="panel">
         <h3 className="panel-title">
-          قائمة الشركة · {formatNumber(customers.length)}
+          العملاء في الصفحة · {formatNumber(customers.length)}
         </h3>
         {customers.length === 0 && !loading ? (
           <p className="empty">
             {totals.customers
-              ? 'مفيش عملاء بالفلاتر دي — امسح الفلاتر أو ضيف عميل جديد.'
-              : 'قائمة العملاء فاضية. أول عميل يتضاف من زرار «عميل جديد» فوق، وبعدين يتربط بالمهندس.'}
+              ? 'مفيش عملاء مطابقين للبحث.'
+              : 'مفيش عملاء لسه. اضغط «عميل جديد» عشان تضيف أول عميل.'}
           </p>
         ) : (
           <div className="kpi-table-wrap customers-table">
@@ -241,7 +241,7 @@ export default function Customers(_props: { timezone?: string }) {
                     </td>
                     <td>
                       <span>{customer.repId ? customer.repName || nameOf(customer.repId) : 'من غير مهندس'}</span>
-                      <div>
+                      <div className="assignment-actions">
                         {assigning === customer.id ? <>
                           <select className="rowpick" value={customer.repId ?? POOL} disabled={busyRow === customer.id}
                             onChange={event => void assign(customer, event.target.value || null)} aria-label={`اختار مهندس ${customer.name}`}>
@@ -312,7 +312,7 @@ function CustomerForm({ editing, form, setForm, error, saving, tiers, engineers,
   return (
     <form className="panel" onSubmit={onSave}>
       <h3 className="panel-title">{isNew ? 'عميل جديد في قائمة الشركة' : `تعديل: ${editing.name}`}</h3>
-      <div className="filters">
+      <div className="work-form">
         <label className="field inline">
           <span>اسم العميل / المزرعة</span>
           <input required minLength={2} maxLength={120} autoFocus {...field('name')} placeholder="زي ما العميل بيقول على نفسه" />

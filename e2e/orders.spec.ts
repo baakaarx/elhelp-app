@@ -10,7 +10,7 @@ import { signInAsManager } from './helpers';
  * row locks with the total it stamped. The lock is what this file exists for: a priced number that a
  * stray edit could move is not a book, then the same test reads the closed sheet and the empty queue.
  */
-const ordersTab = (page: Page) => page.locator('button.nav-item').filter({ hasText: 'إنجازات وتقارير' });
+const ordersTab = (page: Page) => page.locator('button.nav-item').filter({ hasText: 'الزيارات والطلبيات' });
 
 test.describe('طابور الطلبيات', () => {
   test('the sent order waits on the badge, prefills from the list, and closes on one press', async ({ page }) => {

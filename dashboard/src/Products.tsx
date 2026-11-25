@@ -26,7 +26,7 @@ const CATEGORIES = Object.keys(productCategoryLabels) as ProductCategory[];
 const EMPTY_FORM = { name: '', category: 'other' as ProductCategory, unit: '', unitSize: '', notes: '' };
 const NONE = '';
 
-export default function Products({ timezone }: { timezone?: string }) {
+export default function Products(_props: { timezone?: string }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [tiers, setTiers] = useState<PriceTier[]>([]);
   const [filters, setFilters] = useState({ q: '', category: '', tierId: NONE, unpricedOnly: false, includeInactive: false });
@@ -266,7 +266,7 @@ export default function Products({ timezone }: { timezone?: string }) {
               </select>
             </label>
             <label className="field inline">
-              <span>العبوة اللي بيتبيعها</span>
+              <span>العبوة</span>
               <input required maxLength={40} value={form.unit} placeholder="عبوة / شيكارة / جركن"
                 onChange={event => setForm({ ...form, unit: event.target.value })} />
             </label>
@@ -286,7 +286,7 @@ export default function Products({ timezone }: { timezone?: string }) {
             <button className="btn ghost sm" type="button" onClick={closeForm}>إلغاء</button>
           </div>
           <p className="muted small">
-            «العبوة اللي بيتبيعها» مش اختيارية: السعر اللي هيتكتب بعدها سعر الوحدة دي بالذات. الاسم + العبوة مع بعض = سطر واحد؛ نفس الاسم في عبوة تانية صنف تاني برقم تاني. الأسعار ما تتكتبش هنا — الأعمدة هي مكانها.
+            العبوة مطلوبة. اكتب سعرها في جدول الأسعار بعد حفظ الصنف.
           </p>
           {formError && <p className="error" role="alert">{formError}</p>}
         </form>
@@ -377,7 +377,7 @@ export default function Products({ timezone }: { timezone?: string }) {
               </table>
             </div>
             <p className="muted small" style={{ marginTop: 10 }}>
-              كل خانة سعر = ثمن <strong>الوحدة المكتوبة في عمود «العبوة»</strong> لصنف واحد — مش الكرتونة ولا الطرد · «امسح» = الصنف يفضل من غير سعر تحت النوع ده، وده مش صفر · الأعمدة الموقوفة باينة عشان تقدر تنضّف اللي تحتها (بدون كده «نوع عليه أسعار ما يتحذفش» يبقى كلام ملوش مخرج) · التوقيت {timezone ?? 'Africa/Cairo'}.
+              كل سعر للعبوة المكتوبة. مسح السعر يعني إنه غير محدد، مش صفر. نوع السعر الموقوف بيحتفظ بأسعاره لحد ما تمسحها.
             </p>
             {priceError && <p className="error" role="alert">{priceError}</p>}
           </>
@@ -539,7 +539,7 @@ function TiersPanel({ tiers, onDone }: { tiers: PriceTier[]; onDone: () => void 
         <button className="btn primary sm" type="submit" disabled={saving}>{saving ? 'جارٍ الحفظ…' : 'ضيف'}</button>
       </form>
       <p className="muted small">
-        نوع موقوف = لسه عمود في القائمة (عشان تعرف تمسح اللي تحته) بس ما بيتختارش لعميل جديد، وسعره محفوظ ليرجع · نوع عليه أسعار ما يتحذفش (الحذف يمسح الأسعار) · آخر نوع شغال ما يتقفلش.
+        النوع الموقوف بيحتفظ بأسعاره، لكن ما ينفعش تختاره لعميل جديد.
       </p>
     </div>
   );

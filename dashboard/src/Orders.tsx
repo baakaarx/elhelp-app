@@ -285,8 +285,7 @@ export default function Orders({ timezone, version, onDone }: { timezone?: strin
         <button className="btn ghost sm" disabled={loading || !hasMore} onClick={() => { setLoading(true); setOpenId(''); setOffset(offset + pageSize); }}>التالي</button>
       </div>}
       <p className="muted small">
-        مفيش سعر بيطلع للتليفون — اللي قدام المندوب هو الكمية وحالتها («اتبعتت» / «اتقفلت») وخلاص · ختم التسعير بيقفل الطلبية:
-        الرقم اتكتب في الدفتر مرة واحدة، ولو في غلط بعده بلّغ المسؤول · الشارة فوق بتفضل منورة لحد ما آخر مستني يتقفل · التوقيت {timezone ?? 'Africa/Cairo'}.
+        المهندس ما بيشوفش الأسعار. بعد ختم التسعير الطلبية بتتقفل، ولو فيها غلطة بلّغ المسؤول.
       </p>
     </section>
   );

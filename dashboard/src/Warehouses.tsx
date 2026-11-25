@@ -75,7 +75,8 @@ export default function Warehouses() {
         ...(kind === 'opening' || kind === 'in' ? {toWarehouseId:warehouseId} : {fromWarehouseId:warehouseId}),
         ...(kind === 'transfer' ? {toWarehouseId:destination} : {}) };
       await post('/api/warehouse/movements',body);
-      requestId.current = ''; setQty(''); setNote(''); await loadStock(); setMessage('الحركة اتحفظت.');
+      requestId.current = ''; setQty(''); setNote(''); setMessage('الحركة اتحفظت.');
+      try { await loadStock(); } catch { setError('الحركة اتحفظت، لكن الأرصدة ما اتحدّثتش. حدّث الصفحة قبل تسجيل حركة تانية.'); }
     });
   }
   const resetRequest = () => { requestId.current = ''; };
@@ -83,24 +84,24 @@ export default function Warehouses() {
     <header className="page-head"><div><h2>المخازن والأصناف</h2><p className="muted">لكل مخزن رصيد مستقل. سجّل الرصيد الافتتاحي قبل الإضافة أو الصرف أو النقل.</p></div></header>
     {error && <p className="error" role="alert">{error}</p>}{message && <p className="ok-text" role="status">{message}</p>}
     <div className="panel">
-      <form className="filters" onSubmit={addWarehouse}><label className="field inline"><span>اسم مخزن جديد</span><input value={newWarehouse} onChange={e=>setNewWarehouse(e.target.value)} minLength={2} maxLength={120} required /></label><button className="btn primary sm" disabled={busy}>إضافة مخزن</button></form>
-      <label className="field inline"><span>المخزن</span><select disabled={busy} value={warehouseId} onChange={e=>{setWarehouseId(e.target.value); setProductId(''); setStock([]); setMovements([]); resetRequest();}}><option value="">اختار مخزن</option>{warehouses.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
+      <form className="filters warehouse-picker" onSubmit={addWarehouse}><label className="field inline"><span>اسم مخزن جديد</span><input value={newWarehouse} onChange={e=>setNewWarehouse(e.target.value)} minLength={2} maxLength={120} required /></label><button className="btn primary sm" disabled={busy}>إضافة مخزن</button></form>
+      <label className="field inline warehouse-current"><span>المخزن</span><select disabled={busy} value={warehouseId} onChange={e=>{if (e.target.value === warehouseId) return; setWarehouseId(e.target.value); setProductId(''); setDestination(''); setStock([]); setMovements([]); resetRequest();}}><option value="">اختار مخزن</option>{warehouses.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>
     </div>
-    <div className="panel"><h3>إضافة صنف</h3><form className="filters" onSubmit={addProduct}>
+    <div className="panel"><h3>إضافة صنف</h3><form className="work-form" onSubmit={addProduct}>
       <label className="field inline"><span>اسم الصنف</span><input required minLength={2} maxLength={120} value={productName} onChange={e=>setProductName(e.target.value)} /></label>
       <label className="field inline"><span>التصنيف</span><select value={category} onChange={e=>setCategory(e.target.value)}><option value="other">أخرى</option><option value="fertilizer">أسمدة</option><option value="pesticide">مبيدات</option></select></label>
       <label className="field inline"><span>الوحدة</span><input required maxLength={40} value={unit} onChange={e=>setUnit(e.target.value)} placeholder="شيكارة أو عبوة" /></label>
       <label className="field inline"><span>حجم العبوة</span><input maxLength={60} value={unitSize} onChange={e=>setUnitSize(e.target.value)} /></label>
       <button className="btn primary sm" disabled={busy}>إضافة صنف</button></form></div>
     {warehouseId && <>
-      {editing && <form className="panel" onSubmit={e=>{e.preventDefault();void perform(async()=>{await patch(`/api/warehouse/products/${editing.id}`,{name:editName,category:editCategory,unit:editUnit,unitSize:editUnitSize});setEditing(null);await loadStock();setMessage('الصنف اتعدل.');});}}><h3>تعديل الصنف</h3><div className="filters">
+      {editing && <form className="panel" onSubmit={e=>{e.preventDefault();void perform(async()=>{await patch(`/api/warehouse/products/${editing.id}`,{name:editName,category:editCategory,unit:editUnit,unitSize:editUnitSize});setEditing(null);await loadStock();setMessage('الصنف اتعدل.');});}}><h3>تعديل الصنف</h3><div className="work-form">
         <label className="field inline"><span>اسم الصنف</span><input required minLength={2} maxLength={120} value={editName} onChange={e=>setEditName(e.target.value)} /></label>
         <label className="field inline"><span>تصنيف الصنف</span><select value={editCategory} onChange={e=>setEditCategory(e.target.value)}><option value="other">أخرى</option><option value="fertilizer">أسمدة</option><option value="pesticide">مبيدات</option></select></label>
         <label className="field inline"><span>الوحدة</span><input required maxLength={40} value={editUnit} onChange={e=>setEditUnit(e.target.value)} /></label>
         <label className="field inline"><span>حجم العبوة</span><input maxLength={60} value={editUnitSize} onChange={e=>setEditUnitSize(e.target.value)} /></label>
         <button className="btn primary sm" disabled={busy}>حفظ التعديل</button><button type="button" className="btn ghost sm" onClick={()=>setEditing(null)}>إلغاء</button>
       </div><p className="muted small">الوحدة والعبوة ما تتغيرش بعد تسجيل رصيد للصنف.</p></form>}
-      <div className="panel"><h3>تسجيل حركة</h3><form className="filters" onSubmit={submitMovement}>
+      <div className="panel"><h3>تسجيل حركة</h3><form className="work-form" onSubmit={submitMovement}>
         <label className="field inline"><span>نوع الحركة</span><select value={kind} onChange={e=>{setKind(e.target.value as Movement['kind']);resetRequest();}}>{Object.entries(labels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
         <label className="field inline"><span>الصنف</span><select required value={productId} onChange={e=>{setProductId(e.target.value);resetRequest();}}><option value="">اختار الصنف</option>{stock.map(p=><option key={p.id} value={p.id}>{p.name}{p.active ? '' : ' (موقوف)'} · {p.unit}{p.unitSize ? ` ${p.unitSize}` : ''}</option>)}</select></label>
         {kind === 'transfer' && <label className="field inline"><span>إلى مخزن</span><select required value={destination} onChange={e=>{setDestination(e.target.value);resetRequest();}}><option value="">اختار المخزن</option>{warehouses.filter(w=>w.id!==warehouseId).map(w=><option key={w.id} value={w.id}>{w.name}</option>)}</select></label>}

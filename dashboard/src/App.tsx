@@ -24,7 +24,7 @@ const tabs: { id: Tab; label: string; icon: string }[] = [
   { id: 'live', label: 'مركز العمليات', icon: '◈' },
   { id: 'monthly', label: 'السجل الشهري', icon: '▦' },
   { id: 'performance', label: 'مؤشرات التأثير', icon: '▲' },
-  { id: 'reports', label: 'إنجازات وتقارير', icon: '✦' },
+  { id: 'reports', label: 'الزيارات والطلبيات', icon: '✦' },
   { id: 'customers', label: 'العملاء', icon: '☰' },
   { id: 'products', label: 'الأصناف والأسعار', icon: '₪' },
   { id: 'warehouses', label: 'المخازن', icon: '▣' },
@@ -79,6 +79,28 @@ export default function App() {
     setError('');
   }, []);
 
+  useEffect(() => {
+    const clearValidity = (event: Event) => {
+      const field = event.target;
+      if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement) field.setCustomValidity('');
+    };
+    const explainInvalid = (event: Event) => {
+      const field = event.target;
+      if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement)) return;
+      const validity = field.validity;
+      let message = 'راجع البيانات المكتوبة.';
+      if (validity.valueMissing) message = field instanceof HTMLSelectElement ? 'اختار من القائمة.' : 'اكتب البيانات المطلوبة.';
+      else if (validity.typeMismatch && field instanceof HTMLInputElement && field.type === 'email') message = 'اكتب بريدًا إلكترونيًا صحيحًا.';
+      else if (validity.tooShort && !(field instanceof HTMLSelectElement)) message = `اكتب ${field.minLength} أحرف على الأقل.`;
+      else if (validity.tooLong && !(field instanceof HTMLSelectElement)) message = `اكتب ${field.maxLength} حرفًا على الأكثر.`;
+      else if (validity.rangeUnderflow || validity.rangeOverflow || validity.stepMismatch || validity.badInput) message = 'اكتب رقمًا صحيحًا في الحدود المسموحة.';
+      field.setCustomValidity(message);
+    };
+    document.addEventListener('invalid', explainInvalid, true);
+    document.addEventListener('input', clearValidity, true);
+    document.addEventListener('change', clearValidity, true);
+    return () => { document.removeEventListener('invalid', explainInvalid, true); document.removeEventListener('input', clearValidity, true); document.removeEventListener('change', clearValidity, true); };
+  }, []);
   useEffect(() => {
     window.addEventListener(API_AUTH_REQUIRED_EVENT, clearSession);
     return () => window.removeEventListener(API_AUTH_REQUIRED_EVENT, clearSession);
