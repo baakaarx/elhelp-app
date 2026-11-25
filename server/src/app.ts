@@ -11,6 +11,7 @@ import { MIN_ADMIN_PASSWORD_LENGTH, readConfig, type Config } from './config.js'
 import { clientHint, clientRoleMismatch, createSession, hashPassword, publicUser, requestToken, requireAuth, sessionUser, verifyPassword, tokenHash, setSessionCookie, clearSessionCookies, SESSION_MS } from './auth.js';
 import { dayBounds, distanceMeters, haversine, localDate, type GeoPoint } from './geo.js';
 import { classifySilence, LOW_BATTERY_PERCENT, PRESENT_FRESH_MS, stationaryMinutes } from './fieldStatus.js';
+import { elapsedMinutesText } from './elapsedTime.js';
 import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { deleteAccountPage, privacyPage } from './privacy.js';
@@ -2496,8 +2497,8 @@ export function createApp(overrides: Partial<Config> = {}) {
           title: gapKind === 'gps_blocked' ? 'التطبيق بعت بس من غير نقاط موقع'
             : openVisitRow ? 'انقطاع في إرسال الموقع أثناء زيارة' : 'انقطاع في إرسال الموقع',
           detail: gapKind === 'gps_blocked'
-            ? `التليفون واصِل للسيرفر${seenMinutes !== null ? ` (آخر طلب منه من ${seenMinutes} دقيقة)` : ''} بس آخر نقطة موقع قبل ${staleMinutes} دقيقة — الشبكة شغالة والموقع هو المقطوع: اطلب من المهندس يفتح التطبيق ويسمح بالموقع.`
-            : `آخر إشارة قبل ${staleMinutes} دقيقة${dying ? ` والبطارية وقتها ${battery}٪` : ''}${openVisitRow ? ` (زيارة مفتوحة، الحد ${staleLimitMinutes} دقيقة)` : ` (حد التنبيه ${staleLimitMinutes} دقيقة)`} — مفيش أي طلب من التليفون في الفترة دي، فمقفول أو مكان بلا شبكة.${dying ? ' الأرجح إنه فصل.' : ''}`,
+            ? `التليفون واصِل للسيرفر${seenMinutes !== null ? ` (آخر طلب منه من ${elapsedMinutesText(seenMinutes)})` : ''} بس آخر نقطة موقع قبل ${elapsedMinutesText(staleMinutes)} — الشبكة شغالة والموقع هو المقطوع: اطلب من المهندس يفتح التطبيق ويسمح بالموقع.`
+            : `آخر إشارة قبل ${elapsedMinutesText(staleMinutes)}${dying ? ` والبطارية وقتها ${battery}٪` : ''}${openVisitRow ? ` (زيارة مفتوحة، الحد ${staleLimitMinutes} دقيقة)` : ` (حد التنبيه ${staleLimitMinutes} دقيقة)`} — مفيش أي طلب من التليفون في الفترة دي، فمقفول أو مكان بلا شبكة.${dying ? ' الأرجح إنه فصل.' : ''}`,
           at: lastAt,
         });
       }

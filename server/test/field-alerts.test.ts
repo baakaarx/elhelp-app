@@ -216,6 +216,16 @@ test('a silence with no requests at all names both possibilities, and the batter
   assert.match(stale!.detail, /مفيش أي طلب من التليفون/);
 });
 
+test('the outage alert expresses long gaps in days, hours and minutes', async () => {
+  const repId = addRep('محمود اختبار المدة', `duration.${Date.now()}@mandoub.test`);
+  const shiftId = addShift(repId, Date.now() - 1600 * MINUTE);
+  addPoint(repId, shiftId, Date.now() - 1505 * MINUTE);
+  const alerts = (await alertsFor(token)).filter(a => a.repId === repId);
+  const stale = alerts.find(a => a.code === 'stale_gps');
+  assert.ok(stale);
+  assert.match(stale!.detail, /آخر إشارة قبل 1 يوم و1 ساعة و5 دقيقة/);
+});
+
 test('a phone about to die is warned about while it is still reporting', async () => {
   const repId = addRep('هدى محمود', `hoda.${Date.now()}@mandoub.test`);
   const shiftId = addShift(repId, Date.now() - 30 * MINUTE);
