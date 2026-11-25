@@ -716,3 +716,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
 @media (prefers-reduced-motion: reduce) {
   .map-badge-dot, .pin-rep.is-online span::after, .pin-head span { animation: none; }
 }
+
+/* Keep the selected engineer's details identifiable when opening from an alert. */
+.selected-summary:focus { outline: 2px solid #528e84; outline-offset: 5px; }
+.selected-summary { scroll-margin-top: 16px; }

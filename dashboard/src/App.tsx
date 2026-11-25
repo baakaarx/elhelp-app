@@ -1,5 +1,5 @@
 import DashboardIcon from './DashboardIcon';
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { API_AUTH_REQUIRED_EVENT, ApiError, api, del, getToken, patch, post, setToken } from './api';
 import { dateTimeText, localDay, localDateText, timeText } from './dates';
@@ -42,6 +42,9 @@ export default function App() {
   const [idleReports, setIdleReports] = useState<IdleReport[]>([]);
   const [tab, setTab] = useState<Tab>('live');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectionJump, setSelectionJump] = useState(0);
+  const [selectedIdleId, setSelectedIdleId] = useState<string | null>(null);
+  const selectedSummaryRef = useRef<HTMLDivElement>(null);
   const [visits, setVisits] = useState<Visit[]>([]);
   // Bumped by a deletion on this screen so the list refetches now, not on the 30-second clock.
   const [visitsVersion, setVisitsVersion] = useState(0);
@@ -72,6 +75,8 @@ export default function App() {
     setAlerts([]);
     setIdleReports([]);
     setSelectedId(null);
+    setSelectedIdleId(null);
+    setSelectionJump(0);
     setVisits([]);
     setRoute(null);
     setRouteDate('');
@@ -188,7 +193,24 @@ export default function App() {
       && serverNow - recordedAt <= limitMs;
   }).length;
   const visitStaleMinutes = reps.reduce((max, rep) => Math.max(max, rep.staleLimitMinutes ?? 0), 0);
-  const selectedIdle = useMemo(() => idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId]);
+  const selectedIdle = useMemo(() => idleReports.find(r => r.id === selectedIdleId && r.userId === selectedId) ?? idleReports.find(r => r.userId === selectedId) ?? null, [idleReports, selectedId, selectedIdleId]);
+
+  // Alerts live above the map and team list. Selecting alone can happen entirely off-screen,
+  // especially on a phone; move focus and the viewport to the selected engineer every time.
+  function openEngineer(repId:string, eventAt?:number, idleId?:string) {
+    if (!reps.some(rep => rep.id === repId)) return false;
+    setSelectedId(repId);
+    setSelectedIdleId(idleId ?? null);
+    setRouteDate(typeof eventAt === 'number' && Number.isFinite(eventAt) ? localDay(overview?.timezone,eventAt) : '');
+    setSelectionJump(value => value + 1);
+    return true;
+  }
+  useLayoutEffect(() => {
+    if (!selectionJump || !selectedSummaryRef.current) return;
+    const summary=selectedSummaryRef.current;
+    summary.focus({preventScroll:true});
+    summary.scrollIntoView({block:'start',behavior:'auto'});
+  }, [selectionJump]);
 
   // The trail is refreshed on its own slow clock. Tying it to `overview.serverTime` meant every
   // live position update re-downloaded the selected engineer's whole day, several times a minute.
@@ -283,8 +305,8 @@ export default function App() {
         {tab === 'live' && (
           <section className="page live-page">
             <div className="overview-heading"><div><span className="section-kicker">نظرة عامة</span><h2>متابعة العمل الميداني</h2><p className="muted">كل ما تحتاجه لمتابعة الفريق والطلبيات في مكان واحد.</p></div><span className="overview-status"><span className={connected ? 'status ok' : 'status'} />{connected ? 'متصل بالبث الحي' : 'وضع التحديث الدوري'}</span></div>
-            {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} visitStaleMinutes={visitStaleMinutes} onPick={repId => { if (repId) { setSelectedId(repId); } }} />}
-            {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={repId => setSelectedId(repId)} />}
+            {alerts.length > 0 && <AlertsPanel alerts={alerts} staleMinutes={overview?.staleGpsMinutes ?? 10} visitStaleMinutes={visitStaleMinutes} onPick={openEngineer} />}
+            {idleReports.length > 0 && <JustificationsPanel reports={idleReports} clock={clock} onPick={openEngineer} />}
             <div className="stats">
               <Stat icon="signal" label="مهندسون بإشارة حديثة" value={formatNumber(freshSignalCount)} hint={`موقع خلال ${formatNumber(staleGpsMinutes)} دقيقة · من ${formatNumber(trackingNow)} وردية مفتوحة`} />
               <Stat icon="team" label="ورديات مفتوحة" value={formatNumber(trackingNow)} hint="المهندسون الذين بدأوا الوردية" />
@@ -310,7 +332,7 @@ export default function App() {
                   {reps.length === 0 && <li className="empty">لا يوجد مهندسون بعد. أضفهم من صفحة الفريق.</li>}
                   {reps.map(rep => (
                     <li key={rep.id}>
-                      <button className={selectedId === rep.id ? 'rep active' : 'rep'} onClick={() => setSelectedId(rep.id)}>
+                      <button className={selectedId === rep.id ? 'rep active' : 'rep'} onClick={() => {setSelectedIdleId(null);setSelectedId(rep.id);}}>
                         <span className="dot" style={{ background: rep.color }} aria-hidden="true" />
                         <span className="grow">
                           <strong>{rep.name}</strong>
@@ -331,11 +353,11 @@ export default function App() {
                   ))}
                 </ul>
                 {selected && (
-                  <div className="selected-summary">
+                  <div className="selected-summary" ref={selectedSummaryRef} role="region" aria-label="تفاصيل المهندس المحدد" tabIndex={-1}>
                     <h4>{selected.name}</h4>
                     <p className="muted small">{selected.phone || 'بدون هاتف'} · {movementStatus(selected, clock, staleMs, overview?.timezone)}</p>
                     <LocationName key={selected.id} location={selected.location} timezone={overview?.timezone} />
-                    {selectedIdle && <p className="muted small">آخر تبرير وقوف: {selectedIdle.reason} · {ago(selectedIdle.createdAt, clock)}</p>}
+                    {selectedIdle && <p className="muted small">{selectedIdle.id === selectedIdleId ? 'تبرير الوقوف المختار' : 'آخر تبرير وقوف'}: {selectedIdle.reason} · {ago(selectedIdle.createdAt, clock)}</p>}
                     <dl>
                       <div><dt>آخر موقع</dt><dd>{ago(selected.location?.recordedAt ?? null, clock)}</dd></div>
                       <div><dt>دقة الموقع</dt><dd>{selected.location?.accuracy ? `${formatNumber(selected.location.accuracy)} م` : '—'}</dd></div>
@@ -432,8 +454,9 @@ function EngineerOnlyNotice() {
   );
 }
 
-function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; visitStaleMinutes?: number; onPick: (repId?: string) => void }) {
+function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { alerts: ManagerAlert[]; staleMinutes: number; visitStaleMinutes?: number; onPick: (repId:string, eventAt?:number) => boolean }) {
   const [open, setOpen] = useState(true);
+  const [pickError, setPickError] = useState('');
   const warn = alerts.filter(a => a.level === 'warn');
   const shown = open ? alerts : alerts.slice(0, 2);
   return (
@@ -442,6 +465,7 @@ function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { 
         <strong>تنبيهات الميدان <span className="pill warn">{formatNumber(warn.length)} مهم</span> <span className="pill">{formatNumber(alerts.length)} إجمالًا</span> <small className="muted">حد انقطاع الإشارة {formatNumber(staleMinutes)} دقيقة{visitStaleMinutes > staleMinutes ? ` · ${formatNumber(visitStaleMinutes)} دقيقة داخل زيارة مفتوحة` : ''}</small></strong>
         <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>
       </div>
+      {pickError && <p className="error" role="alert">{pickError}</p>}
       <ul>
         {shown.map(alert => (
           <li key={alert.id} className={alert.level === 'warn' ? 'alert warn' : 'alert'}>
@@ -450,7 +474,7 @@ function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { 
               <strong>{alert.title}{alert.repName ? ` · ${alert.repName}` : ''}</strong>
               <small>{alert.detail}</small>
             </div>
-            {alert.repId && <button className="btn ghost sm" onClick={() => onPick(alert.repId)}>فتح</button>}
+            {alert.repId && <button className="btn ghost sm" onClick={() => {const visitAlert=alert.code==='long_open_visit'||alert.code==='open_visit_without_shift';setPickError(onPick(alert.repId!,visitAlert ? alert.at : undefined) ? '' : 'المهندس غير ظاهر في القائمة الحالية. حدّث البيانات وحاول تاني.');}}>فتح</button>}
           </li>
         ))}
       </ul>
@@ -458,8 +482,9 @@ function AlertsPanel({ alerts, staleMinutes, visitStaleMinutes = 0, onPick }: { 
   );
 }
 
-function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]; clock: number; onPick: (repId: string) => void }) {
+function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]; clock: number; onPick: (repId: string, eventAt?:number, idleId?:string) => boolean }) {
   const [open, setOpen] = useState(false);
+  const [pickError, setPickError] = useState('');
   const shown = open ? reports : reports.slice(0, 3);
   return (
     <div className="alerts-panel" role="region" aria-label="تبريرات الوقوف">
@@ -467,6 +492,7 @@ function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]
         <strong>تبريرات الوقوف <span className="pill">{formatNumber(reports.length)}</span> <small className="muted">سبب السكون المرسل من الموبايل</small></strong>
         {reports.length > 3 && <button className="btn ghost sm" onClick={() => setOpen(value => !value)}>{open ? 'طي' : 'عرض الكل'}</button>}
       </div>
+      {pickError && <p className="error" role="alert">{pickError}</p>}
       <ul>
         {shown.map(item => (
           <li key={item.id} className="alert">
@@ -475,7 +501,7 @@ function JustificationsPanel({ reports, clock, onPick }: { reports: IdleReport[]
               <strong>{item.repName}{item.durationMinutes ? ` · توقف ${formatNumber(item.durationMinutes)} دقيقة` : ''}</strong>
               <small>{item.reason} · {ago(item.createdAt, clock)}</small>
             </div>
-            <button className="btn ghost sm" onClick={() => onPick(item.userId)}>فتح</button>
+            <button className="btn ghost sm" onClick={() => setPickError(onPick(item.userId,item.createdAt,item.id) ? '' : 'المهندس غير ظاهر في القائمة الحالية. حدّث البيانات وحاول تاني.')}>فتح</button>
           </li>
         ))}
       </ul>
