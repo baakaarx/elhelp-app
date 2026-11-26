@@ -75,8 +75,9 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
 
   useEffect(() => {
     if (!host.current || map.current) return;
+    // SVG avoids Leaflet's queued canvas redraw after rapid unmounts.
     const instance = L.map(host.current, {
-      zoomControl: false, attributionControl: true, preferCanvas: true,
+      zoomControl: false, attributionControl: true,
       maxBounds: EGYPT_BOUNDS.pad(0.05), maxBoundsViscosity: 0.9, minZoom: 6, worldCopyJump: false,
     }).setView(EGYPT_CENTER, 6);
     const config = BASEMAPS[basemap];
@@ -93,8 +94,16 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
     instance.on('movestart zoomstart', busy);
     instance.on('moveend zoomend', idle);
     window.addEventListener('resize', resize);
-    setTimeout(resize, 250);
-    return () => { window.removeEventListener('resize', resize); instance.remove(); map.current = null; };
+    const resizeTimer = window.setTimeout(resize, 250);
+    return () => {
+      window.clearTimeout(resizeTimer);
+      window.removeEventListener('resize', resize);
+      // Remove vector paths before Leaflet destroys their canvas renderer.
+      layer.current?.clearLayers();
+      layer.current = null;
+      instance.remove();
+      map.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
