@@ -22,7 +22,9 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   await expect(page.getByRole('tab', { name: 'اليومي' })).toHaveCount(0);
   await expect(page.getByText('التقرير اليومي')).toHaveCount(0);
   await page.getByRole('button', { name: 'تسجيل طلبية' }).click();
-  await page.getByText('مزرعة النور', { exact: true }).last().click();
+  // Wait for the order picker, rather than clicking an identically named customer on the home screen.
+  await expect(page.getByPlaceholder('مثال: محمود أو 010')).toBeVisible();
+  await page.getByRole('button', { name: /مزرعة النور/ }).click();
   await expect(page.getByRole('button', { name: 'اختار واحد تاني' })).toBeVisible();
   // The phone only shows the first few catalogue entries until the engineer searches.
   await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('يوريا');
