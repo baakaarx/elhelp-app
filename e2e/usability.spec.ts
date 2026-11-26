@@ -80,7 +80,7 @@ test('تعذر الاتصال ما يكررش حركة مخزون اتحفظت �
   await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
   expect(ids).toHaveLength(2);
   expect(ids[0]).toBe(ids[1]);
-  await expect(second.getByText('لازم تحدّث الصفحة وتتأكد من الأرصدة قبل تسجيل حركة جديدة.')).toBeVisible();
+  await expect(second.getByText('لازم تعيد تحميل الأرصدة وتتأكد منها قبل تسجيل حركة جديدة.')).toBeVisible();
   await second.close();
   const stock = await (await page.request.get(`/api/warehouse/stock?warehouseId=${wh.warehouse.id}`, {headers})).json();
   expect(stock.stock.find((row: {id: string}) => row.id === product.product.id).qty).toBe(5);
@@ -102,6 +102,9 @@ test('حفظ حركة نجح لكن تحديث الرصيد فشل يوضح ال
   await expect(page.getByRole('alert')).toContainText('الحركة اتحفظت، لكن الأرصدة ما اتحدّثتش');
   await expect(page.getByLabel('الكمية')).toHaveValue('');
   await page.unroute('**/api/warehouse/stock?*');
+  await page.getByRole('button',{name:'إعادة تحميل الأرصدة'}).click();
+  await expect(page.getByLabel('الكمية')).toBeEnabled();
+  await expect(page.getByText('لازم تعيد تحميل الأرصدة')).toHaveCount(0);
   const stock = await (await page.request.get(`/api/warehouse/stock?warehouseId=${wh.warehouse.id}`, {headers})).json();
   expect(stock.stock.find((row: {id: string}) => row.id === product.product.id).qty).toBe(7);
 });
@@ -253,4 +256,21 @@ test('الانتقال من أولويات العمل يفتح الصفحة من
   await page.getByRole('button',{name:'افتح العملاء'}).click();
   await expect(page.getByRole('heading',{level:1,name:'العملاء'})).toBeInViewport();
   await expect(page.locator('header.topbar')).toBeFocused();
+});
+
+test('تبويب المخزن يطلب تحديثًا بعد انتهاء حركة في تبويب آخر ولا يقبل ردًا أقدم',async({page,context})=>{
+ await signIn(page);const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const wh=await (await page.request.post('/api/warehouse/warehouses',{headers,data:{name:`مخزن تبويبين ${Date.now()}`}})).json();
+ await page.getByRole('button',{name:'المخازن',exact:true}).click();await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(wh.warehouse.id);await expect(page.getByLabel('الكمية')).toBeEnabled();
+ const other=await context.newPage();await other.goto('/');const key=await page.evaluate(()=>Object.keys(localStorage).find(k=>k.startsWith('mandoub.warehouse.pending.'))||'');
+ const userId=await page.evaluate(async()=>{const token=localStorage.getItem('mandoub.token');const r=await fetch('/api/auth/me',{headers:{'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'}});return (await r.json()).user.id;});const pendingKey=key||`mandoub.warehouse.pending.${userId}`;
+ await other.evaluate(k=>localStorage.setItem(k,'{"body":{"id":"test"},"description":"اختبار"}'),pendingKey);await expect(page.getByLabel('الكمية')).toBeDisabled();
+ await other.evaluate(k=>localStorage.removeItem(k),pendingKey);await expect(page.getByText('لازم تعيد تحميل الأرصدة')).toBeVisible();
+ let release!:()=>void,started!:()=>void;const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>started=r);
+ await page.route('**/api/warehouse/stock?*',async route=>{const response=await route.fetch();started();await gate;await route.fulfill({response});});
+ await page.getByRole('button',{name:'إعادة تحميل الأرصدة'}).click();await waiting;
+ await other.evaluate(k=>localStorage.setItem(k,'{"body":{"id":"test2"},"description":"اختبار"}'),pendingKey);await expect(page.getByText('في حركة مخزون لم نتأكد من نتيجتها.')).toBeVisible();
+ await other.evaluate(k=>localStorage.removeItem(k),pendingKey);await expect(page.getByText('لازم تعيد تحميل الأرصدة')).toBeVisible();release();
+ await expect(page.getByRole('button',{name:'إعادة تحميل الأرصدة'})).toBeVisible();await expect(page.getByLabel('الكمية')).toBeDisabled();
+ await page.unroute('**/api/warehouse/stock?*');await page.getByRole('button',{name:'إعادة تحميل الأرصدة'}).click();await expect(page.getByLabel('الكمية')).toBeEnabled();await other.close();
 });

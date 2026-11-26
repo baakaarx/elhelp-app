@@ -19,9 +19,10 @@ export default function Warehouses({userId}:{userId:string}) {
   const [timezone,setTimezone]=useState<string|null>(null);
   const [needsRefresh,setNeedsRefresh]=useState(false);
   const sending=useRef(false);
+  const refreshVersion=useRef(0);
   let pending:PendingMovement|null=null;
   try { if(pendingRaw) { const parsed=JSON.parse(pendingRaw); if(!parsed?.body?.id || typeof parsed.description!=='string') throw Error(); pending=parsed; } } catch { /* Fail closed on unreadable saved data. */ }
-  useEffect(()=>{const sync=(e:StorageEvent)=>{if(e.key===pendingKey){setPendingRaw(e.newValue);if(!e.newValue)setNeedsRefresh(true);}};window.addEventListener('storage',sync);return()=>window.removeEventListener('storage',sync);},[pendingKey]);
+  useEffect(()=>{const sync=(e:StorageEvent)=>{if(e.key===pendingKey){refreshVersion.current++;setPendingRaw(e.newValue);if(!e.newValue)setNeedsRefresh(true);}};window.addEventListener('storage',sync);return()=>window.removeEventListener('storage',sync);},[pendingKey]);
   useEffect(()=>{api<{timezone:string}>('/api/health').then(x=>setTimezone(x.timezone)).catch(()=>setTimezone(null));},[]);
   const [warehouses,setWarehouses] = useState<Warehouse[]>([]);
   const [legacyHistory,setLegacyHistory] = useState(false);
@@ -59,7 +60,7 @@ export default function Warehouses({userId}:{userId:string}) {
   }, []);
   const loadStock = useCallback(async () => {
     if (currentWarehouse.current !== warehouseId) return;
-    const request=++stockRequest.current;
+    const request=++stockRequest.current, refreshAtStart=refreshVersion.current;
     setStockLoadedFor('');setStock([]);setMovements([]);
     if (!warehouseId) {setStockLoading(false);return;}
     setStockLoading(true);
@@ -70,13 +71,14 @@ export default function Warehouses({userId}:{userId:string}) {
       ]);
       if(request===stockRequest.current && currentWarehouse.current===warehouseId) {
         setStock(s.stock);setMovements(m.movements);setStockLoadedFor(warehouseId);
+        try {if(refreshAtStart===refreshVersion.current && localStorage.getItem(pendingKey)===null)setNeedsRefresh(false);} catch {setNeedsRefresh(true);}
       }
     } catch(e) {
       if(request===stockRequest.current && currentWarehouse.current===warehouseId) throw e;
     } finally {
       if(request===stockRequest.current && currentWarehouse.current===warehouseId) setStockLoading(false);
     }
-  }, [warehouseId]);
+  }, [warehouseId,pendingKey]);
   useEffect(() => { void loadWarehouses().catch(e => setError(e.message)); }, [loadWarehouses]);
   useEffect(() => {
     void loadStock().catch(e=>setError(`تعذر تحميل أرصدة المخزن وحركاته. ${e instanceof Error ? e.message : ''}`));
@@ -119,7 +121,7 @@ export default function Warehouses({userId}:{userId:string}) {
   async function finishMovement(operation:PendingMovement) {
     await perform(async()=>{
       await sendMovement(operation);setQty('');setNote('');setMessage('الحركة اتحفظت.');
-      try {await loadStock();setNeedsRefresh(false);} catch {setNeedsRefresh(true);setError('الحركة اتحفظت، لكن الأرصدة ما اتحدّثتش. حدّث الصفحة قبل تسجيل حركة تانية.');}
+      try {await loadStock();} catch {refreshVersion.current++;setNeedsRefresh(true);setError('الحركة اتحفظت، لكن الأرصدة ما اتحدّثتش. أعد تحميل الأرصدة قبل تسجيل حركة تانية.');}
     });
   }
   async function submitMovement(event:FormEvent) {
@@ -135,7 +137,7 @@ export default function Warehouses({userId}:{userId:string}) {
   return <section className="page">
     <header className="page-head"><div><h2>المخازن والأصناف</h2><p className="muted">لكل مخزن رصيد مستقل. سجّل الرصيد الافتتاحي قبل الإضافة أو الصرف أو النقل.</p></div></header>
     {pendingRaw && <div className="notice" role="alert"><strong>في حركة مخزون لم نتأكد من نتيجتها.</strong><p>{pending ? pending.description : 'تعذر قراءة الحركة المحفوظة على الجهاز؛ راجع المسؤول قبل تسجيل حركة أخرى.'}</p><p>قد تكون اتحفظت بالفعل. اضغط للتأكد بنفس رقم الحركة، حتى بعد تحديث الصفحة.</p>{pending && <button type="button" className="btn primary sm" disabled={busy} onClick={()=>void finishMovement(pending!)}>التأكد من الحركة المعلقة</button>}</div>}
-    {needsRefresh && <p className="notice">لازم تحدّث الصفحة وتتأكد من الأرصدة قبل تسجيل حركة جديدة.</p>}
+    {needsRefresh && <p className="notice">لازم تعيد تحميل الأرصدة وتتأكد منها قبل تسجيل حركة جديدة.</p>}
     {legacyHistory && <p className="notice">فيه حركات مخزون قديمة محفوظة بشكل منفصل، ومش داخلة في الأرصدة هنا. راجع الجرد وسجّل الأرصدة الافتتاحية.</p>}
     {error && <p className="error" role="alert">{error}</p>}{message && <p className="ok-text" role="status">{message}</p>}
     <div className="panel">
@@ -164,8 +166,8 @@ export default function Warehouses({userId}:{userId:string}) {
         <label className="field inline"><span>ملاحظة</span><input maxLength={500} value={note} onChange={e=>{setNote(e.target.value);}} /></label>
         <button className="btn primary sm" disabled={busy}>{busy ? 'جارٍ الحفظ…' : 'حفظ الحركة'}</button>
       </fieldset></form><p className="muted small">لو الرصيد الافتتاحي صفر اكتبه صفر. النقل يحتاج تسجيل الرصيد الافتتاحي في المخزنين.</p></div>
-      {!stockReady && (stockLoading ? <p role="status">جارٍ تحميل أرصدة المخزن وحركاته…</p> : <div className="notice">الأرصدة والحركات غير متاحة الآن. حدّثها قبل تسجيل حركة. <button type="button" className="btn ghost sm" disabled={busy} onClick={()=>{setError('');void loadStock().catch(e=>setError(`تعذر تحميل أرصدة المخزن وحركاته. ${e instanceof Error ? e.message : ''}`));}}>إعادة تحميل الأرصدة</button></div>)}
-      {stockReady && <><div className="panel"><h3>أرصدة المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف</th><th>الوحدة</th><th>الرصيد</th><th>الحالة</th><th></th></tr></thead><tbody>
+      {warehouseId && (!stockReady || needsRefresh) && (stockLoading ? <p role="status">جارٍ تحميل أرصدة المخزن وحركاته…</p> : <div className="notice">الأرصدة والحركات غير متاحة الآن. حدّثها قبل تسجيل حركة. <button type="button" className="btn ghost sm" disabled={busy} onClick={()=>{setError('');void loadStock().catch(e=>setError(`تعذر تحميل أرصدة المخزن وحركاته. ${e instanceof Error ? e.message : ''}`));}}>إعادة تحميل الأرصدة</button></div>)}
+      {stockReady && !needsRefresh && <><div className="panel"><h3>أرصدة المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الصنف</th><th>الوحدة</th><th>الرصيد</th><th>الحالة</th><th></th></tr></thead><tbody>
         {stock.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.unit} {p.unitSize}</td><td>{p.qty === null ? 'لم يُسجَّل' : qtyText(p.qty)}</td><td>{p.active ? 'شغال' : 'موقوف'}</td><td><button className="btn ghost sm" onClick={()=>{setEditing(p);setEditName(p.name);setEditCategory(p.category);setEditUnit(p.unit);setEditUnitSize(p.unitSize);editForm.reveal();}}>تعديل</button> <button className="btn ghost sm" disabled={busy} onClick={()=>void perform(async()=>{await patch(`/api/warehouse/products/${p.id}`,{active:!p.active});setMessage(p.active?'الصنف اتوقف.':'الصنف اتفعّل.');try {await loadStock();} catch {setError('حالة الصنف اتغيرت، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}})}>{p.active?'وقف':'تفعيل'}</button></td></tr>)}
       </tbody></table></div>{stock.length===0 && <p className="muted">مفيش أصناف لسه.</p>}</div>
       <div className="panel"><h3>آخر حركات المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الحركة</th><th>الصنف والكمية</th><th>من / إلى</th><th>بواسطة</th><th>الوقت</th><th>ملاحظة</th></tr></thead><tbody>

@@ -100,7 +100,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
     await sendOperation(pending);setReview(null);setDetail(null);setDetailMode(null);saleRequest.current='';receiptRequest.current='';openingRequest.current='';
     setShowSale(false);setRepChoice('');setLines([emptyLine()]);setPaid('');setOrderId('');setReceiptCustomer('');setReceiptAmount('');setOpeningCustomer('');setOpeningAmount('');
     await refreshAfter('اتأكدنا من العملية واتحدّثت الأرقام.');
-  }catch(e){if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}showError(err(e));}finally{setBusy(false);}}
+  }catch(e){if(e instanceof ApiError && e.code==='STALE' && pending.kind==='correction'){setDetail(null);setDetailMode(null);setNeedsRefresh(true);showError('الحساب أو التصحيحات اتغيرت. التصحيح لم يُحفظ، ومسودة المراجعة أُغلقت؛ حدّث الأرقام وافتح العملية من جديد وراجعها.');}else{if(e instanceof ApiError && ['ORDER_CHANGED','ORDER_SOLD','ORDER'].includes(e.code??'')){setReview(null);setShowSale(false);setOrderId('');setNeedsRefresh(true);}showError(err(e));}}finally{setBusy(false);}}
   function saveSale(event:FormEvent) {event.preventDefault();setError('');setMessage('');
     if(!validLines || !Number.isFinite(paidValue) || paidValue<0 || paidValue>total || !hasInputPrecision(paid,2)){showError('راجع الكميات والأسعار والمبلغ المدفوع: الكمية حتى ٣ أرقام عشرية، والمبالغ حتى رقمين.');return;}
     if(mode==='direct' && (lines.some(l=>!l.productId) || new Set(lines.map(l=>l.productId)).size!==lines.length)){showError('اختار كل صنف مرة واحدة.');return;}
@@ -132,7 +132,7 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   async function saveCorrection(values:CorrectionPayload) {if(!detail)return;setError('');setBusy(true);try{
     await sendOperation({path:`/api/sales/corrections/${detail.type}/${encodeURIComponent(detail.record.id)}`,body:{id:crypto.randomUUID(),...values},kind:'correction'});
     setDetail(null);setDetailMode(null);await refreshAfter('التصحيح اتحفظ. راجع الحساب بعد التحديث.');
-  }catch(e){showError(err(e));}finally{setBusy(false);}}
+  }catch(e){if(e instanceof ApiError && e.code==='STALE'){setDetail(null);setDetailMode(null);setNeedsRefresh(true);showError('الحساب أو التصحيحات اتغيرت. التصحيح لم يُحفظ، ومسودة المراجعة أُغلقت؛ حدّث الأرقام وافتح العملية من جديد وراجعها.');}else showError(err(e));}finally{setBusy(false);}}
   async function savePrice(event:FormEvent){event.preventDefault();setError('');setMessage('');const value=parse(priceInput);if(!Number.isFinite(value)||value<0||value>1_000_000_000||!hasInputPrecision(priceInput,2)){showError('اكتب سعر صحيح بالجنيه والقرش.');return;}setBusy(true);try{
     await api(`/api/products/${priceProduct}/prices`,{method:'PUT',body:JSON.stringify({prices:[{tierId:priceTier,price:value}]})});await refreshAfter('السعر اتحفظ.');
   }catch(e){showError(err(e));}finally{setBusy(false);}}

@@ -50,3 +50,20 @@ test('فشل تحديث بيانات المبيعات يمنع استخدام ا
  await expect(page.getByRole('heading',{name:'لازم نحدّث الأرقام الأول'})).toBeVisible();await expect(page.getByRole('button',{name:'حفظ السعر'})).toHaveCount(0);await expect(page.getByRole('button',{name:'تسجيل فاتورة'})).toHaveCount(0);
  await page.unroute('**/api/sales/overview');await page.getByRole('button',{name:'تحديث الأرقام'}).click();await expect(page.getByRole('button',{name:'حفظ السعر'})).toBeVisible();
 });
+
+test('تغيّر حساب العميل أثناء مراجعة التصحيح يمنع تأكيد أرقام قديمة',async({page})=>{
+ await signInAsManager(page);const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const send=async(path:string,data:object)=>{const r=await page.request.post(path,{headers,data});expect(r.ok(),await r.text()).toBeTruthy();return r.json();};
+ const c=(await send('/api/customers',{name:`عميل سباق تصحيح ${Date.now()}`})).customer;
+ const w=(await send('/api/warehouse/warehouses',{name:`مخزن سباق تصحيح ${Date.now()}`})).warehouse;
+ const p=(await send('/api/warehouse/products',{name:`صنف سباق تصحيح ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+ const {randomUUID}=await import('node:crypto');await send('/api/warehouse/movements',{id:randomUUID(),kind:'opening',productId:p.id,toWarehouseId:w.id,qty:10});
+ const sale=randomUUID();await send('/api/sales',{id:sale,customerId:c.id,warehouseId:w.id,paid:30,lines:[{productId:p.id,qty:2,price:50}]});
+ await page.getByRole('button',{name:'المبيعات',exact:true}).click();await page.getByRole('combobox',{name:'العميل لمراجعة الحساب'}).selectOption(c.id);await page.getByRole('button',{name:'عرض الحساب'}).click();
+ const statement=page.getByLabel('حساب العميل');await statement.locator('summary').first().click();await statement.getByRole('button',{name:'تصحيح أو تسجيل مرتجع'}).click();
+ await page.getByRole('textbox',{name:`كمية إضافية لتصحيح البيع - ${p.name}`}).fill('1');await page.getByRole('textbox',{name:'سبب التصحيح'}).fill('تصحيح بيانات مسجلة بالخطأ');await page.getByRole('button',{name:'مراجعة التصحيح'}).click();
+ await send('/api/sales/receipts',{id:randomUUID(),customerId:c.id,amount:5});
+ await page.getByRole('button',{name:'تأكيد التصحيح'}).click();await expect(page.getByRole('alert')).toContainText('التصحيح لم يُحفظ');await expect(page.getByLabel('مراجعة التصحيح')).toHaveCount(0);
+ await page.getByRole('button',{name:'تحديث الأرقام'}).click();await expect(page.getByRole('combobox',{name:'العميل لمراجعة الحساب'})).toBeVisible();
+ const detail=await (await page.request.get(`/api/sales/corrections/sale/${sale}`,{headers})).json();expect(detail.revision).toBe(0);expect(detail.lines[0].corrected).toBe(0);
+});
