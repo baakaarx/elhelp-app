@@ -22,7 +22,7 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await page.getByRole('combobox',{name:'نوع السعر'}).selectOption({label:'جملة'});
  await page.getByRole('textbox',{name:'سعر العبوة (ج.م)'}).fill('١٠');
  await page.getByRole('button',{name:'حفظ السعر'}).click();
- await expect(page.getByRole('status')).toContainText('السعر اتحفظ');
+ await expect(page.getByRole('status').filter({hasText:'السعر اتحفظ'})).toBeVisible();
  await page.getByRole('button',{name:'رجوع للملخص'}).click();
  await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();
  const saleForm=page.locator('form').filter({has:page.getByRole('heading',{name:'تسجيل فاتورة'})});
@@ -36,7 +36,7 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await page.getByRole('button',{name:'مراجعة الفاتورة'}).click();
  await expect(page.getByRole('heading',{name:'راجع البيانات قبل الحفظ'})).toBeVisible();
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
- await expect(page.getByRole('status')).toContainText('الفاتورة اتسجلت');
+ await expect(page.getByRole('status').filter({hasText:'الفاتورة اتسجلت'})).toBeVisible();
  const debtor=page.locator('tr').filter({hasText:c.name}).filter({has:page.getByRole('button',{name:'تسجيل دفعة'})});
  await expect(debtor).toContainText('٢٠');
  await debtor.getByRole('button',{name:'تسجيل دفعة'}).click();
@@ -55,7 +55,7 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await page.getByRole('button',{name:'المبيعات',exact:true}).click();
  await expect(page.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();
  await page.getByRole('button',{name:'تأكيد العملية'}).click();
- await expect(page.getByRole('status')).toContainText('اتأكدنا من العملية');
+ await expect(page.getByRole('status').filter({hasText:'اتأكدنا من العملية'})).toBeVisible();
  expect(ids).toHaveLength(2);expect(ids[0]).toBe(ids[1]);
  await expect(debtor).toContainText('١٢');
  await page.getByText('تسجيل مديونية قديمة').click();
@@ -88,7 +88,7 @@ test('تسعير وبيع ودفعة ومديونية قديمة وبيع من �
  await expect(page.getByRole('heading',{name:'راجع البيانات قبل الحفظ'})).toBeVisible();
  await expect(page.getByLabel('مراجعة العملية')).toContainText('ترشيح المهندس: ٢٫١٢٣٤٥');
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
- await expect(page.getByRole('status')).toContainText('الفاتورة اتسجلت');
+ await expect(page.getByRole('status').filter({hasText:'الفاتورة اتسجلت'})).toBeVisible();
  const report=await (await page.request.get('/api/sales/overview',{headers})).json();
  expect(report.sales).toBe(45);expect(report.collected).toBe(13);expect(report.due).toBe(35);
  expect(report.stock.find((x:{warehouseId:string;productId:string})=>x.warehouseId===w.id&&x.productId===p.id).qty).toBe(5.5);
@@ -150,7 +150,7 @@ test('المراجعة تمنع الحفظ بالخطأ والتبويبان ي�
  await expect(page.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();
  await expect(second.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();
  await second.getByRole('button',{name:'تأكيد العملية'}).click();
- await expect(second.getByRole('status')).toContainText('اتأكدنا من العملية');
+ await expect(second.getByRole('status').filter({hasText:'اتأكدنا من العملية'})).toBeVisible();
  await expect(page.getByRole('heading',{name:'لازم نحدّث الأرقام الأول'})).toBeVisible();
  await page.getByRole('button',{name:'تحديث الأرقام'}).click();
  await expect(page.getByRole('heading',{name:'لازم نحدّث الأرقام الأول'})).toHaveCount(0);
@@ -215,8 +215,13 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  await expect(page.getByRole('button',{name:'طباعة الفاتورة'})).toBeInViewport();
  const invoice=page.locator('.invoice-print');await expect(invoice).toContainText('فاتورة معتمدة من مجموعة الهلب جروب');await expect(invoice).toContainText('رقم الفاتورة');await expect(invoice).not.toContainText(sale);await expect(invoice.getByRole('img',{name:'شعار الهلب جروب'})).toBeVisible();await expect(invoice).toContainText(p.name);
  await expect(invoice.locator('.invoice-total')).toHaveCount(3);await page.setViewportSize({width:390,height:844});const bounds=await invoice.locator('.kpi-table').evaluate(el=>({table:el.getBoundingClientRect().width,container:el.parentElement!.getBoundingClientRect().width}));expect(bounds.table).toBeLessThanOrEqual(bounds.container+1);
- await page.emulateMedia({media:'print'});await expect(invoice).toHaveCSS('visibility','visible');await expect(page.locator('.page-head')).toHaveCSS('visibility','hidden');const pdf=await page.pdf({format:'A4',printBackground:true,preferCSSPageSize:true,displayHeaderFooter:true,footerTemplate:'<span>TEST_BROWSER_ADDRESS</span>'});expect(pdf.length).toBeGreaterThan(1000);
- const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');const pdfDoc=await getDocument({data:new Uint8Array(pdf),useSystemFonts:true}).promise;const text=await (await pdfDoc.getPage(1)).getTextContent();expect(text.items.map(x=>'str' in x?x.str:'').join(' ')).not.toContain('TEST_BROWSER_ADDRESS');expect((pdf.toString('latin1').match(/\/Type\s*\/Page\b/g)||[]).length).toBe(1);await page.emulateMedia({media:'screen'});
+ await page.emulateMedia({media:'print'});await expect(invoice).toHaveCSS('visibility','visible');await expect(page.locator('.page-head')).toHaveCSS('visibility','hidden');
+ // Do not force a browser footer in CDP: a custom footer is rendered differently across Chromium builds
+ // and does not represent the user's print settings. Check our active page rule and the print content.
+ const pageMargins=await page.evaluate(()=>{const margins:string[]=[];const walk=(rules:CSSRuleList)=>{for(const rule of Array.from(rules)){if(rule instanceof CSSPageRule)margins.push(rule.style.margin);else if(rule instanceof CSSMediaRule&&matchMedia(rule.conditionText).matches)walk(rule.cssRules);}};for(const sheet of Array.from(document.styleSheets))walk(sheet.cssRules);return margins;});
+ expect(pageMargins.at(-1)).toMatch(/^0(?:px)?$/);
+ const pdf=await page.pdf({format:'A4',printBackground:true,preferCSSPageSize:true});expect(pdf.length).toBeGreaterThan(1000);
+ const {getDocument}=await import('pdfjs-dist/legacy/build/pdf.mjs');const pdfDoc=await getDocument({data:new Uint8Array(pdf),useSystemFonts:true}).promise;const text=await (await pdfDoc.getPage(1)).getTextContent();const printed=text.items.map(x=>'str' in x?x.str:'').join(' ');expect(printed).toContain(p.name.split(' ').at(-1));expect(printed).not.toContain(new URL(page.url()).host);expect(pdfDoc.numPages).toBe(1);await page.emulateMedia({media:'screen'});
  await page.getByRole('button',{name:'رجوع للحساب'}).click();await statement.locator('summary').first().click();await statement.getByRole('button',{name:'تصحيح أو تسجيل مرتجع'}).click();
  await page.setViewportSize({width:390,height:844});const size=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));expect(size.scroll).toBeLessThanOrEqual(size.width+1);
  await page.getByRole('textbox',{name:'سبب التصحيح'}).fill('تصحيح صنف ومبلغ مسجل بالخطأ');
@@ -230,18 +235,18 @@ test('فاتورة وتصحيح جزئي وإرجاع لاحق مع منع تك�
  await page.getByRole('button',{name:'مراجعة التصحيح'}).click();await expect(page.getByLabel('مراجعة التصحيح')).toBeInViewport();await expect(page.getByLabel('مراجعة التصحيح')).toBeFocused();await expect(page.getByLabel('مراجعة التصحيح')).toContainText('٣٥');
  let intercepted=0;await page.route(`**/api/sales/corrections/sale/${sale}`,async route=>{if(route.request().method()!=='POST')return route.continue();intercepted++;await route.fetch();await route.abort('failed');});
  await page.getByRole('button',{name:'تأكيد التصحيح'}).click();await expect(page.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();await expect(page.getByRole('alert')).toBeVisible();
- await page.unroute(`**/api/sales/corrections/sale/${sale}`);await page.getByRole('button',{name:'تأكيد العملية'}).click();await expect(page.getByRole('status')).toContainText('اتأكدنا من العملية');expect(intercepted).toBe(1);
+ await page.unroute(`**/api/sales/corrections/sale/${sale}`);await page.getByRole('button',{name:'تأكيد العملية'}).click();await expect(page.getByRole('status').filter({hasText:'اتأكدنا من العملية'})).toBeVisible();expect(intercepted).toBe(1);
  let d=await (await page.request.get(`/api/sales/corrections/sale/${sale}`,{headers})).json();expect(d.revision).toBe(1);expect(d.balancePiasters).toBe(3500);expect(d.lines[0].corrected).toBe(500);
  await page.getByRole('combobox',{name:'العميل لمراجعة الحساب'}).selectOption(c.id);await page.getByRole('button',{name:'عرض الحساب'}).click();
  await statement.locator('summary').first().click();await statement.getByRole('button',{name:'تصحيح أو تسجيل مرتجع'}).click();
  await page.getByRole('textbox',{name:`كمية تضاف للمخزن الآن - ${p.name}`}).fill('0.5');await page.getByRole('combobox',{name:`حالة البضاعة - ${p.name}`}).selectOption('returned');await page.getByRole('textbox',{name:'سبب التصحيح'}).fill('استلام البضاعة المرتجعة في المخزن');
- await page.getByRole('button',{name:'مراجعة التصحيح'}).click();await page.getByRole('button',{name:'تأكيد التصحيح'}).click();await expect(page.getByRole('status')).toContainText('التصحيح اتحفظ');
+ await page.getByRole('button',{name:'مراجعة التصحيح'}).click();await page.getByRole('button',{name:'تأكيد التصحيح'}).click();await expect(page.getByRole('status').filter({hasText:'التصحيح اتحفظ'})).toBeVisible();
  d=await (await page.request.get(`/api/sales/corrections/sale/${sale}`,{headers})).json();expect(d.revision).toBe(2);expect(d.lines[0].returned).toBe(500);expect(d.balancePiasters).toBe(3500);
  const o=await (await page.request.get('/api/sales/overview',{headers})).json();expect(o.stock.find((x:{warehouseId:string;productId:string})=>x.warehouseId===w.id&&x.productId===p.id).qty).toBe(8.5);
  await page.getByRole('combobox',{name:'العميل لمراجعة الحساب'}).selectOption(c.id);await page.getByRole('button',{name:'عرض الحساب'}).click();
  await statement.getByRole('button',{name:'تصحيح الدفعة'}).click();await page.getByRole('combobox',{name:'حالة المبلغ'}).selectOption('refund');
  await page.getByRole('textbox',{name:'المبلغ المصحح (ج.م)'}).fill('20');await page.getByRole('textbox',{name:'سبب التصحيح'}).fill('تم رد الدفعة للعميل');await page.getByRole('button',{name:'مراجعة التصحيح'}).click();await page.getByRole('button',{name:'تأكيد التصحيح'}).click();
- await expect(page.getByRole('status')).toContainText('التصحيح اتحفظ');
+ await expect(page.getByRole('status').filter({hasText:'التصحيح اتحفظ'})).toBeVisible();
  const r=await (await page.request.get(`/api/sales/corrections/receipt/${receipt}`,{headers})).json();expect(r.balancePiasters).toBe(5500);expect(r.cashRemaining).toBe(0);
 });
 
@@ -328,7 +333,7 @@ test('بيع من ترشيح مرسل بكميات وأسعار المكتب م�
  await page.getByRole('button',{name:'تأكيد وحفظ'}).click();
  await expect(page.getByRole('heading',{name:'عملية محتاجة تأكيد'})).toBeVisible();
  await page.reload();await page.getByRole('button',{name:'المبيعات',exact:true}).click();
- await page.getByRole('button',{name:'تأكيد العملية'}).click();await expect(page.getByRole('status')).toContainText('اتأكدنا من العملية');
+ await page.getByRole('button',{name:'تأكيد العملية'}).click();await expect(page.getByRole('status').filter({hasText:'اتأكدنا من العملية'})).toBeVisible();
  expect(ids).toHaveLength(2);expect(ids[0]).toBe(ids[1]);
  const original=(await (await page.request.get('/api/orders',{headers:repHeaders})).json()).orders.find((o:{id:string})=>o.id===orderId);
  expect(original.sold).toBe(true);expect(original.lines.map((l:{qty:number})=>l.qty)).toEqual([3,4]);expect(JSON.stringify(original)).not.toContain('price');

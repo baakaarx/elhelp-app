@@ -174,3 +174,29 @@ test('a live visit still works exactly as before', async () => {
   assert.equal(closed.status, 200);
   assert.equal(closed.body.visit.recordedOffline, false);
 });
+
+test('a failed collection write rolls back both normal and automatically closed visit results, allowing a safe retry', async () => {
+  const rep = await makeRep('collection-atomic');
+  await openShiftSince(rep, HOUR);
+  for (const automatic of [false, true]) {
+    const id = randomUUID();
+    const start = await checkIn(rep.token, { id, customerName: `عميل تحصيل ${automatic}`, purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+    assert.equal(start.status, 201, JSON.stringify(start.body));
+    if (automatic) store.run("UPDATE visits SET status='closed', auto_closed=1, outcome=? WHERE id=?", AUTO_CLOSED_OUTCOME, id);
+    const before = store.get('SELECT status, outcome, checked_out_at FROM visits WHERE id=?', id);
+    store.db.exec("CREATE TRIGGER fail_collection_for_test BEFORE INSERT ON reports BEGIN SELECT RAISE(ABORT, 'simulated failure'); END");
+    const body = { outcome: 'تحصيل', notes: '', amount: 125.5, location: null };
+    try {
+      const failure = await visit(rep.token, id, body);
+      assert.equal(failure.status, 500);
+      assert.deepEqual(store.get('SELECT status, outcome, checked_out_at FROM visits WHERE id=?', id), before);
+      assert.equal(store.get('SELECT id FROM reports WHERE id=?', `visit:${id}`), undefined);
+    } finally { store.db.exec('DROP TRIGGER fail_collection_for_test'); }
+    const retry = await visit(rep.token, id, body);
+    assert.equal(retry.status, 200, JSON.stringify(retry.body));
+    assert.equal(Number(store.get('SELECT amount FROM reports WHERE id=?', `visit:${id}`)?.amount), 125.5);
+    const again = await visit(rep.token, id, body);
+    assert.equal(again.body.duplicate, true);
+    assert.equal(Number(store.get('SELECT COUNT(*) AS n FROM reports WHERE id=?', `visit:${id}`)?.n), 1);
+  }
+});

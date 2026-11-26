@@ -152,11 +152,12 @@ export async function verifyIdToken(
   const subject = String(payload.sub ?? '');
   if (!subject || subject.length > 255) throw new OauthError('الرمز من غير معرّف مستخدم.');
 
-  // Google always sends `email_verified`; Apple sends a verified address or nothing at all.
+  // An email can select an existing account only when the provider explicitly verified it.
+  // A previously linked Apple account can still sign in with its subject and no email.
   const email = String(payload.email ?? '').trim().toLowerCase();
   const verified = payload.email_verified === true || payload.email_verified === 'true';
-  if (email && provider === 'google' && !verified) {
-    throw new OauthError('البريد الإلكتروني غير مؤكد عند جوجل.');
+  if (email && !verified) {
+    throw new OauthError('البريد الإلكتروني غير مؤكد عند مزوّد تسجيل الدخول.');
   }
   if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new OauthError('الرمز يحتوي بريدًا غير صالح.');
 

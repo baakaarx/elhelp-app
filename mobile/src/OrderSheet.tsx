@@ -131,20 +131,21 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
                 {lines.map((line, index) => {
                   const product = byProduct.get(line.productId) ?? line.product;
                   const unavailable = !byProduct.has(line.productId);
+                  const labelName = products.filter(p => p.name === product.name).length > 1 ? `${product.name} · ${packText(product)}` : product.name;
                   return (
                     <View key={line.productId} style={[styles.lineRow, index > 0 && styles.lineBorder]}>
                       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                         <Text style={styles.lineName}>{product.name}</Text>
                         <Text style={styles.linePack}>{packText(product)}</Text>
                         {unavailable && <Text style={styles.error}>الصنف مش موجود دلوقتي — احذفه أو كلّم المكتب.</Text>}
-                        <Pressable onPress={() => setLines(prev => prev.filter(item => item.productId !== line.productId))} accessibilityRole="button" accessibilityLabel={`احذف ${product.name}`}><Text style={styles.notice}>حذف الصنف</Text></Pressable>
+                        <Pressable onPress={() => setLines(prev => prev.filter(item => item.productId !== line.productId))} accessibilityRole="button" accessibilityLabel={`احذف ${labelName}`}><Text style={styles.notice}>حذف الصنف</Text></Pressable>
                       </View>
                       <View style={styles.stepper}>
-                        <Pressable onPress={() => bump(line.productId, -1)} accessibilityRole="button" accessibilityLabel={`ناقص ${product.name}`} style={styles.stepBtn}>
+                        <Pressable onPress={() => bump(line.productId, -1)} accessibilityRole="button" accessibilityLabel={`ناقص ${labelName}`} style={styles.stepBtn}>
                           <Text style={styles.stepText}>−</Text>
                         </Pressable>
                         <TextInput
-                          style={styles.stepQty} keyboardType="number-pad" accessibilityLabel={`كمية ${product.name}`}
+                          style={styles.stepQty} keyboardType="number-pad" accessibilityLabel={`كمية ${labelName}`}
                           value={line.qty ? String(line.qty) : ''}
                           onChangeText={value => {
                             const normalized = value.replace(/[٠-٩]/g, digit => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)))
@@ -153,7 +154,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
                             setLines(prev => prev.map(item => item.productId === line.productId ? { ...item, qty: Number(normalized) } : item));
                           }}
                         />
-                        <Pressable onPress={() => bump(line.productId, 1)} accessibilityRole="button" accessibilityLabel={`زود ${product.name}`} style={styles.stepBtn}>
+                        <Pressable onPress={() => bump(line.productId, 1)} accessibilityRole="button" accessibilityLabel={`زود ${labelName}`} style={styles.stepBtn}>
                           <Text style={styles.stepText}>+</Text>
                         </Pressable>
                       </View>
@@ -172,8 +173,9 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
               <>
                 {shown.map(product => {
                   const inOrder = lines.find(line => line.productId === product.id);
+                  const labelName = products.filter(p => p.name === product.name).length > 1 ? `${product.name} · ${packText(product)}` : product.name;
                   return (
-                    <Pressable key={product.id} onPress={() => addProduct(product)} accessibilityRole="button" accessibilityLabel={`ضيف ${product.name}`} style={({ pressed }) => [styles.pickRow, pressed && styles.pickRowPressed]}>
+                    <Pressable key={product.id} onPress={() => addProduct(product)} accessibilityRole="button" accessibilityLabel={`ضيف ${labelName}`} style={({ pressed }) => [styles.pickRow, pressed && styles.pickRowPressed]}>
                       <View style={{ flex: 1, gap: 2 }}>
                         <Text style={styles.lineName}>{product.name}</Text>
                         <Text style={styles.linePack}>{packText(product)}</Text>
@@ -204,7 +206,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
         {historyError ? <Text style={styles.notice}>{historyError}</Text> : null}
         {history.slice(0, 10).map(order => <Card key={order.id} tone="plain">
           <Text style={styles.lineName}>{order.customerName} · {order.sold ? 'اتسجلت لها فاتورة' : order.status === 'draft' ? 'مسودة' : 'اتبعتت للمكتب'}</Text>
-          <Text style={styles.linePack}>{order.lines.map(line => `${line.productName}: ${line.qty} ${line.unit}`).join(' · ')}</Text>
+          <Text style={styles.linePack}>{order.lines.map(line => `${line.productName}: ${line.qty} ${line.unit} ${line.unitSize}`).join(' · ')}</Text>
         </Card>)}
       </View>
       <Body muted style={{ fontSize: 11.5 }}>

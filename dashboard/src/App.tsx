@@ -17,6 +17,7 @@ import Customers from './Customers';
 import Sales from './Sales';
 import Warehouses from './Warehouses';
 import Staff from './Staff';
+import { orderChime } from './orderSound';
 import type { IdleReport, ManagerAlert, Overview, Rep, RepImpact, Report, RouteResponse, User, Visit } from './types';
 import ConfirmAction from './ConfirmAction';
 import { visitPurposeLabels } from './types';
@@ -70,6 +71,45 @@ export default function App() {
   const bumpReports = useCallback(() => setReportsVersion(value => value + 1), []);
   const socketRef = useRef<Socket | null>(null);
   const liveRef = useRef(false);
+  const orderNoticeCursor = useRef<number | null>(null);
+  const audioRef = useRef<AudioContext | null>(null);
+  const soundOnRef = useRef(false);
+  const [soundOn, setSoundOn] = useState(false);
+  const [soundError, setSoundError] = useState('');
+  const [orderNotice, setOrderNotice] = useState('');
+  const [openOrdersRequest, setOpenOrdersRequest] = useState(0);
+  const updateOrderNotice = useCallback((id: unknown, detail?: { customerName?: unknown; repName?: unknown }, initial = false) => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) return;
+    const before = orderNoticeCursor.current;
+    if (before === null) {
+      orderNoticeCursor.current = id;
+      if (initial || id === 0) return;
+    } else {
+      if (id <= before) return;
+      orderNoticeCursor.current = id;
+    }
+    const customer = typeof detail?.customerName === 'string' ? detail.customerName : '';
+    const rep = typeof detail?.repName === 'string' ? detail.repName : '';
+    setOrderNotice(customer ? `وصلت طلبية جديدة: ${customer}${rep ? ` · المهندس ${rep}` : ''}` : 'وصلت طلبية جديدة أثناء تحديث الاتصال.');
+    if (soundOnRef.current && audioRef.current) void orderChime(audioRef.current).catch(() => {
+      soundOnRef.current = false; setSoundOn(false); setSoundError('الصوت اتوقف في المتصفح. اضغط تفعيل الصوت مرة أخرى.');
+    });
+  }, []);
+  const enableOrderSound = useCallback(async () => {
+    if (soundOnRef.current) {
+      soundOnRef.current = false; setSoundOn(false); setSoundError(''); return;
+    }
+    try {
+      const Audio = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Audio) throw new Error('unsupported');
+      const context = audioRef.current ?? new Audio(); audioRef.current = context;
+      await orderChime(context);
+      soundOnRef.current = true; setSoundOn(true); setSoundError('');
+    } catch {
+      soundOnRef.current = false; setSoundOn(false); setSoundError('تعذر تشغيل الصوت. راجع صوت الجهاز وإعدادات المتصفح وحاول تاني.');
+    }
+  }, []);
+  useEffect(() => () => { if (audioRef.current) void audioRef.current.close(); }, []);
   const clearSession = useCallback(() => {
     setToken(null);
     liveRef.current = false;
@@ -86,6 +126,9 @@ export default function App() {
     setConnected(false);
     setSyncedAt(null);
     setError('');
+    orderNoticeCursor.current = null; setOrderNotice(''); setOpenOrdersRequest(0);
+    soundOnRef.current = false; setSoundOn(false); setSoundError('');
+    if (audioRef.current) { void audioRef.current.close(); audioRef.current = null; }
   }, []);
 
   useEffect(() => {
@@ -126,6 +169,7 @@ export default function App() {
         // the manager only saw the alert vanish — never why.
         api<{ reports: IdleReport[] }>('/api/idle-reports?limit=20').catch(() => ({ reports: [] })),
       ]);
+      updateOrderNotice(nextOverview.latestOrderNoticeId, undefined, orderNoticeCursor.current === null);
       setOverview(nextOverview);
       setAlerts(nextAlerts.alerts.filter(alert => alert.code !== 'missing_daily_report' && alert.code !== 'stale_reviews'));
       setIdleReports(nextIdle.reports);
@@ -143,7 +187,7 @@ export default function App() {
       }
       setError(e instanceof Error ? e.message : 'تعذر تحديث البيانات.');
     }
-  }, [bumpReports, bumpOrders, clearSession]);
+  }, [bumpReports, bumpOrders, clearSession, updateOrderNotice]);
 
   useEffect(() => {
     if (!user || user.role !== 'admin' || user.accessScope === 'warehouse') return;
@@ -153,15 +197,15 @@ export default function App() {
     socket.on('connect', () => { liveRef.current = true; setConnected(true); bumpOrders(); });
     socket.on('disconnect', () => { liveRef.current = false; setConnected(false); });
     socket.on('connect_error', () => { liveRef.current = false; setConnected(false); });
-    socket.on('overview', (data: Overview) => { setOverview(data); setSyncedAt(Date.now()); });
+    socket.on('overview', (data: Overview) => { updateOrderNotice(data.latestOrderNoticeId, undefined, orderNoticeCursor.current === null); setOverview(data); setSyncedAt(Date.now()); });
     socket.on('report', () => { bumpReports(); refresh(); });
     socket.on('daily-report', () => { bumpReports(); refresh(); });
     socket.on('visit', () => { bumpReports(); refresh(); });
-    socket.on('order', () => { bumpOrders(); refresh(); });
+    socket.on('order', (event: { noticeId?: number; customerName?: string; repName?: string }) => { updateOrderNotice(event?.noticeId, event); bumpOrders(); refresh(); });
     return () => { liveRef.current = false; socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would
     // churn connections. The poll below has its own effect precisely so it can follow it.
-  }, [user, refresh, bumpReports, bumpOrders]);
+  }, [user, refresh, bumpReports, bumpOrders, updateOrderNotice]);
 
   // The polling rate depends on the live socket, and the value read when the socket effect ran
   // was always the initial `false` — so a connected dashboard kept asking three endpoints every
@@ -297,6 +341,7 @@ export default function App() {
             <p className="muted small">{dateTimeText(clock, overview?.timezone)} · {user.name}</p>
           </div>
           <div className="topbar-actions">
+            <button className="btn ghost sm" type="button" onClick={() => void enableOrderSound()}>{soundOn ? 'إيقاف صوت الطلبيات' : 'تفعيل صوت الطلبيات'}</button>
             <button className="btn ghost sm refresh-button" onClick={() => refresh()}><DashboardIcon name="refresh" /> تحديث</button>
             <button className="btn ghost sm" onClick={async () => {
               try { await logout(); } catch { /* Local logout still wins if the API is unreachable. */ }
@@ -305,6 +350,8 @@ export default function App() {
           </div>
         </header>
         {error && <p className="error banner" role="alert">{error}</p>}
+        {soundError && <p className="error banner" role="alert">{soundError}</p>}
+        {orderNotice && <div className="order-notice" role="status"><strong>{orderNotice}</strong><div className="confirm-pair"><button className="btn primary sm" onClick={() => { setOpenOrdersRequest(v => v + 1); navigate('reports'); setOrderNotice(''); }}>عرض الطلبيات</button><button className="btn ghost sm" onClick={() => setOrderNotice('')}>إغلاق التنبيه</button></div></div>}
         {tab === 'live' && (
           <section className="page live-page">
             <div className="overview-heading"><div><span className="section-kicker">نظرة عامة</span><h2>متابعة العمل الميداني</h2><p className="muted">كل ما تحتاجه لمتابعة الفريق والطلبيات في مكان واحد.</p></div><span className="overview-status"><span className={connected ? 'status ok' : 'status'} />{connected ? 'متصل بالبث الحي' : 'وضع التحديث الدوري'}</span></div>
@@ -427,7 +474,7 @@ export default function App() {
         )}
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
-        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
+        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} openOrdersRequest={openOrdersRequest} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
         {tab === 'products' && <Sales timezone={overview?.timezone} userId={user.id} ordersVersion={ordersVersion} />}
         {tab === 'warehouses' && <Warehouses userId={user.id} />}

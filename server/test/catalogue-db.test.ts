@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { DEFAULT_PRICE_TIERS, Store } from '../src/db.js';
 
 /**
@@ -51,9 +52,10 @@ test('a new installation gets the price list, and starts with the three buyer ty
   const urea = 'p-urea';
   addProduct(store, urea, 'يوريا', 'شيكارة', '٥٠ كجم');
   // The same item by the same pack is one item, whatever the office's second typist believes.
-  assert.throws(() => addProduct(store, 'p-dup', 'يوريا', 'شيكارة'), /UNIQUE/);
+  assert.throws(() => addProduct(store, 'p-dup', 'يوريا', 'شيكارة'), /UNIQUE|PRODUCT_PACK_CONFLICT/);
   // …and a different pack is a different item: 50 kg and 25 kg are not one price.
-  addProduct(store, 'p-urea25', 'يوريا', 'شيكارة صغيرة', '٢٥ كجم');
+  addProduct(store, 'p-urea25', 'يوريا', 'شيكارة', '٢٥ كجم');
+  assert.throws(() => addProduct(store, 'p-dup25', 'يوريا', 'شيكارة', '٢٥ كجم'), /UNIQUE|PRODUCT_PACK_CONFLICT/);
 
   store.run('INSERT INTO product_prices(product_id,tier_id,price,updated_at) VALUES (?,?,?,?)', urea, tierId(store, 'جملة'), 1150, Date.now());
   // SQLite reports a composite primary key as a unique violation; either wording means the second row
@@ -233,4 +235,31 @@ test('retention sweeps the visit log and never the price list', () => {
   assert.equal(Number(store.get("SELECT COUNT(*) AS c FROM price_tiers")?.c), 3, 'nor the buyer types');
   store.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+
+test('old product index migrates atomically without changing linked prices or stock', () => {
+  const {dir,file,store}=tempStore();
+  addProduct(store,'legacy-pack','اختبار ترحيل عبوة','عبوة','١٠٠ جم');
+  const tier=tierId(store,'جملة');store.run('INSERT INTO product_prices(product_id,tier_id,price,updated_at) VALUES (?,?,?,?)','legacy-pack',tier,123.45,100);
+  store.db.exec('DROP TRIGGER products_pack_insert; DROP TRIGGER products_pack_update; DROP INDEX products_name_unit_size; CREATE UNIQUE INDEX products_name_unit ON products(name COLLATE NOCASE,unit COLLATE NOCASE)');
+  store.close();const upgraded=new Store(file);
+  assert.equal(upgraded.get('SELECT price FROM product_prices WHERE product_id=? AND tier_id=?','legacy-pack',tier)?.price,123.45);
+  assert.equal(upgraded.get('SELECT unit_size FROM products WHERE id=?','legacy-pack')?.unit_size,'١٠٠ جم');
+  assert.equal(upgraded.get("SELECT name FROM sqlite_master WHERE type='index' AND name='products_name_unit'"),undefined);
+  addProduct(upgraded,'new-pack','اختبار ترحيل عبوة','عبوة','٢٥٠ جم');
+  assert.throws(()=>addProduct(upgraded,'unknown-pack','اختبار ترحيل عبوة','عبوة',''),/PRODUCT_PACK_CONFLICT|UNIQUE/);
+  assert.throws(()=>upgraded.run("UPDATE products SET unit_size=? WHERE id=?",'١٠٠ جم','new-pack'),/PRODUCT_PACK_CONFLICT|UNIQUE/);
+  upgraded.close();const restarted=new Store(file);assert.equal(restarted.get('SELECT COUNT(*) AS c FROM products WHERE name=?','اختبار ترحيل عبوة')?.c,2);restarted.close();rmSync(dir,{recursive:true,force:true});
+});
+
+test('migration fails without deleting data if a legacy database has conflicting exact packs', () => {
+  const {dir,file,store}=tempStore();
+  store.db.exec('DROP TRIGGER products_pack_insert; DROP TRIGGER products_pack_update; DROP INDEX products_name_unit_size');
+  addProduct(store,'legacy-a','صنف تضارب قديم','عبوة','١٠٠ جم');
+  addProduct(store,'legacy-b','صنف تضارب قديم','عبوة','١٠٠ جم');
+  store.close();
+  assert.throws(()=>new Store(file),/UNIQUE/);
+  const raw=new DatabaseSync(file);assert.equal((raw.prepare("SELECT COUNT(*) AS c FROM products WHERE name='صنف تضارب قديم'").get() as {c:number}).c,2);
+  assert.equal(raw.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='products_name_unit_size'").get(),undefined);raw.close();rmSync(dir,{recursive:true,force:true});
 });

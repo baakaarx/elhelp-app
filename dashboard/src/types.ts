@@ -140,6 +140,8 @@ export interface Overview {
   newReports: number;
   /** Sent orders waiting for the office to price them — the badge on the orders tab. */
   sentOrders?: number;
+  /** Monotonic marker for newly received orders, including deliveries missed while disconnected. */
+  latestOrderNoticeId?: number;
   /** Server-side staleness threshold (STALE_GPS_MINUTES), so both sides agree. */
   staleGpsMinutes?: number;
 }

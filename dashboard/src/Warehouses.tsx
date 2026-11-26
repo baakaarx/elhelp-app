@@ -2,13 +2,13 @@ import { useReveal } from './useReveal';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, patch, post } from './api';
 import { dateTimeText } from './dates';
-import { hasInputPrecision } from './decimal';
+import { hasInputPrecision, normalizeDecimal } from './decimal';
 
 type Warehouse = { id:string; name:string };
 type Stock = { id:string; name:string; category:string; unit:string; unitSize:string; active:boolean; qty:number|null };
-type Movement = { id:string; kind:'opening'|'in'|'out'|'transfer'; productName:string; qty:number; unit:string; fromName:string|null; toName:string|null; actorName:string; note:string; createdAt:number };
+type Movement = { id:string; kind:'opening'|'in'|'out'|'transfer'; productName:string; qty:number; unit:string; unitSize:string; fromName:string|null; toName:string|null; actorName:string; note:string; createdAt:number };
 const labels = { opening:'رصيد افتتاحي', in:'إضافة', out:'صرف', transfer:'نقل' } as const;
-const parseQty = (value:string) => { const normalized=value.trim().replace(/[٠-٩]/g, c => String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g, c => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).replace('٫','.'); return /^\d+(\.\d+)?$/.test(normalized) ? Number(normalized) : NaN; };
+const parseQty = (value:string) => { const normalized=normalizeDecimal(value); return /^\d+(\.\d+)?$/.test(normalized) ? Number(normalized) : NaN; };
 const qtyText = (value:number) => value.toLocaleString('ar-EG',{maximumFractionDigits:3});
 type PendingMovement = {body:{id:string;kind:Movement['kind'];productId:string;qty:number;note:string;fromWarehouseId?:string;toWarehouseId?:string}; description:string};
 
@@ -128,10 +128,11 @@ export default function Warehouses({userId}:{userId:string}) {
     event.preventDefault();
     if(pendingRaw || needsRefresh || !stockReady){setError('راجع الحركة المعلقة وحدّث الأرصدة قبل تسجيل حركة تانية.');return;}
     if (!Number.isFinite(parseQty(qty)) || !hasInputPrecision(qty,3)) { setError('اكتب كمية صحيحة بحد أقصى ٣ أرقام بعد العلامة العشرية.'); return; }
+    if (kind!=='opening' && parseQty(qty)===0) {setError('اكتب كمية أكبر من صفر للحركة؛ الصفر مسموح للرصيد الافتتاحي فقط.');return;}
     const body = {id:crypto.randomUUID(),kind,productId,qty:parseQty(qty),note,
       ...(kind === 'opening' || kind === 'in' ? {toWarehouseId:warehouseId} : {fromWarehouseId:warehouseId}),
       ...(kind === 'transfer' ? {toWarehouseId:destination} : {})};
-    const description=`${labels[kind]} · ${stock.find(p=>p.id===productId)?.name || 'صنف'} · ${qtyText(body.qty)} · ${warehouses.find(w=>w.id===warehouseId)?.name || 'مخزن'}${kind==='transfer'?` إلى ${warehouses.find(w=>w.id===destination)?.name || 'مخزن'}`:''}`;
+    const description=`${labels[kind]} · ${stock.find(p=>p.id===productId) ? `${stock.find(p=>p.id===productId)!.name} · ${stock.find(p=>p.id===productId)!.unit} ${stock.find(p=>p.id===productId)!.unitSize}` : 'صنف'} · ${qtyText(body.qty)} · ${warehouses.find(w=>w.id===warehouseId)?.name || 'مخزن'}${kind==='transfer'?` إلى ${warehouses.find(w=>w.id===destination)?.name || 'مخزن'}`:''}`;
     await finishMovement({body,description});
   }
   return <section className="page">
@@ -171,7 +172,7 @@ export default function Warehouses({userId}:{userId:string}) {
         {stock.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.unit} {p.unitSize}</td><td>{p.qty === null ? 'لم يُسجَّل' : qtyText(p.qty)}</td><td>{p.active ? 'شغال' : 'موقوف'}</td><td><button className="btn ghost sm" onClick={()=>{setEditing(p);setEditName(p.name);setEditCategory(p.category);setEditUnit(p.unit);setEditUnitSize(p.unitSize);editForm.reveal();}}>تعديل</button> <button className="btn ghost sm" disabled={busy} onClick={()=>void perform(async()=>{await patch(`/api/warehouse/products/${p.id}`,{active:!p.active});setMessage(p.active?'الصنف اتوقف.':'الصنف اتفعّل.');try {await loadStock();} catch {setError('حالة الصنف اتغيرت، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}})}>{p.active?'وقف':'تفعيل'}</button></td></tr>)}
       </tbody></table></div>{stock.length===0 && <p className="muted">مفيش أصناف لسه.</p>}</div>
       <div className="panel"><h3>آخر حركات المخزن</h3><div className="kpi-table-wrap"><table className="kpi-table"><thead><tr><th>الحركة</th><th>الصنف والكمية</th><th>من / إلى</th><th>بواسطة</th><th>الوقت</th><th>ملاحظة</th></tr></thead><tbody>
-        {movements.map(m=><tr key={m.id}><td>{labels[m.kind]}</td><td>{m.productName} · {qtyText(m.qty)} {m.unit}</td><td>{m.fromName || '—'} / {m.toName || '—'}</td><td>{m.actorName}</td><td>{timezone ? dateTimeText(m.createdAt,timezone) : 'الوقت غير متاح'}</td><td>{m.note || '—'}</td></tr>)}
+        {movements.map(m=><tr key={m.id}><td>{labels[m.kind]}</td><td>{m.productName} · {qtyText(m.qty)} {m.unit} {m.unitSize}</td><td>{m.fromName || '—'} / {m.toName || '—'}</td><td>{m.actorName}</td><td>{timezone ? dateTimeText(m.createdAt,timezone) : 'الوقت غير متاح'}</td><td>{m.note || '—'}</td></tr>)}
       </tbody></table></div>{movements.length===0 && <p className="muted">مفيش حركات لسه.</p>}</div></>}
     </>}
   </section>;

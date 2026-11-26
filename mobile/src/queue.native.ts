@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { outboxKey } from './outboxKey';
+import { assertSameQueuedAction, outboxKey } from './outboxKey';
 import { OUTBOX_ORDER_BY_SQL } from './queueOrder';
 import type { Outbox } from './queue';
 import type { OutboxItem, OutboxKind } from './types';
@@ -29,7 +29,13 @@ export async function createQueue(): Promise<Outbox> {
   return {
     async add(kind: OutboxKind, payload: unknown) {
       const key = outboxKey(kind, payload);
-      db.runSync('INSERT OR IGNORE INTO outbox(key,kind,payload,created_at,attempts) VALUES (?,?,?,?,0)', key, kind, JSON.stringify(payload), Date.now());
+      const serialized = JSON.stringify(payload);
+      const inserted = db.runSync('INSERT OR IGNORE INTO outbox(key,kind,payload,created_at,attempts) VALUES (?,?,?,?,0)', key, kind, serialized, Date.now());
+      if (!inserted.changes) {
+        const existing = db.getFirstSync<{ kind: string; payload: string }>('SELECT kind,payload FROM outbox WHERE key=?', key);
+        if (!existing) throw new Error('تعذر التأكد من حفظ الطلب في قائمة المزامنة.');
+        assertSameQueuedAction(existing, kind, serialized);
+      }
     },
     async list(limit = 200) {
       // Reports before fixes: an hour of GPS backlog is thousands of rows, and ordering by

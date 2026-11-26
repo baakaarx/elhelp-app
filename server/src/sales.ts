@@ -27,7 +27,8 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     + COALESCE((SELECT SUM(total_piasters-paid_piasters) FROM office_sales_v1 WHERE customer_id=?),0)
     - COALESCE((SELECT SUM(amount_piasters) FROM office_receipts_v1 WHERE customer_id=?),0)
     - COALESCE((SELECT SUM(cl.amount_piasters) FROM office_correction_lines_v1 cl JOIN office_corrections_v1 x ON x.id=cl.correction_id JOIN office_sales_v1 s ON s.id=x.sale_id WHERE s.customer_id=?),0)
-    + COALESCE((SELECT SUM(x.cash_piasters) FROM office_corrections_v1 x LEFT JOIN office_sales_v1 s ON s.id=x.sale_id LEFT JOIN office_receipts_v1 r ON r.id=x.receipt_id WHERE COALESCE(s.customer_id,r.customer_id)=?),0) AS amount`,customerId,customerId,customerId,customerId,customerId)?.amount || 0);
+    + COALESCE((SELECT SUM(x.cash_piasters) FROM office_sales_v1 s JOIN office_corrections_v1 x ON x.sale_id=s.id WHERE s.customer_id=?),0)
+    + COALESCE((SELECT SUM(x.cash_piasters) FROM office_receipts_v1 r JOIN office_corrections_v1 x ON x.receipt_id=r.id WHERE r.customer_id=?),0) AS amount`,customerId,customerId,customerId,customerId,customerId,customerId)?.amount || 0);
   const duplicate = (table:'office_sales_v1'|'office_receipts_v1'|'office_debts_v1'|'office_corrections_v1', entryId:string, payload:string, userId:string) => {
     const old = store.get(`SELECT actor_id,request_json FROM ${table} WHERE id=?`,entryId);
     if (!old) return 0;
