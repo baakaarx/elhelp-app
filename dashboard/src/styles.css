@@ -723,3 +723,5 @@ input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
 
 .reveal-target { scroll-margin-top: 16px; }
 .reveal-target:focus { outline: 2px solid #528e84; outline-offset: 4px; }
+
+.order-notice { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin:12px 0; padding:12px 16px; background:#fff6d8; color:#473607; border:1px solid #d9b74d; border-radius:12px; }

@@ -1,11 +1,11 @@
 import {useReveal} from './useReveal';
 import {useState, type FormEvent} from 'react';
-import {hasInputPrecision} from './decimal';
+import {hasInputPrecision, normalizeDecimal} from './decimal';
 import {CorrectionHistory, cashP, qtyM, type Detail} from './SaleInvoice';
 
 type LineInput={lineId:string;correctedMilli:number;returnedMilli:number;stockKind:'returned'|'error'|null};
 export type CorrectionPayload={reason:string;balancePiasters:number;revision:number;lines:LineInput[];cash:{kind:'error'|'refund';amountPiasters:number}|null};
-const parse=(s:string)=>{const v=s.trim().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).replace('٫','.');return v===''?0:/^\d+(\.\d+)?$/.test(v)?Number(v):NaN;};
+const parse=(s:string)=>{const v=normalizeDecimal(s);return v===''?0:/^\d+(\.\d+)?$/.test(v)?Number(v):NaN;};
 const exact=(text:string,places:number)=>text.trim()==='' || (hasInputPrecision(text,places) && Number.isFinite(parse(text)));
 const account=(p:number)=>p<0?`رصيد لصالح العميل ${cashP(-p)}`:`باقي على العميل ${cashP(p)}`;
 export default function SaleCorrection({detail,timezone,busy,onBack,onSave}:{detail:Detail;timezone?:string;busy:boolean;onBack:()=>void;onSave:(v:CorrectionPayload)=>Promise<void>}){
@@ -34,10 +34,10 @@ export default function SaleCorrection({detail,timezone,busy,onBack,onSave}:{det
   <CorrectionHistory detail={detail} timezone={timezone}/>
   {!review?<form className="stack" onSubmit={prepare}>
    {detail.lines.length>0&&<><h4>الأصناف</h4><p>اكتب فقط الكميات الجديدة في هذا التصحيح. القيمة تُحسب من سعر البيع الأصلي بالقرش؛ تعديل سعر الصنف وحده غير متاح هنا، راجع المسؤول ولا تسجله كمرتجع غير حقيقي. الكمية المضافة للمخزن لا تزيد عن الكمية المصححة، ويمكن تسجيلها لاحقًا. ميّز بين بضاعة رجعت فعلًا وبضاعة لم تخرج وخُصمت بالخطأ.</p>
-   {detail.lines.map(l=><div className="panel" key={l.id}><strong>{l.name} · {l.unit} {l.unitSize}</strong><p>المباع أصلًا {qtyM(l.qty)} · مصحح سابقًا {qtyM(l.corrected)} · أضيف للمخزن بعد تصحيح {qtyM(l.returned)}</p>
-    <div className="work-form"><label className="field"><span>كمية إضافية لتصحيح البيع - {l.name}</span><input inputMode="decimal" value={inputs[l.id]?.corrected??''} onChange={e=>setLine(l.id,'corrected',e.target.value)} placeholder="0" /></label>
-    <label className="field"><span>كمية تضاف للمخزن الآن - {l.name}</span><input inputMode="decimal" value={inputs[l.id]?.returned??''} onChange={e=>setLine(l.id,'returned',e.target.value)} placeholder="0" /></label>
-    {parse(inputs[l.id]?.returned??'')>0&&<label className="field"><span>حالة البضاعة - {l.name}</span><select required value={inputs[l.id]?.stockKind??''} onChange={e=>setLine(l.id,'stockKind',e.target.value)}><option value="">اختار الحالة</option><option value="returned">البضاعة خرجت ثم رجعت فعلًا</option><option value="error">البضاعة لم تخرج وخصم المخزون كان خطأ</option></select></label>}</div></div>)}</>}
+   {detail.lines.map(l=>{const lineName=detail.lines.filter(x=>x.name===l.name).length>1?`${l.name} · ${l.unit} ${l.unitSize}`:l.name;return <div className="panel" key={l.id}><strong>{l.name} · {l.unit} {l.unitSize}</strong><p>المباع أصلًا {qtyM(l.qty)} · مصحح سابقًا {qtyM(l.corrected)} · أضيف للمخزن بعد تصحيح {qtyM(l.returned)}</p>
+    <div className="work-form"><label className="field"><span>كمية إضافية لتصحيح البيع - {lineName}</span><input inputMode="decimal" value={inputs[l.id]?.corrected??''} onChange={e=>setLine(l.id,'corrected',e.target.value)} placeholder="0" /></label>
+    <label className="field"><span>كمية تضاف للمخزن الآن - {lineName}</span><input inputMode="decimal" value={inputs[l.id]?.returned??''} onChange={e=>setLine(l.id,'returned',e.target.value)} placeholder="0" /></label>
+    {parse(inputs[l.id]?.returned??'')>0&&<label className="field"><span>حالة البضاعة - {lineName}</span><select required value={inputs[l.id]?.stockKind??''} onChange={e=>setLine(l.id,'stockKind',e.target.value)}><option value="">اختار الحالة</option><option value="returned">البضاعة خرجت ثم رجعت فعلًا</option><option value="error">البضاعة لم تخرج وخصم المخزون كان خطأ</option></select></label>}</div></div>;})}</>}
    <h4>المبلغ المدفوع {detail.type==='sale'?'وقت البيع':'في هذه الدفعة'}</h4><p>المبلغ الأصلي {cashP(detail.record.paid)} · المتاح للتصحيح {cashP(detail.cashRemaining)}. الدفعات اللاحقة تُصحّح كل واحدة لوحدها.</p>
    <label className="field"><span>حالة المبلغ</span><select value={cashKind} onChange={e=>{setCashKind(e.target.value);if(!e.target.value)setCash('');}}><option value="">لا تغيير في المبلغ</option><option value="error">اتسجل بالغلط ولم يُستلم</option><option value="refund">استُلم ثم رُد للعميل فعلًا</option></select></label>
    {cashKind&&<label className="field"><span>المبلغ المصحح (ج.م)</span><input inputMode="decimal" required value={cash} onChange={e=>setCash(e.target.value)} /></label>}

@@ -12,3 +12,10 @@ export function outboxKey(kind: string, payload: unknown): string {
   if (typeof id === 'string' && id.trim()) return id;
   return `${kind}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/** Never report a second, different action as queued merely because its key already exists. */
+export function assertSameQueuedAction(existing: { kind: string; payload: string }, kind: string, payload: string): void {
+  if (existing.kind !== kind || existing.payload !== payload) {
+    throw new Error('في بيانات مختلفة محفوظة بنفس المعرّف؛ الطلب الجديد لم يُحفظ. راجع البيانات المعلقة واطلب المساعدة قبل المحاولة.');
+  }
+}

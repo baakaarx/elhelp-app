@@ -29,3 +29,9 @@ test('رد قديم لحسابات المكتب لا يعيد حالة قديم�
  const row=page.locator('.staff-row').filter({hasText:email});await expect(row).toContainText('شغال');await row.getByRole('button',{name:'إيقاف الحساب'}).click();await expect(row).toContainText('موقوف');
  release();await page.waitForTimeout(350);await expect(row).toContainText('موقوف');
 });
+
+test('شروط كلمة المرور المعروضة تتبع الحد الذي أرسله السيرفر',async({page})=>{
+ await signInAsManager(page);
+ await page.route('**/api/staff',async route=>{if(route.request().method()!=='GET')return route.continue();const response=await route.fetch(),json=await response.json();json.minimumPasswordLength=14;await route.fulfill({response,json});});
+ await page.getByRole('button',{name:'حسابات المكتب',exact:true}).click();await expect(page.getByText('كلمة المرور ١٤ حرفًا على الأقل.',{exact:false})).toBeVisible();await expect(page.getByLabel('كلمة المرور',{exact:true})).toHaveAttribute('minlength','14');
+});

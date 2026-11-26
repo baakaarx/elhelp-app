@@ -35,6 +35,7 @@ export default function Products(_props: { timezone?: string }) {
   const [tiers, setTiers] = useState<PriceTier[]>([]);
   const [filters, setFilters] = useState({ q: '', category: '', tierId: NONE, unpricedOnly: false, includeInactive: false });
   const [loading, setLoading] = useState(true);
+  const [listInvalid, setListInvalid] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [editing, setEditing] = useState<Product | 'new' | null>(null);
@@ -64,7 +65,7 @@ export default function Products(_props: { timezone?: string }) {
   const load = useCallback(async () => {
     if (currentQuery.current !== query) return;
     const id = ++requestId.current;
-    setLoading(true); setResult(null); setError('');
+    setLoading(true); setError('');
     try {
       const [list, kinds] = await Promise.all([
         api<{ products: Product[] }>(`/api/products?${query}`),
@@ -73,9 +74,9 @@ export default function Products(_props: { timezone?: string }) {
       if (id !== requestId.current || currentQuery.current !== query) return;
       setResult({ query, products: list.products });
       setTiers(kinds.tiers);
-      setError('');
+      setListInvalid(false);setError('');
     } catch (e) {
-      if (id === requestId.current && currentQuery.current === query) setError(messageOf(e, 'تعذر تحميل قائمة الأصناف.'));
+      if (id === requestId.current && currentQuery.current === query) {setListInvalid(true);setError(messageOf(e, 'تعذر تحميل قائمة الأصناف.'));}
     } finally {
       if (id === requestId.current && currentQuery.current === query) setLoading(false);
     }
@@ -319,6 +320,9 @@ export default function Products(_props: { timezone?: string }) {
 
       {!ready && !error && <p role="status">جارٍ تحميل الأصناف للفلاتر المختارة…</p>}
       {ready && <div className="panel">
+        {loading && <p role="status">جارٍ تحديث الأصناف والأسعار؛ التعديل متوقف حتى اكتمال التحديث.</p>}
+        {listInvalid && !loading && <p className="notice">المعروض قديم ولا يمكن تعديله؛ اضغط تحديث قبل المتابعة.</p>}
+        <fieldset disabled={loading || listInvalid} style={{border:0,padding:0,margin:0,minWidth:0}}>
         <h3 className="panel-title">الأصناف · {formatNumber(products.length)}</h3>
         {tiers.length === 0 && (
           <p className="error banner" role="alert">
@@ -359,13 +363,14 @@ export default function Products(_props: { timezone?: string }) {
                       <td>{shownUnit(product)}</td>
                       <td><span className="pill">{productCategoryLabels[product.category]}</span></td>
                       {columns.map(tier => {
+                        const labelName=products.filter(p=>p.name===product.name).length>1?`${product.name} · ${shownUnit(product)}`:product.name;
                         const price = priceOf(product, tier.id);
                         const open = draft && draft.productId === product.id && draft.tierId === tier.id;
                         return (
                           <td key={tier.id} className="mono">
                             {open ? (
                               <span className="confirm-pair">
-                                <input dir="ltr" autoFocus style={{ width: 90 }} value={draft.value} aria-label={`سعر ${product.name} — ${tier.name}`}
+                                <input dir="ltr" autoFocus style={{ width: 90 }} value={draft.value} aria-label={`سعر ${labelName} — ${tier.name}`}
                                   onChange={event => setDraft({ ...draft, value: event.target.value })} />
                                 <button className="btn primary sm" disabled={busyRow !== ''} onClick={() => saveCell(product, tier)}>حفظ</button>
                                 {price !== undefined && (
@@ -408,6 +413,7 @@ export default function Products(_props: { timezone?: string }) {
             {priceError && <p className="error" role="alert">{priceError}</p>}
           </>
         )}
+        </fieldset>
       </div>}
 
       <TiersPanel tiers={tiers} onDone={() => void load()} />

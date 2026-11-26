@@ -2,7 +2,7 @@ import { useReveal } from './useReveal';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, post } from './api';
 import { dateTimeText } from './dates';
-import { hasInputPrecision } from './decimal';
+import { hasInputPrecision, normalizeDecimal, ungroupPrice } from './decimal';
 import { recommendationQty } from './quantity';
 import { formatNumber } from './session';
 import Products from './Products';
@@ -17,7 +17,8 @@ type Report = {count:number;sales:number;collected:number;due:number;credit:numb
 type Statement={customer:{name:string;phone:string};opening:{amount:number;actorName:string;createdAt:number}|null;balance:number;due:number;credit:number;moreSales:boolean;moreReceipts:boolean;salesOffset:number;receiptsOffset:number;sales:{id:string;invoiceNumber:number;total:number;paid:number;warehouseName:string;actorName:string;repName:string;repSource:string;repDeleted:number;createdAt:number;corrected:boolean;lines:{name:string;unit:string;unitSize:string;qty:number;price:number;amount:number}[]}[];receipts:{id:string;amount:number;actorName:string;createdAt:number;corrected:boolean}[]};
 type Line = {key:string;productId:string;qty:string;price:string;priceEdited:boolean};
 const emptyLine=():Line=>({key:crypto.randomUUID(),productId:'',qty:'',price:'',priceEdited:false});
-const parse = (text:string) => {const s=text.trim().replace(/[٠-٩]/g,c=>String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))).replace(/[۰-۹]/g,c=>String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c))).replace('٫','.');return /^\d+(\.\d+)?$/.test(s)?Number(s):NaN;};
+const parse = (text:string) => {const s=normalizeDecimal(text);return /^\d+(\.\d+)?$/.test(s)?Number(s):NaN;};
+const parsePrice=(text:string)=>{const normalized=ungroupPrice(text);return normalized ? parse(normalized) : NaN;};
 const qtyText=(n:number)=>n.toLocaleString('ar-EG',{maximumFractionDigits:3});
 const cash=(n:number)=>`${n.toLocaleString('ar-EG',{maximumFractionDigits:2})} ج.م`;
 const err=(e:unknown)=>e instanceof Error?e.message:'حصل خطأ. حاول تاني.';
@@ -63,8 +64,8 @@ export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;
   // Don't replace options under an open draft or review. Apply socket updates once it is safe.
   useEffect(()=>{if(ordersVersion===ordersCheckedVersion||busy||loading||pendingRaw!==null||needsRefresh||review||detailMode||showSale||statement||view!=='summary')return;setOrdersCheckedVersion(ordersVersion);void load();},[ordersVersion,ordersCheckedVersion,busy,loading,pendingRaw,needsRefresh,review,detailMode,showSale,statement,view,load]);
   const selectedOrder=options?.orders.find(o=>o.id===orderId);
-  const currentLines = lines.map(l=>({qty:parse(l.qty),price:parse(l.price)}));
-  const validLines=currentLines.length>0 && currentLines.every((l,i)=>Number.isFinite(l.qty)&&l.qty>0&&l.qty<=100_000&&hasInputPrecision(lines[i].qty,3)&&Number.isFinite(l.price)&&l.price>=0&&l.price<=1_000_000_000&&hasInputPrecision(lines[i].price,2));
+  const currentLines = lines.map(l=>({qty:parse(l.qty),price:parsePrice(l.price)}));
+  const validLines=currentLines.length>0 && currentLines.every((l,i)=>Number.isFinite(l.qty)&&l.qty>0&&l.qty<=100_000&&hasInputPrecision(lines[i].qty,3)&&Number.isFinite(l.price)&&l.price>=0&&l.price<=1_000_000_000&&hasInputPrecision(ungroupPrice(lines[i].price),2));
   const total=validLines?currentLines.reduce((sum,l)=>sum+Number((BigInt(Math.round(l.qty*1000))*BigInt(Math.round(l.price*100))+500n)/1000n),0)/100:0;
   const paidValue=parse(paid);
   const changeLine=(key:string, patch:Partial<Line>)=>{saleRequest.current='';setLines(prev=>prev.map(line=>line.key===key?{...line,...patch}:line));};
@@ -118,7 +119,7 @@ export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;
   async function confirmReview(){if(!review)return;setError('');setMessage('');setBusy(true);
     try {
       if(review==='sale'){
-        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parse(l.price)}))}:{repId:repChoice==='none'?null:repChoice,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parse(l.price)}))})};
+        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parsePrice(l.price)}))}:{repId:repChoice==='none'?null:repChoice,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parsePrice(l.price)}))})};
         await sendOperation({path:'/api/sales',body,kind:'sale'});saleRequest.current='';setPaid('');setOrderId('');setLines([emptyLine()]);setShowSale(false);setRepChoice('');setReview(null);await refreshAfter('الفاتورة اتسجلت واتخصمت الكمية من المخزن.');
       } else {
         const ref=review==='receipt'?receiptRequest:openingRequest;
@@ -136,7 +137,7 @@ export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;
     await sendOperation({path:`/api/sales/corrections/${detail.type}/${encodeURIComponent(detail.record.id)}`,body:{id:crypto.randomUUID(),...values},kind:'correction'});
     setDetail(null);setDetailMode(null);await refreshAfter('التصحيح اتحفظ. راجع الحساب بعد التحديث.');
   }catch(e){if(e instanceof ApiError && e.code==='STALE'){setDetail(null);setDetailMode(null);setNeedsRefresh(true);showError('الحساب أو التصحيحات اتغيرت. التصحيح لم يُحفظ، ومسودة المراجعة أُغلقت؛ حدّث الأرقام وافتح العملية من جديد وراجعها.');}else showError(err(e));}finally{setBusy(false);}}
-  async function savePrice(event:FormEvent){event.preventDefault();setError('');setMessage('');const value=parse(priceInput);if(!Number.isFinite(value)||value<0||value>1_000_000_000||!hasInputPrecision(priceInput,2)){showError('اكتب سعر صحيح بالجنيه والقرش.');return;}setBusy(true);try{
+  async function savePrice(event:FormEvent){event.preventDefault();setError('');setMessage('');const value=parsePrice(priceInput);if(!Number.isFinite(value)||value<0||value>1_000_000_000||!hasInputPrecision(ungroupPrice(priceInput),2)){showError('اكتب سعر صحيح بالجنيه والقرش.');return;}setBusy(true);try{
     await api(`/api/products/${priceProduct}/prices`,{method:'PUT',body:JSON.stringify({prices:[{tierId:priceTier,price:value}]})});await refreshAfter('السعر اتحفظ.');
   }catch(e){showError(err(e));}finally{setBusy(false);}}
   const selectPrice=(product:string,tier:string)=>{setPriceProduct(product);setPriceTier(tier);const value=options?.prices.find(p=>p.productId===product&&p.tierId===tier)?.price;setPriceInput(value===undefined?'':String(value));};
@@ -154,7 +155,7 @@ export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;
         <p><strong>المخزن:</strong> {options.warehouses.find(w=>w.id===warehouseId)?.name}</p>
         <p><strong>المهندس:</strong> {mode==='order'?selectedOrder?.repName:repChoice==='none'?'بدون مهندس':options.reps.find(r=>r.id===repChoice)?.name}</p>
         {mode==='order'&&selectedOrder&&<p><strong>الطلبية:</strong> {dateTimeText(selectedOrder.sentAt,timezone)} · رقم {selectedOrder.id.slice(-8)}</p>}
-        <ul className="sale-order-lines">{(lines.map(l=>{const p=mode==='order'?selectedOrder?.lines.find(x=>x.productId===l.productId):options.products.find(x=>x.id===l.productId);return {productId:l.productId,name:p?.name??'',unit:p?.unit??'',unitSize:p?.unitSize??'',qty:parse(l.qty),price:parse(l.price)};})).map(l=><li key={l.productId}><strong>{l.name}</strong> · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} للوحدة{mode==='order'&&selectedOrder&&` · ترشيح المهندس: ${recommendationQty(selectedOrder.lines.find(x=>x.productId===l.productId)!.qty)}`}</li>)}</ul>
+        <ul className="sale-order-lines">{(lines.map(l=>{const p=mode==='order'?selectedOrder?.lines.find(x=>x.productId===l.productId):options.products.find(x=>x.id===l.productId);return {productId:l.productId,name:p?.name??'',unit:p?.unit??'',unitSize:p?.unitSize??'',qty:parse(l.qty),price:parsePrice(l.price)};})).map(l=><li key={l.productId}><strong>{l.name}</strong> · {qtyText(l.qty)} {l.unit} {l.unitSize} × {cash(l.price)} للوحدة{mode==='order'&&selectedOrder&&` · ترشيح المهندس: ${recommendationQty(selectedOrder.lines.find(x=>x.productId===l.productId)!.qty)}`}</li>)}</ul>
         {mode==='order'&&selectedOrder&&selectedOrder.lines.some(l=>!lines.some(x=>x.productId===l.productId))&&<p className="notice">أصناف مستبعدة من الفاتورة: {selectedOrder.lines.filter(l=>!lines.some(x=>x.productId===l.productId)).map(l=>l.name).join('، ')}. ترشيح المهندس الأصلي محفوظ.</p>}
         <p><strong>الإجمالي: {cash(total)} · المدفوع الآن: {cash(paidValue)} · الباقي من الفاتورة: {cash(Math.round((total-paidValue)*100)/100)}</strong></p>
         {!options.customers.find(c=>c.id===customerId)?.hasOpening&&<p className="notice">المديونية القديمة للعميل لسه ما اتسجلتش؛ الباقي المسجّل قد لا يكون الرصيد الحقيقي.</p>}{mode==='direct'&&options.orders.some(o=>o.customerId===customerId)&&<p className="notice">تأكد إن الفاتورة دي مش نفس طلبية مرسلة للعميل.</p>}<p className="notice">بعد التأكيد هيتخصم المخزون، والفاتورة لا يمكن تعديلها مباشرة؛ التصحيح مسجل ومراجع. راجع العميل والأصناف والمبلغ كويس.</p>
@@ -169,7 +170,7 @@ export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;
         <label className="field"><span>نوع السعر</span><select required value={priceTier} onChange={e=>selectPrice(priceProduct,e.target.value)}><option value="">اختار نوع السعر</option>{options.tiers.filter(t=>t.active).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
         <label className="field"><span>سعر العبوة (ج.م)</span><input required inputMode="decimal" value={priceInput} onChange={e=>setPriceInput(e.target.value)} placeholder="اكتب السعر" /></label>
         <button className="btn primary" disabled={busy}>حفظ السعر</button>
-      </div><p className="muted small">السعر للعبوة المكتوبة، وبيتقترح حسب نوع سعر العميل. تقدر تغيّره عند البيع.</p></form>
+      </div><p className="muted small">السعر للعبوة المكتوبة، وبيتقترح حسب نوع سعر العميل. الكسور بالنقطة أو ٫؛ فواصل الآلاف في مجموعات من ٣ أرقام فقط.</p></form>
       <button className="btn ghost sm" onClick={()=>setView('advanced')}>إدارة الأصناف وأنواع الأسعار</button>
     </>:<>
       {showSale&&<form className="panel" onSubmit={saveSale}><h3>تسجيل فاتورة</h3><p className="muted small">تأكيد الفاتورة بيسجّل البيع وبيخصم الكمية من المخزن. فريق المبيعات يحدد الأسعار هنا.</p><div className="work-form">
@@ -188,15 +189,15 @@ export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;
       </div>)}<button type="button" className="btn ghost sm" onClick={()=>{setLines(v=>[...v,emptyLine()]);saleRequest.current='';}}>إضافة صنف</button></div>:selectedOrder&&<div className="stack">
         {selectedOrder.notes&&<p className="notice">ملاحظة المهندس: {selectedOrder.notes}</p>}
           <p className="muted small">كمية المهندس للترشيح فقط ومحفوظة كما أرسلها. اكتب الكمية المباعة بحد أقصى ٣ أرقام بعد العلامة العشرية، وحدد السعر، أو استبعد صنفًا لم يُبع.</p>
-          {selectedOrder.lines.map(l=>{const edit=lines.find(x=>x.productId===l.productId);return <div className="sale-line" key={l.productId}>
-            <label><input type="checkbox" checked={!!edit} onChange={e=>{saleRequest.current='';setLines(prev=>e.target.checked?[...prev,{key:l.productId,productId:l.productId,qty:String(l.qty),price:suggested(l.productId,selectedOrder.customerId),priceEdited:false}]:prev.filter(x=>x.productId!==l.productId));}} /> بيع {l.name}</label>
+          {selectedOrder.lines.map(l=>{const edit=lines.find(x=>x.productId===l.productId);const lineName=selectedOrder.lines.filter(x=>x.name===l.name).length>1?`${l.name} · ${l.unit} ${l.unitSize}`:l.name;return <div className="sale-line" key={l.productId}>
+            <label><input type="checkbox" checked={!!edit} onChange={e=>{saleRequest.current='';setLines(prev=>e.target.checked?[...prev,{key:l.productId,productId:l.productId,qty:String(l.qty),price:suggested(l.productId,selectedOrder.customerId),priceEdited:false}]:prev.filter(x=>x.productId!==l.productId));}} /> بيع {lineName}</label>
             <span>ترشيح المهندس: {recommendationQty(l.qty)} {l.unit} {l.unitSize}{l.notes?` · ${l.notes}`:''}</span>
-            {edit&&<><label className="field"><span>الكمية المباعة · {l.name}</span><input required inputMode="decimal" value={edit.qty} onChange={e=>changeLine(edit.key,{qty:e.target.value})} /></label>
-            <label className="field"><span>سعر الوحدة · {l.name} (ج.م)</span><input required inputMode="decimal" value={edit.price} onChange={e=>changeLine(edit.key,{price:e.target.value,priceEdited:true})} /></label></>}
+            {edit&&<><label className="field"><span>الكمية المباعة · {lineName}</span><input required inputMode="decimal" value={edit.qty} onChange={e=>changeLine(edit.key,{qty:e.target.value})} /></label>
+            <label className="field"><span>سعر الوحدة · {lineName} (ج.م)</span><input required inputMode="decimal" value={edit.price} onChange={e=>changeLine(edit.key,{price:e.target.value,priceEdited:true})} /></label></>}
           </div>;})}
       </div>}
       {mode==='order'&&selectedOrder&&!validLines&&<p className="error">اختار صنفًا على الأقل واكتب كمية صحيحة وسعرًا بالجنيه والقرش لكل صنف مباع.</p>}
-      <p className="muted small">قيمة كل صنف بتتقرب لأقرب قرش قبل جمع الإجمالي.</p>
+      <p className="muted small">قيمة كل صنف بتتقرب لأقرب قرش قبل جمع الإجمالي. في السعر، الكسور بالنقطة أو ٫، وفواصل الآلاف في مجموعات من ٣ أرقام فقط.</p>
       <div className="work-form"><label className="field"><span>المدفوع دلوقتي (ج.م)</span><input required inputMode="decimal" value={paid} onChange={e=>{setPaid(e.target.value);saleRequest.current='';}} placeholder="اكتب 0 لو كله آجل" /></label></div>
       <p><strong>الإجمالي: {validLines?cash(total):'اكتب الكميات والأسعار'}</strong>{validLines&&Number.isFinite(paidValue)&&paidValue<=total?` · الباقي: ${cash(Math.round((total-paidValue)*100)/100)}`:''}</p>
       <p className="muted small">بعد التأكيد، لا يمكن تعديل الفاتورة مباشرة؛ أي تصحيح يتسجل بسبب واضح.</p><button className="btn primary" disabled={busy}>مراجعة الفاتورة</button>
@@ -216,7 +217,7 @@ export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;
         {(statement.moreSales||statement.salesOffset>0)&&<div className="filters"><button className="btn ghost sm" disabled={statementBusy||statement.salesOffset===0} onClick={()=>void showStatement(Math.max(0,statement.salesOffset-100),statement.receiptsOffset)}>بيعات أحدث</button><button className="btn ghost sm" disabled={statementBusy||!statement.moreSales} onClick={()=>void showStatement(statement.salesOffset+100,statement.receiptsOffset)}>بيعات أقدم</button></div>}<h4>الدفعات اللاحقة</h4>{!statement.receipts.length?<p className="muted">لا توجد دفعات لاحقة مسجلة.</p>:<ul className="stack-list">{statement.receipts.map(r=><li key={r.id}>{dateTimeText(r.createdAt,timezone)} · {cash(r.amount)} · {r.actorName} · رقم {r.id.slice(-8)} {r.corrected?'· عليها تصحيحات':''} <button className="btn ghost sm" disabled={busy} onClick={()=>void openDetail('receipt',r.id,'correction')}>تصحيح الدفعة</button></li>)}</ul>}{(statement.moreReceipts||statement.receiptsOffset>0)&&<div className="filters"><button className="btn ghost sm" disabled={statementBusy||statement.receiptsOffset===0} onClick={()=>void showStatement(statement.salesOffset,Math.max(0,statement.receiptsOffset-100))}>دفعات أحدث</button><button className="btn ghost sm" disabled={statementBusy||!statement.moreReceipts} onClick={()=>void showStatement(statement.salesOffset,statement.receiptsOffset+100)}>دفعات أقدم</button></div>}</div>}
       </div>
       <div className="panel"><h3>المباع حسب الصنف</h3>{report.soldItems.length===0?<p className="muted">مفيش فواتير مسجلة لسه.</p>:<div className="kpi-table-wrap"><table className="kpi-table sales-table"><thead><tr><th>الصنف</th><th>الكمية المباعة</th><th>قيمة البيع</th></tr></thead><tbody>{report.soldItems.map((p,i)=><tr key={i}><td>{p.name}</td><td>{qtyText(p.qty)} {p.unit} {p.unitSize}</td><td>{cash(p.amount)}</td></tr>)}</tbody></table></div>}</div>
-      <div className="panel"><h3>الموجود في المخازن</h3>{report.stock.length===0?<p className="muted">ضيف مخزن وصنف عشان تظهر الأرصدة.</p>:<div className="kpi-table-wrap"><table className="kpi-table sales-table"><thead><tr><th>المخزن</th><th>الصنف</th><th>الرصيد</th></tr></thead><tbody>{report.stock.map(s=><tr key={`${s.warehouseId}:${s.productId}`}><td>{s.warehouseName}</td><td>{s.productName}</td><td>{s.qty===null?'الرصيد لم يُسجّل':`${qtyText(s.qty)} ${s.unit} ${s.unitSize}`}</td></tr>)}</tbody></table></div>}</div>
+      <div className="panel"><h3>الموجود في المخازن</h3>{report.stock.length===0?<p className="muted">ضيف مخزن وصنف عشان تظهر الأرصدة.</p>:<div className="kpi-table-wrap"><table className="kpi-table sales-table"><thead><tr><th>المخزن</th><th>الصنف</th><th>الرصيد</th></tr></thead><tbody>{report.stock.map(s=><tr key={`${s.warehouseId}:${s.productId}`}><td>{s.warehouseName}</td><td>{s.productName} · {s.unit} {s.unitSize}</td><td>{s.qty===null?'الرصيد لم يُسجّل':`${qtyText(s.qty)} ${s.unit} ${s.unitSize}`}</td></tr>)}</tbody></table></div>}</div>
       <div className="panel"><h3>آخر الفواتير</h3>{report.latest.length===0?<p className="muted">مفيش فواتير مسجلة لسه.</p>:<div className="kpi-table-wrap"><table className="kpi-table sales-table"><thead><tr><th>رقم الفاتورة</th><th>العميل</th><th>المخزن</th><th>قيمة البيع وقت التسجيل</th><th>المدفوع وقت البيع</th><th>التاريخ</th></tr></thead><tbody>{report.latest.map(s=><tr key={s.id}><td>{formatNumber(s.invoiceNumber)}</td><td>{s.customerName}</td><td>{s.warehouseName}</td><td>{cash(s.total)} {s.corrected?'· عليها تصحيحات':''}</td><td>{cash(s.paid)}</td><td>{dateTimeText(s.createdAt,timezone)} <button className="btn ghost sm" disabled={busy} onClick={()=>void openDetail('sale',s.id,'invoice')}>الفاتورة</button></td></tr>)}</tbody></table></div>}<p className="muted small">آخر ٥٠ فاتورة؛ الإجماليات فوق لكل الفواتير المسجلة.</p></div>
       {report.payments.length>0&&<div className="panel"><h3>آخر الدفعات</h3><ul className="stack-list">{report.payments.map((p,i)=><li key={i}>{p.customerName} · {cash(p.amount)} · {dateTimeText(p.createdAt,timezone)} {p.corrected?'· عليها تصحيحات':''}</li>)}</ul><p className="muted small">آخر ٥٠ دفعة.</p></div>}
     </>}

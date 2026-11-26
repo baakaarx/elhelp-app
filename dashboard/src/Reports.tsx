@@ -6,8 +6,9 @@ import { visitPurposeLabels, type Rep, type Visit } from './types';
 import ConfirmAction from './ConfirmAction';
 import Orders from './Orders';
 
-export default function Reports({ reps, onReviewed, version = 0, ordersVersion = 0, sentOrders = 0, timezone }: { reps: Rep[]; onReviewed: () => void; version?: number; ordersVersion?: number; sentOrders?: number; timezone?: string }) {
-  const [tab, setTab] = useState<'visits' | 'orders'>('visits');
+export default function Reports({ reps, onReviewed, version = 0, ordersVersion = 0, openOrdersRequest = 0, sentOrders = 0, timezone }: { reps: Rep[]; onReviewed: () => void; version?: number; ordersVersion?: number; openOrdersRequest?: number; sentOrders?: number; timezone?: string }) {
+  const [tab, setTab] = useState<'visits' | 'orders'>(openOrdersRequest ? 'orders' : 'visits');
+  useEffect(() => { if (openOrdersRequest) setTab('orders'); }, [openOrdersRequest]);
   const [visits, setVisits] = useState<Visit[]>([]);
   const [visitStatus, setVisitStatus] = useState<'all' | 'open' | 'closed'>('all');
   const [repId, setRepId] = useState('all');

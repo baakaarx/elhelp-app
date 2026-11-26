@@ -1417,6 +1417,14 @@ test('Apple signs in on the stored link even when it stops sending the email', a
       ...overrides,
     });
 
+    // Even a correctly signed token cannot claim an existing account with an unverified email.
+    for (const value of [false, undefined]) {
+      const unverified = await request(app).post('/api/auth/oauth')
+        .send({ provider: 'apple', idToken: providerKeys.sign(appleClaims({ email_verified: value })) });
+      assert.equal(unverified.status, 401);
+      assert.equal(store.get('SELECT oauth_subject FROM users WHERE email=?', 'apple.signer@mandoub.test')?.oauth_subject ?? '', '');
+    }
+
     const first = await request(app).post('/api/auth/oauth')
       .send({ provider: 'apple', idToken: providerKeys.sign(appleClaims()), name: 'مهندس أبل' });
     assert.equal(first.status, 200, JSON.stringify(first.body));

@@ -77,6 +77,7 @@ export class Store {
         action TEXT NOT NULL, created_at INTEGER NOT NULL, metadata TEXT NOT NULL DEFAULT '{}'
       );
       CREATE INDEX IF NOT EXISTS audit_log_time ON audit_log(created_at);
+      CREATE INDEX IF NOT EXISTS audit_order_notice ON audit_log(id) WHERE action='order.notification';
       CREATE TABLE IF NOT EXISTS reports (
         id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         shift_id TEXT REFERENCES shifts(id) ON DELETE SET NULL,
@@ -529,6 +530,7 @@ export class Store {
         ORDER BY s.created_at,s.rowid`);
     });
     this.ensureIndexes();
+    try {this.ensureProductPacks();} catch (error) {this.db.close();throw error;}
     this.checkCatalogueLinks();
 
     // The check is made here, at seeding time, and not from a flag read before the schema block ran: an
@@ -558,7 +560,6 @@ export class Store {
       { table: 'visits', index: 'visits_customer', stmt: 'CREATE INDEX IF NOT EXISTS visits_customer ON visits(customer_id)', needs: ['customer_id'] },
       { table: 'price_tiers', index: 'price_tiers_name', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS price_tiers_name ON price_tiers(name COLLATE NOCASE)', needs: ['name'] },
       { table: 'price_tiers', index: 'price_tiers_active', stmt: 'CREATE INDEX IF NOT EXISTS price_tiers_active ON price_tiers(active, position)', needs: ['active', 'position'] },
-      { table: 'products', index: 'products_name_unit', stmt: 'CREATE UNIQUE INDEX IF NOT EXISTS products_name_unit ON products(name COLLATE NOCASE, unit COLLATE NOCASE)', needs: ['name', 'unit'] },
       { table: 'products', index: 'products_active_category', stmt: 'CREATE INDEX IF NOT EXISTS products_active_category ON products(active, category, name COLLATE NOCASE)', needs: ['active', 'category', 'name'] },
       { table: 'product_prices', index: 'product_prices_tier', stmt: 'CREATE INDEX IF NOT EXISTS product_prices_tier ON product_prices(tier_id, price)', needs: ['tier_id', 'price'] },
       { table: 'orders', index: 'orders_rep_time', stmt: 'CREATE INDEX IF NOT EXISTS orders_rep_time ON orders(user_id, created_at)', needs: ['user_id', 'created_at'] },
@@ -587,6 +588,25 @@ export class Store {
         console.error(`[db] could not create index ${def.index}:`, error);
       }
     }
+  }
+  /** Upgrade the old (name, unit) rule atomically; never rewrite products, prices or balances. */
+  private ensureProductPacks() {
+    const columns = new Set(this.all('PRAGMA table_info(products)').map(column => String(column.name)));
+    if (!['id','name','unit','unit_size'].every(column => columns.has(column))) return;
+    this.transaction(() => {
+      this.db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS products_name_unit_size ON products(name COLLATE NOCASE, unit COLLATE NOCASE, unit_size COLLATE NOCASE);
+        DROP INDEX IF EXISTS products_name_unit;
+        CREATE TRIGGER IF NOT EXISTS products_pack_insert BEFORE INSERT ON products
+        WHEN EXISTS (SELECT 1 FROM products p WHERE p.name=NEW.name COLLATE NOCASE AND p.unit=NEW.unit COLLATE NOCASE
+          AND (trim(p.unit_size)='' OR trim(NEW.unit_size)='' OR p.unit_size=NEW.unit_size COLLATE NOCASE))
+        BEGIN SELECT RAISE(ABORT,'PRODUCT_PACK_CONFLICT'); END;
+        CREATE TRIGGER IF NOT EXISTS products_pack_update BEFORE UPDATE OF name,unit,unit_size ON products
+        WHEN EXISTS (SELECT 1 FROM products p WHERE p.id<>NEW.id AND p.name=NEW.name COLLATE NOCASE AND p.unit=NEW.unit COLLATE NOCASE
+          AND (trim(p.unit_size)='' OR trim(NEW.unit_size)='' OR p.unit_size=NEW.unit_size COLLATE NOCASE))
+        BEGIN SELECT RAISE(ABORT,'PRODUCT_PACK_CONFLICT'); END;
+      `);
+    });
   }
   /**
    * The one catalogue fault that no data shows and no boot fails on: a price table whose parent moved.

@@ -89,7 +89,9 @@ test('the same item under the same pack is one item, and a different pack is not
   assert.equal(again.status, 409);
   assert.equal(again.body.code, 'PRODUCT_EXISTS');
   assert.match(again.body.error, /قائمة الأصناف/);
-  // A drum of the same poison is a different item with a different price, and must be enterable.
+  // Different explicit pack sizes are distinct; an unknown size must not create ambiguity.
+  assert.equal((await addProduct({ name: 'سايبيرمثرين ٥٠٪', unit: 'عبوة', unitSize: '٢٥٠ مل' })).status, 201);
+  assert.equal((await addProduct({ name: 'سايبيرمثرين ٥٠٪', unit: 'عبوة', unitSize: '٥٠٠ مل' })).status, 409);
   assert.equal((await addProduct({ name: 'سايبيرمثرين ٥٠٪', unit: 'جرن', unitSize: '٢٠ لتر' })).status, 201);
   // Renaming one item into another item's slot is the same duplicate.
   const renamed = await client.patch(`/api/products/${(await addProduct({ name: 'مبيد جديد', unit: 'عبوة' })).body.product.id}`)

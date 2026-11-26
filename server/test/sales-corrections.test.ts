@@ -113,3 +113,20 @@ test('past-period reports show current net sale state rather than attributing th
  const d=await detail('sale',id);await send(url('sale',id),payload(d,[{lineId:d.lines[0].id,correctedMilli:500,returnedMilli:0,stockKind:null}]));
  const report=await get('/api/sales-insights?from=2025-01-02&to=2025-01-02');assert.equal(report.salesCount,1);assert.equal(report.sales,2.5);assert.equal(report.customers[0].items[0].qty,0.5);
 });
+
+test('indexed cash-correction balance matches the original calculation for all customers',async()=>{
+ const all=instance.store.all('SELECT id FROM customers');
+ for(const c of all){
+  const old=instance.store.get(`SELECT
+   COALESCE((SELECT SUM(amount_piasters) FROM office_debts_v1 WHERE customer_id=?),0)
+   +COALESCE((SELECT SUM(total_piasters-paid_piasters) FROM office_sales_v1 WHERE customer_id=?),0)
+   -COALESCE((SELECT SUM(amount_piasters) FROM office_receipts_v1 WHERE customer_id=?),0)
+   -COALESCE((SELECT SUM(cl.amount_piasters) FROM office_correction_lines_v1 cl JOIN office_corrections_v1 x ON x.id=cl.correction_id JOIN office_sales_v1 s ON s.id=x.sale_id WHERE s.customer_id=?),0)
+   +COALESCE((SELECT SUM(x.cash_piasters) FROM office_corrections_v1 x LEFT JOIN office_sales_v1 s ON s.id=x.sale_id LEFT JOIN office_receipts_v1 r ON r.id=x.receipt_id WHERE COALESCE(s.customer_id,r.customer_id)=?),0) AS balance`,c.id,c.id,c.id,c.id,c.id)!.balance;
+  const statement=await get(`/api/sales/statement/${c.id}`);assert.equal(Math.round(statement.balance*100),Number(old),String(c.id));
+ }
+ for(const [table,key,index] of [['office_sales_v1','sale_id','office_corrections_sale'],['office_receipts_v1','receipt_id','office_corrections_receipt']]){
+  const plan=instance.store.all(`EXPLAIN QUERY PLAN SELECT SUM(x.cash_piasters) FROM ${table} parent JOIN office_corrections_v1 x ON x.${key}=parent.id WHERE parent.customer_id=?`,'customer').map(x=>String(x.detail)).join(' ');
+  assert.match(plan,new RegExp(index),plan);
+ }
+});

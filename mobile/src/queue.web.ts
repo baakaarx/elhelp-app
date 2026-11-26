@@ -1,4 +1,4 @@
-import { outboxKey } from './outboxKey';
+import { assertSameQueuedAction, outboxKey } from './outboxKey';
 import type { Outbox } from './queue';
 import type { OutboxItem, OutboxKind } from './types';
 
@@ -59,8 +59,11 @@ export async function createQueue(): Promise<Outbox> {
     async add(kind: OutboxKind, payload: unknown) {
       const key = outboxKey(kind, payload);
       const items = read();
-      if (!items.some(existing => existing.key === key)) {
-        items.push({ key, kind, payload: JSON.stringify(payload), createdAt: Date.now(), attempts: 0, rejected: false });
+      const serialized = JSON.stringify(payload);
+      const existing = items.find(item => item.key === key);
+      if (existing) assertSameQueuedAction(existing, kind, serialized);
+      else {
+        items.push({ key, kind, payload: serialized, createdAt: Date.now(), attempts: 0, rejected: false });
         write(items);
       }
     },

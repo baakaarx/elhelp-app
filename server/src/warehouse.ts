@@ -29,9 +29,9 @@ export function createWarehouseRouter(store: Store) {
     const parsed = productFields.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'اكتب اسم الصنف ونوعه ووحدته بشكل صحيح.' }); return; }
     const p = parsed.data;
-    if (store.get('SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=?', p.name, p.unit)) { res.status(409).json({ error: 'الصنف بالوحدة دي موجود بالفعل.' }); return; }
+    if (store.get("SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?)", p.name, p.unit, p.unitSize, p.unitSize)) { res.status(409).json({ error: 'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.' }); return; }
     const productId = randomUUID(), now = Date.now();
-    store.run('INSERT INTO products(id,name,category,unit,unit_size,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', productId,p.name,p.category,p.unit,p.unitSize,now,now);
+    try {store.run('INSERT INTO products(id,name,category,unit,unit_size,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', productId,p.name,p.category,p.unit,p.unitSize,now,now);} catch(e) {if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.'});return;} throw e;}
     store.audit(res.locals.user.id, 'warehouse.product.create', { productId });
     res.status(201).json({ product: product(productId) });
   });
@@ -45,9 +45,9 @@ export function createWarehouseRouter(store: Store) {
       && store.get('SELECT 1 AS x FROM warehouse_stock WHERE product_id=? LIMIT 1', current.id)) {
       res.status(409).json({ error: 'الصنف له رصيد مسجّل؛ تغيير الوحدة أو العبوة يغيّر معنى الرصيد. أضف صنفًا جديدًا بدلًا من ذلك.' }); return;
     }
-    const nextName = p.name ?? current.name, unit = p.unit ?? current.unit;
-    if (store.get('SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND id<>?', nextName, unit, current.id)) { res.status(409).json({ error: 'الصنف بالوحدة دي موجود بالفعل.' }); return; }
-    store.run('UPDATE products SET name=?,category=?,unit=?,unit_size=?,active=?,updated_at=? WHERE id=?', nextName, p.category ?? current.category, unit, p.unitSize ?? current.unitSize, p.active === undefined ? current.active : Number(p.active), Date.now(), current.id);
+    const nextName = p.name ?? current.name, unit = p.unit ?? current.unit, unitSize = p.unitSize ?? current.unitSize;
+    if (store.get("SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?) AND id<>?", nextName, unit, unitSize, unitSize, current.id)) { res.status(409).json({ error: 'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.' }); return; }
+    try {store.run('UPDATE products SET name=?,category=?,unit=?,unit_size=?,active=?,updated_at=? WHERE id=?', nextName, p.category ?? current.category, unit, unitSize, p.active === undefined ? current.active : Number(p.active), Date.now(), current.id);} catch(e) {if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.'});return;} throw e;}
     store.audit(res.locals.user.id, 'warehouse.product.update', { productId: current.id });
     res.json({ product: product(String(current.id)) });
   });
@@ -95,7 +95,8 @@ export function createWarehouseRouter(store: Store) {
       if (existing.actor_id !== res.locals.user.id || existing.kind !== m.kind || existing.product_id !== m.productId || existing.from_warehouse_id !== from || existing.to_warehouse_id !== to || Number(existing.milli_qty) !== milli || existing.note !== m.note) { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.' }); return; }
       res.json({ ok:true, duplicate:true }); return;
     }
-    if (!hasDecimalPrecision(m.qty,3) || (m.kind !== 'opening' && milli < 1)) { res.status(400).json({ error: 'الكمية تقبل لحد ٣ أرقام بعد العلامة العشرية.' }); return; }
+    if (!hasDecimalPrecision(m.qty,3)) { res.status(400).json({ error: 'الكمية تقبل لحد ٣ أرقام بعد العلامة العشرية.' }); return; }
+    if (m.kind !== 'opening' && milli < 1) { res.status(400).json({ error: 'اكتب كمية أكبر من صفر للحركة؛ الصفر مسموح للرصيد الافتتاحي فقط.' }); return; }
     const item = product(m.productId);
     if (!item) { res.status(400).json({ error: 'الصنف غير موجود.' }); return; }
     if ((from && !store.get('SELECT id FROM warehouses WHERE id=?', from)) || (to && !store.get('SELECT id FROM warehouses WHERE id=?', to))) { res.status(400).json({ error: 'المخزن غير موجود.' }); return; }
@@ -133,7 +134,7 @@ export function createWarehouseRouter(store: Store) {
 /** حساب المبيعات مدير كامل، وحساب المخازن معزول في جميع واجهات API. */
 export function createStaffRouter(store: Store, disconnectUser: (id: string) => void) {
   const router = Router();
-  router.get('/', (_req, res) => res.json({ staff: store.all("SELECT id,name,email,access_scope AS accessScope,active,created_at AS createdAt FROM users WHERE role='admin' ORDER BY created_at DESC").map(u => ({ ...u,active:!!u.active })) }));
+  router.get('/', (_req, res) => res.json({ staff: store.all("SELECT id,name,email,access_scope AS accessScope,active,created_at AS createdAt FROM users WHERE role='admin' ORDER BY created_at DESC").map(u => ({ ...u,active:!!u.active })), minimumPasswordLength:MIN_ADMIN_PASSWORD_LENGTH }));
   router.post('/', (req,res) => {
     const parsed = z.object({ name, email:z.email().trim().toLowerCase(), password:z.string().min(MIN_ADMIN_PASSWORD_LENGTH).max(200), accessScope:z.enum(['full','warehouse']) }).strict().safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error:`اكتب الاسم والبريد وكلمة مرور من ${MIN_ADMIN_PASSWORD_LENGTH} حرفًا على الأقل، واختار نوع الحساب.` }); return; }

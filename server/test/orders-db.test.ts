@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,9 +18,16 @@ import { Store } from '../src/db.js';
  */
 const DAY = 86400000;
 
-function tempStore(name = 'mandoub.db') {
+function tempStore(t: TestContext, name = 'mandoub.db') {
   const dir = mkdtempSync(join(tmpdir(), 'elhelp-orders-'));
-  return { dir, file: join(dir, name), store: new Store(join(dir, name)) };
+  const file = join(dir, name);
+  let store: Store;
+  try { store = new Store(file); }
+  catch (error) { rmSync(dir, { recursive: true, force: true }); throw error; }
+  let closed = false;
+  const close = () => { if (!closed) { store.close(); closed = true; } };
+  t.after(() => { try { close(); } finally { rmSync(dir, { recursive: true, force: true }); } });
+  return { dir, file, store, close };
 }
 const columns = (store: Store, table: string) => (store.all(`PRAGMA table_info(${table})`) as Array<{ name: string }>).map(col => col.name);
 const foreignKeys = (store: Store, table: string) => (store.all(`PRAGMA foreign_key_list(${table})`) as Array<Record<string, any>>)
@@ -56,8 +63,8 @@ function addLine(store: Store, orderId: string, productId: string, qty: number, 
   String(product.name), String(product.unit), String(product.unitSize), qty, Date.now());
 }
 
-test('a fresh install gets the order, its lines, and the direction each link points', () => {
-  const { dir, store } = tempStore();
+test('a fresh install gets the order, its lines, and the direction each link points', (t) => {
+  const { store } = tempStore(t);
   assert.deepEqual(columns(store, 'orders'),
     ['id', 'user_id', 'customer_id', 'visit_id', 'status', 'notes', 'recorded_offline', 'total',
       'created_at', 'updated_at', 'sent_at', 'priced_at', 'priced_by'],
@@ -81,11 +88,10 @@ test('a fresh install gets the order, its lines, and the direction each link poi
   }
   assert.equal(store.get("SELECT sql FROM sqlite_master WHERE name='orders_queue'")!.sql.includes("status = 'sent'"), true,
     'and it is a partial index: «what is waiting for the team» is a slice, not a scan');
-  rmSync(dir, { recursive: true, force: true });
 });
 
-test('an order is three states, and nothing else', () => {
-  const { dir, store } = tempStore();
+test('an order is three states, and nothing else', (t) => {
+  const { store } = tempStore(t);
   seedRep(store, 'rep-a');
   addCustomer(store, 'cust-a', 'rep-a');
   const id = addOrder(store, { repId: 'rep-a', customerId: 'cust-a' });
@@ -98,11 +104,10 @@ test('an order is three states, and nothing else', () => {
   for (const status of ['cancelled', 'deleted', 'open', '']) {
     assert.throws(() => store.run('UPDATE orders SET status=? WHERE id=?', status, id), /CHECK constraint failed/, status);
   }
-  rmSync(dir, { recursive: true, force: true });
 });
 
-test('a quantity is a quantity: one line per item, never zero, never a shipment nobody ordered', () => {
-  const { dir, store } = tempStore();
+test('a quantity is a quantity: one line per item, never zero, never a shipment nobody ordered', (t) => {
+  const { store } = tempStore(t);
   seedRep(store, 'rep-b');
   addCustomer(store, 'cust-b', 'rep-b');
   addProduct(store, 'prod-b1');
@@ -124,11 +129,10 @@ test('a quantity is a quantity: one line per item, never zero, never a shipment 
   // The office writes the money; a negative line price is a discount hiding where a reason belongs.
   assert.doesNotThrow(() => store.run('UPDATE order_lines SET price=1150 WHERE order_id=? AND position=0', orderId));
   assert.throws(() => store.run('UPDATE order_lines SET price=-1 WHERE order_id=? AND position=0', orderId), /CHECK constraint failed/);
-  rmSync(dir, { recursive: true, force: true });
 });
 
-test('the line keeps the pack it was agreed in, even after the office changes it', () => {
-  const { dir, store } = tempStore();
+test('the line keeps the pack it was agreed in, even after the office changes it', (t) => {
+  const { store } = tempStore(t);
   seedRep(store, 'rep-c');
   addCustomer(store, 'cust-c', 'rep-c');
   addProduct(store, 'prod-c', 'يوريا ٥٠ كجم', 'شيكارة', '٥٠ كجم');
@@ -141,11 +145,10 @@ test('the line keeps the pack it was agreed in, even after the office changes it
     { name: 'يوريا ٥٠ كجم', unit: 'شيكارة', unitSize: '٥٠ كجم', qty: 4 },
     '«٤ شيكارة» stays four bags of fifty, because the number without the pack is not a promise');
   assert.equal(store.get('SELECT name FROM products WHERE id=?', 'prod-c')!.name, 'يوريا ٢٥ كجم', 'and the item itself did change for everyone else');
-  rmSync(dir, { recursive: true, force: true });
 });
 
-test('an agreement cannot be deleted out from under', () => {
-  const { dir, store } = tempStore();
+test('an agreement cannot be deleted out from under', (t) => {
+  const { store } = tempStore(t);
   seedRep(store, 'rep-d');
   addCustomer(store, 'cust-d', 'rep-d');
   addProduct(store, 'prod-d');
@@ -161,11 +164,10 @@ test('an agreement cannot be deleted out from under', () => {
   assert.doesNotThrow(() => store.run('DELETE FROM orders WHERE id=?', orderId));
   assert.equal(store.get('SELECT COUNT(*) AS c FROM order_lines WHERE order_id=?', orderId)!.c, 0, 'the lines go with it, and no orphan is left to price');
   assert.equal(store.get('SELECT COUNT(*) AS c FROM customers WHERE id=?', 'cust-d')!.c, 1, 'the customer is still there');
-  rmSync(dir, { recursive: true, force: true });
 });
 
-test('retention sweeps the visit and leaves the order, with its history intact', () => {
-  const { dir, store } = tempStore();
+test('retention sweeps the visit and leaves the order, with its history intact', (t) => {
+  const { store } = tempStore(t);
   seedRep(store, 'rep-e');
   addCustomer(store, 'cust-e', 'rep-e');
   addProduct(store, 'prod-e');
@@ -180,22 +182,20 @@ test('retention sweeps the visit and leaves the order, with its history intact',
   assert.equal(order.status, 'priced', '…but it is still a priced order');
   assert.equal(Number(order.total), 6900, '…with the number the office wrote');
   assert.equal(store.get('SELECT COUNT(*) AS c FROM order_lines WHERE order_id=?', orderId)!.c, 1, '…and its lines');
-  store.close();
-  rmSync(dir, { recursive: true, force: true });
 });
 
-test('an install whose `orders` table is someone else starts anyway and says which table is wrong', () => {
+test('an install whose `orders` table is someone else starts anyway and says which table is wrong', (t) => {
   // Not hypothetical: an abandoned branch of this project already owns `invoices`, `warehouses` and
   // `stock_movements` on boxes it was tried on. If a future one owns `orders`, the server must come up —
   // with the mismatch named — rather than refuse to boot on the manager's only machine.
-  const { dir, file } = tempStore();
-  const foreign = new Store(file);
-  foreign.close();
+  const { file, close } = tempStore(t);
+  close();
   const raw = new Store(file);
-  raw.run('ALTER TABLE orders RENAME TO orders_something_else');
-  raw.run('CREATE TABLE orders (id TEXT PRIMARY KEY, rep_id TEXT, invoice_date INTEGER, amount REAL)');
-  raw.run("INSERT INTO orders(id,rep_id,invoice_date,amount) VALUES ('old-1','rep-x',1,999)");
-  raw.close();
+  try {
+    raw.run('ALTER TABLE orders RENAME TO orders_something_else');
+    raw.run('CREATE TABLE orders (id TEXT PRIMARY KEY, rep_id TEXT, invoice_date INTEGER, amount REAL)');
+    raw.run("INSERT INTO orders(id,rep_id,invoice_date,amount) VALUES ('old-1','rep-x',1,999)");
+  } finally { raw.close(); }
 
   const messages: unknown[] = [];
   const realError = console.error;
@@ -207,12 +207,12 @@ test('an install whose `orders` table is someone else starts anyway and says whi
     console.error = realError;
   }
   assert.ok(reopened, 'the installation came up');
-  const logged = messages.flat().map(String).join('\n');
-  assert.match(logged, /orders/, 'and the warning names the table');
-  assert.match(logged, /older shape|does not have/, '…and says what is missing');
-  assert.equal(reopened!.get("SELECT rep_id FROM orders WHERE id='old-1'")!.rep_id, 'rep-x', 'the foreign rows were left exactly as they were');
-  assert.ok(columns(reopened!, 'order_lines').includes('qty'), 'the tables it can build, it built');
-  assert.match(logged, /repair-legacy-catalogue\.mjs/, '…and it names the script that frees the table name');
-  reopened!.close();
-  rmSync(dir, { recursive: true, force: true });
+  try {
+    const logged = messages.flat().map(String).join('\n');
+    assert.match(logged, /orders/, 'and the warning names the table');
+    assert.match(logged, /older shape|does not have/, '…and says what is missing');
+    assert.equal(reopened!.get("SELECT rep_id FROM orders WHERE id='old-1'")!.rep_id, 'rep-x', 'the foreign rows were left exactly as they were');
+    assert.ok(columns(reopened!, 'order_lines').includes('qty'), 'the tables it can build, it built');
+    assert.match(logged, /repair-legacy-catalogue\.mjs/, '…and it names the script that frees the table name');
+  } finally { reopened.close(); }
 });

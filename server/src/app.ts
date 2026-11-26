@@ -504,11 +504,12 @@ export function createApp(overrides: Partial<Config> = {}) {
     const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY created_at, name").map(repSnapshot);
     // The orders tab's badge: what the field sent and the office has not opened yet.
     const sentOrders = (store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status IN ('sent','priced') AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c as number) || 0;
+    const latestOrderNoticeId = Number(store.get("SELECT COALESCE(MAX(id),0) AS n FROM audit_log WHERE action='order.notification'")?.n || 0);
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
     // The dashboard needs the same staleness threshold the alerts use, otherwise the map and
     // the alert list disagree about who lost their signal.
-    return { reps, serverTime: Date.now(), timezone: config.timezone, retentionDays: config.retentionDays, newReports, sentOrders, staleGpsMinutes: config.staleGpsMinutes };
+    return { reps, serverTime: Date.now(), timezone: config.timezone, retentionDays: config.retentionDays, newReports, sentOrders, latestOrderNoticeId, staleGpsMinutes: config.staleGpsMinutes };
   }
   function reportRow(id: string) {
     return store.get(`SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
@@ -1701,8 +1702,8 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!unit) { res.status(400).json({ error: UNIT_HINT, issues: [{ path: ['unit'], message: UNIT_HINT }] }); return; }
     // Same name, same pack = the same item twice, and two rows for one item is two prices for one
     // customer. A different pack is a different item and is allowed.
-    if (store.get('SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=?', name, unit)) {
-      res.status(409).json({ error: `«${name} — ${unit}» موجود في قائمة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
+    if (store.get("SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?)", name, unit, fields.unitSize, fields.unitSize)) {
+      res.status(409).json({ error: `«${name} — ${unit}» موجود في قائمة الأصناف بالفعل بنفس العبوة، أو حجم العبوة غير محدد.`, code: 'PRODUCT_EXISTS' }); return;
     }
     const now = Date.now();
     const id = randomUUID();
@@ -1716,8 +1717,8 @@ export function createApp(overrides: Partial<Config> = {}) {
         }
       });
     } catch (error) {
-      if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(409).json({ error: `«${name} — ${unit}» موجود في قائمة الأصناف بالفعل.`, code: 'PRODUCT_EXISTS' }); return;
+      if (/UNIQUE|PRODUCT_PACK_CONFLICT/.test(String((error as Error).message))) {
+        res.status(409).json({ error: `«${name} — ${unit}» موجود في قائمة الأصناف بالفعل أو حجم العبوة غير محدد.`, code: 'PRODUCT_EXISTS' }); return;
       }
       throw error;
     }
@@ -1750,15 +1751,16 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!unit) { res.status(400).json({ error: UNIT_HINT, issues: [{ path: ['unit'], message: UNIT_HINT }] }); return; }
     // Renaming into another item's slot is the same duplicate, so it is refused the same way — and the
     // message says which one is in the way.
-    const clash = store.get('SELECT id, name FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND id<>?', name, unit, current.id) as { id: string; name: string } | undefined;
+    const size = keep(parsed.data.unitSize, current.unit_size);
+    const clash = store.get("SELECT id, name FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?) AND id<>?", name, unit, size, size, current.id) as { id: string; name: string } | undefined;
     if (clash) {
       res.status(409).json({ error: `«${name} — ${unit}» هو «${clash.name}» الموجود بالفعل. عدّل السطر اللي موجود بدل ما تعمل صنفين.`, code: 'PRODUCT_EXISTS' });
       return;
     }
-    store.run(`UPDATE products SET name=?, category=?, unit=?, unit_size=?, notes=?, active=?, updated_at=? WHERE id=?`,
+    try {store.run(`UPDATE products SET name=?, category=?, unit=?, unit_size=?, notes=?, active=?, updated_at=? WHERE id=?`,
       name, parsed.data.category ?? current.category, unit,
-      keep(parsed.data.unitSize, current.unit_size), keep(parsed.data.notes, current.notes),
-      parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0), Date.now(), current.id);
+      size, keep(parsed.data.notes, current.notes),
+      parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0), Date.now(), current.id);} catch(e) {if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.',code:'PRODUCT_EXISTS'});return;} throw e;}
     store.audit(res.locals.user.id, 'product.update', { productId: current.id, fields: Object.keys(parsed.data) });
     res.json({
       product: asProduct(store.get('SELECT * FROM products WHERE id=?', current.id)!,
@@ -2046,18 +2048,21 @@ export function createApp(overrides: Partial<Config> = {}) {
         lateAt = Math.max(Number(visit.checkedInAt), at);
       }
       const lateDuration = lateAt === null ? null : Math.max(0, Math.round((lateAt - Number(visit.checkedInAt)) / 1000));
-      store.run('UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=?',
-        late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id);
-      if (lateAt !== null) {
-        store.run('UPDATE visits SET checked_out_at=?, duration_seconds=?, recorded_offline=1 WHERE id=?', lateAt, lateDuration, visit.id);
-      }
-      if (late.amount !== null && late.amount > 0) {
-        store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
-          `تحصيل - ${visit.customerName}`, late.outcome || visit.notes, visit.customerName, late.amount,
-          late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, lateAt ?? Date.now());
-      }
-      store.audit(res.locals.user.id, 'visit.result_recorded_late', { visitId: visit.id });
+      // The result and its collection report must commit together, or a retry sees a closed visit and loses the amount.
+      store.transaction(() => {
+        store.run('UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=?',
+          late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id);
+        if (lateAt !== null) {
+          store.run('UPDATE visits SET checked_out_at=?, duration_seconds=?, recorded_offline=1 WHERE id=?', lateAt, lateDuration, visit.id);
+        }
+        if (late.amount !== null && late.amount > 0) {
+          store.run(`INSERT INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
+            `تحصيل - ${visit.customerName}`, late.outcome || visit.notes, visit.customerName, late.amount,
+            late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, lateAt ?? Date.now());
+        }
+        store.audit(res.locals.user.id, 'visit.result_recorded_late', { visitId: visit.id });
+      });
       io.to('admins').emit('visit', visitRow(visit.id));
       invalidateKpis(); broadcast();
       res.json({ visit: visitRow(visit.id), duplicate: false, recordedLate: true });
@@ -2082,18 +2087,21 @@ export function createApp(overrides: Partial<Config> = {}) {
       offline = true;
     }
     const duration = Math.max(0, Math.round((closedAt - Number(visit.checkedInAt)) / 1000));
-    store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
-      out_lat=?, out_lng=?, recorded_offline=MAX(recorded_offline, ?) WHERE id=?`, closedAt, duration, data.outcome, data.notes || visit.notes,
-      data.location?.lat ?? null, data.location?.lng ?? null, offline ? 1 : 0, visit.id);
-    // A collection is also a financial event: mirror it into the reports feed for the manager.
-    if (data.amount !== null && data.amount > 0) {
-      store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
-        `تحصيل - ${visit.customerName}`, data.outcome || visit.notes, visit.customerName, data.amount,
-        data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, closedAt);
-    }
-    store.audit(res.locals.user.id, offline ? 'visit.check_out_offline' : 'visit.check_out',
-      { visitId: visit.id, durationSeconds: duration, ...(offline ? { recordedAt: closedAt } : {}) });
+    // Closing a visit, recording its collection, and the audit trail are one operation.
+    store.transaction(() => {
+      store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
+        out_lat=?, out_lng=?, recorded_offline=MAX(recorded_offline, ?) WHERE id=?`, closedAt, duration, data.outcome, data.notes || visit.notes,
+        data.location?.lat ?? null, data.location?.lng ?? null, offline ? 1 : 0, visit.id);
+      // A collection is also a financial event: mirror it into the reports feed for the manager.
+      if (data.amount !== null && data.amount > 0) {
+        store.run(`INSERT INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
+          `تحصيل - ${visit.customerName}`, data.outcome || visit.notes, visit.customerName, data.amount,
+          data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, closedAt);
+      }
+      store.audit(res.locals.user.id, offline ? 'visit.check_out_offline' : 'visit.check_out',
+        { visitId: visit.id, durationSeconds: duration, ...(offline ? { recordedAt: closedAt } : {}) });
+    });
     io.to('admins').emit('visit', visitRow(visit.id));
     invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
@@ -2205,6 +2213,7 @@ export function createApp(overrides: Partial<Config> = {}) {
         sentAt = at; offline = true;
       } else sentAt = now;
     }
+    let noticeId = 0;
     try {
       store.transaction(() => {
         store.run(`INSERT INTO orders(id,user_id,customer_id,visit_id,status,notes,recorded_offline,created_at,updated_at,sent_at)
@@ -2212,6 +2221,12 @@ export function createApp(overrides: Partial<Config> = {}) {
           data.send ? 'sent' : 'draft', data.notes, offline ? 1 : 0, now, now, sentAt);
         lines.resolved.forEach((line, index) => store.run(`INSERT INTO order_lines(id,order_id,position,product_id,product_name,unit,unit_size,qty,notes,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?)`, randomUUID(), data.id, index, line.productId, line.name, line.unit, line.unitSize, line.qty, line.notes, now));
+        store.audit(res.locals.user.id, offline ? 'order.create_offline' : 'order.create',
+          { orderId: data.id, customerId: data.customerId, ...(data.visitId ? { visitId: data.visitId } : {}), lines: lines.resolved.length, send: data.send });
+        if (data.send) {
+          store.audit(res.locals.user.id, 'order.notification', { orderId: data.id });
+          noticeId = Number(store.get('SELECT last_insert_rowid() AS id')!.id);
+        }
       });
     } catch (error) {
       // The unique indexes have the last word (one line per item, one id per order); a race against
@@ -2224,9 +2239,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
       throw error;
     }
-    store.audit(res.locals.user.id, offline ? 'order.create_offline' : 'order.create',
-      { orderId: data.id, customerId: data.customerId, ...(data.visitId ? { visitId: data.visitId } : {}), lines: lines.resolved.length, send: data.send });
-    if (data.send) io.to('admins').emit('order', orderRow(data.id, 'office'));
+    if (data.send) io.to('admins').emit('order', { ...orderRow(data.id, 'office'), noticeId });
     invalidateKpis(); broadcast();
     res.status(201).json({ order: orderRow(data.id, 'rep'), duplicate: false, ...(offline ? { recordedOffline: true } : {}) });
   });
@@ -2287,11 +2300,17 @@ export function createApp(overrides: Partial<Config> = {}) {
       sentAt = at; offline = true;
     }
     // The status rides in the WHERE: two devices pressing send at once produce one queue entry, not two.
-    const moved = store.run(`UPDATE orders SET status='sent', sent_at=?, recorded_offline=MAX(recorded_offline, ?), updated_at=? WHERE id=? AND status='draft'`,
-      sentAt, offline ? 1 : 0, now, order.id);
-    if (!Number(moved.changes || 0)) { res.json({ order: orderRow(order.id, 'rep'), duplicate: true }); return; }
-    store.audit(res.locals.user.id, offline ? 'order.send_offline' : 'order.send', { orderId: order.id });
-    io.to('admins').emit('order', orderRow(order.id, 'office'));
+    let moved = false, noticeId = 0;
+    store.transaction(() => {
+      moved = Number(store.run(`UPDATE orders SET status='sent', sent_at=?, recorded_offline=MAX(recorded_offline, ?), updated_at=? WHERE id=? AND status='draft'`,
+        sentAt, offline ? 1 : 0, now, order.id).changes) > 0;
+      if (!moved) return;
+      store.audit(res.locals.user.id, offline ? 'order.send_offline' : 'order.send', { orderId: order.id });
+      store.audit(res.locals.user.id, 'order.notification', { orderId: order.id });
+      noticeId = Number(store.get('SELECT last_insert_rowid() AS id')!.id);
+    });
+    if (!moved) { res.json({ order: orderRow(order.id, 'rep'), duplicate: true }); return; }
+    io.to('admins').emit('order', { ...orderRow(order.id, 'office'), noticeId });
     invalidateKpis(); broadcast();
     res.json({ order: orderRow(order.id, 'rep'), duplicate: false });
   });

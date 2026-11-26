@@ -156,3 +156,16 @@ test('rejected actions cannot starve later work while visit dependencies stay in
   assert.ok(items.some(item => item.key === 'independent-order'));
   assert.equal(items.at(-1)?.key, 'gps');
 });
+
+test('a reused key never silently discards different offline work', async () => {
+  store.clear();
+  const queue = await createQueue();
+  const original = { id: 'same-key', customerId: 'a', lines: [{ qty: 1 }] };
+  await queue.add('order', original);
+  await queue.add('order', original); // A genuine retry stays idempotent.
+  await assert.rejects(queue.add('order', { ...original, lines: [{ qty: 2 }] }), /الطلب الجديد لم يُحفظ/);
+  await assert.rejects(queue.add('report', original), /الطلب الجديد لم يُحفظ/);
+  const items = await queue.list();
+  assert.equal(items.length, 1);
+  assert.deepEqual(JSON.parse(items[0].payload), original);
+});

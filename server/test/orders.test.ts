@@ -281,3 +281,33 @@ test('the deletion impact names orders before removing an engineer', async () =>
   assert.equal(deleted.body.removed.orders, 1);
   assert.equal(store.get('SELECT id FROM orders WHERE id=?', order.body.order.id), undefined);
 });
+
+test('order alert cursor advances once for a new sent order, including replay and draft cases', async () => {
+  const cursor = async () => Number((await client.get('/api/overview').set(admin)).body.latestOrderNoticeId);
+  const before = await cursor();
+  const id = randomUUID();
+  const sent = await createOrder(repA, { id, recordedAt: Date.now() - 1000 });
+  assert.equal(sent.status, 201);
+  const next = await cursor(); assert.ok(next > before);
+  assert.equal((await createOrder(repA, { id, recordedAt: Date.now() - 1000 })).body.duplicate, true);
+  assert.equal(await cursor(), next, 'a retry is not a new notification');
+  const draft = await createOrder(repA, { send: false });
+  assert.equal(draft.status, 201); assert.equal(await cursor(), next, 'unsent drafts do not alert the office');
+  const send = await client.post(`/api/orders/${draft.body.order.id}/send`).set(repA.auth).send({});
+  assert.equal(send.status, 200); const afterDraft = await cursor(); assert.ok(afterDraft > next);
+  assert.equal((await client.post(`/api/orders/${draft.body.order.id}/send`).set(repA.auth).send({})).body.duplicate, true);
+  assert.equal(await cursor(), afterDraft);
+  assert.equal((await client.get('/api/overview').set(repA.auth)).status, 403);
+});
+
+test('a failed order notification record rolls back the order and can be retried safely', async () => {
+  const id = randomUUID();
+  store.db.exec("CREATE TRIGGER fail_order_notice_test BEFORE INSERT ON audit_log WHEN NEW.action='order.notification' BEGIN SELECT RAISE(ABORT, 'simulated failure'); END");
+  try {
+    assert.equal((await createOrder(repA, { id })).status, 500);
+    assert.equal(store.get('SELECT id FROM orders WHERE id=?', id), undefined);
+  } finally { store.db.exec('DROP TRIGGER fail_order_notice_test'); }
+  assert.equal((await createOrder(repA, { id })).status, 201);
+  assert.equal((await createOrder(repA, { id })).body.duplicate, true);
+  assert.equal(Number(store.get("SELECT COUNT(*) AS n FROM audit_log WHERE action='order.notification' AND json_extract(metadata,'$.orderId')=?", id)?.n), 1);
+});

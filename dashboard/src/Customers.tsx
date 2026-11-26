@@ -24,6 +24,7 @@ export default function Customers(_props: { timezone?: string }) {
   const [page, setPage] = useState(0);
   const requestNumber = useRef(0);
   const [loading, setLoading] = useState(true);
+  const [listInvalid, setListInvalid] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [editing, setEditing] = useState<Customer | 'new' | null>(null);
@@ -52,7 +53,7 @@ export default function Customers(_props: { timezone?: string }) {
   const load = useCallback(async () => {
     if (currentQuery.current !== query) return;
     const request = ++requestNumber.current;
-    setLoading(true); setError(''); setResult(null);
+    setLoading(true); setError('');
     try {
       const [list, areas, kinds] = await Promise.all([
         api<{ customers: Customer[]; hasMore: boolean }>(`/api/customers?${query}`),
@@ -63,9 +64,9 @@ export default function Customers(_props: { timezone?: string }) {
       setResult({query, customers:list.customers, hasMore:list.hasMore});
       setBook(areas);
       setTiers(kinds.tiers);
-      setError('');
+      setListInvalid(false);setError('');
     } catch (e) {
-      if (request === requestNumber.current && currentQuery.current === query) setError(`تعذر تحميل قائمة العملاء. حدّث الصفحة قبل المحاولة مرة أخرى. ${messageOf(e, '')}`);
+      if (request === requestNumber.current && currentQuery.current === query) {setListInvalid(true);setError(`تعذر تحميل قائمة العملاء. أعد التحميل قبل المحاولة مرة أخرى. ${messageOf(e, '')}`);}
     } finally {
       if (request === requestNumber.current && currentQuery.current === query) setLoading(false);
     }
@@ -197,7 +198,7 @@ export default function Customers(_props: { timezone?: string }) {
     <section className="page">
       <header className="page-head">
         <h2>قائمة العملاء</h2>
-        <button className="btn primary" onClick={openCreate}>عميل جديد</button>
+        <button className="btn primary" disabled={loading || listInvalid || !ready} onClick={openCreate}>عميل جديد</button>
       </header>
       <div className="panel filters">
         <label className="field inline"><span>بحث</span>
@@ -210,6 +211,7 @@ export default function Customers(_props: { timezone?: string }) {
 
       {error && <p className="error banner" role="alert">{error}</p>}
       {message && <p className="ok-text" role="status">{message}</p>}
+      {listInvalid && <button type="button" className="btn ghost sm" disabled={loading} onClick={()=>void load()}>إعادة تحميل العملاء</button>}
 
       {editing && (
         <CustomerForm
@@ -218,7 +220,7 @@ export default function Customers(_props: { timezone?: string }) {
           form={form}
           setForm={setForm}
           error={formError}
-          saving={saving}
+          saving={saving || loading || listInvalid || !ready}
           tiers={tiers}
           engineers={engineers}
           onCancel={closeForm}
@@ -228,6 +230,9 @@ export default function Customers(_props: { timezone?: string }) {
 
       {!ready && !error && <p role="status">جارٍ تحميل العملاء للبحث المختار…</p>}
       {ready && <div className="panel">
+        {loading && <p role="status">جارٍ تحديث العملاء؛ التعديل متوقف حتى اكتمال التحديث.</p>}
+        {listInvalid && !loading && <p className="notice">العملاء المعروضون قدام ولا يمكن تعديلهم؛ أعد التحميل قبل المتابعة.</p>}
+        <fieldset disabled={loading || listInvalid} style={{border:0,padding:0,margin:0,minWidth:0}}>
         <h3 className="panel-title">
           العملاء في الصفحة · {formatNumber(customers.length)}
         </h3>
@@ -306,6 +311,7 @@ export default function Customers(_props: { timezone?: string }) {
           <span>صفحة {formatNumber(page + 1)}</span>
           <button className="btn ghost sm" disabled={loading || !hasMore} onClick={() => setPage(p => p + 1)}>التالي</button>
         </div>}
+        </fieldset>
       </div>}
     </section>
   );

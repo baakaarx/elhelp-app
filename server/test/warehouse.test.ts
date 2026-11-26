@@ -151,3 +151,23 @@ test('previously recorded movement with legacy fractional input remains safe to 
   assert.equal(result.status,200);assert.equal(result.body.duplicate,true);
   assert.equal((await client.get(`/api/warehouse/stock?warehouseId=${w}`).set(admin)).body.stock.find((x:any)=>x.id===p).qty,1);
 });
+
+
+test('same product and unit with distinct known packs remains separate in both APIs', async () => {
+ const name=`عبوات مراجعة ${randomUUID()}`;
+ const a=await client.post('/api/warehouse/products').set(admin).send({name,category:'other',unit:'عبوة',unitSize:'١٠٠ جم'});assert.equal(a.status,201);
+ const b=await client.post('/api/products').set(admin).send({name,unit:'عبوة',unitSize:'٢٥٠ جم'});assert.equal(b.status,201,JSON.stringify(b.body));
+ assert.equal((await client.post('/api/warehouse/products').set(admin).send({name,category:'other',unit:'عبوة',unitSize:'١٠٠ جم'})).status,409);
+ assert.equal((await client.post('/api/warehouse/products').set(admin).send({name,category:'other',unit:'عبوة'})).status,409);
+ assert.equal((await client.patch(`/api/warehouse/products/${b.body.product.id}`).set(admin).send({unitSize:'١٠٠ جم'})).status,409);
+ assert.equal((await client.patch(`/api/products/${b.body.product.id}`).set(admin).send({unitSize:''})).status,409);
+});
+
+test('zero is allowed only for opening stock and gives a specific error otherwise',async()=>{
+ const w=await client.post('/api/warehouse/warehouses').set(admin).send({name:`مخزن صفر ${randomUUID()}`});
+ const p=await client.post('/api/warehouse/products').set(admin).send({name:`صنف صفر ${randomUUID()}`,category:'other',unit:'عبوة'});
+ const base={productId:p.body.product.id,toWarehouseId:w.body.warehouse.id,qty:0};
+ const zero=await client.post('/api/warehouse/movements').set(admin).send({...base,id:randomUUID(),kind:'in'});
+ assert.equal(zero.status,400);assert.match(zero.body.error,/أكبر من صفر/);
+ const opening=await client.post('/api/warehouse/movements').set(admin).send({...base,id:randomUUID(),kind:'opening'});assert.equal(opening.status,201);
+});
