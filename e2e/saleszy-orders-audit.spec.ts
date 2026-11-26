@@ -1,0 +1,51 @@
+import {test,expect} from '@playwright/test';
+import {randomUUID} from 'node:crypto';
+import {signInAsManager} from './helpers';
+import {E2E_REPS,E2E_REP_PASSWORD} from './fixtures';
+
+test('تحديث الطلبيات للمبيعات ينتظر غلق المسودة وينبه للعميل الموقوف',async({page})=>{
+ await signInAsManager(page);const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));const admin={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const post=async(path:string,data:object,headers:Record<string,string>=admin)=>{const r=await page.request.post(path,{headers,data});expect(r.ok(),await r.text()).toBeTruthy();return r.json();};
+ const reps=(await (await page.request.get('/api/reps',{headers:admin})).json()).reps;const rep=reps.find((r:{email:string})=>r.email===E2E_REPS[0].email);
+ const customer=(await post('/api/customers',{name:`عميل تحديث طلبية ${Date.now()}`,repId:rep.id})).customer;
+ const product=(await post('/api/warehouse/products',{name:`صنف تحديث طلبية ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+ const login=await post('/api/auth/login',{email:E2E_REPS[0].email,password:E2E_REP_PASSWORD},{});const repHeaders={'Authorization':`Bearer ${login.token}`,'X-Mandoub-Client':'rep'};
+ await page.getByRole('button',{name:'المبيعات',exact:true}).click();await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();
+ await page.getByRole('combobox',{name:'نوع الفاتورة'}).selectOption('order');const id=randomUUID();const body={id,customerId:customer.id,lines:[{productId:product.id,qty:3}],send:true};
+ await post('/api/orders',body,repHeaders);await expect(page.getByText('حالة الطلبيات اتغيرت',{exact:false})).toBeVisible();
+ await expect(page.getByRole('combobox',{name:'الطلبية'}).locator(`option[value="${id}"]`)).toHaveCount(0);
+ await page.getByRole('button',{name:'إغلاق',exact:true}).click();await expect(page.getByText('حالة الطلبيات اتغيرت',{exact:false})).toHaveCount(0);
+ await page.getByRole('button',{name:'تسجيل فاتورة',exact:true}).click();await page.getByRole('combobox',{name:'نوع الفاتورة'}).selectOption('order');
+ await expect(page.getByRole('combobox',{name:'الطلبية'}).locator(`option[value="${id}"]`)).toHaveCount(1);
+ const duplicate=await post('/api/orders',body,repHeaders);expect(duplicate.duplicate).toBe(true);
+ await page.locator('button.nav-item').filter({hasText:'الزيارات والطلبيات'}).click();await page.getByRole('tab',{name:/الطلبيات/}).click();
+ const card=page.locator('.order-card').filter({hasText:customer.name});await expect(card).toBeVisible();
+ const stop=await page.request.patch(`/api/customers/${customer.id}`,{headers:admin,data:{active:false}});expect(stop.ok(),await stop.text()).toBeTruthy();
+ const rejected=await page.request.post('/api/orders',{headers:repHeaders,data:{...body,id:randomUUID(),recordedAt:Date.now()}});expect(rejected.status()).toBe(409);expect((await rejected.json()).code).toBe('CUSTOMER_INACTIVE');
+ await expect(card).toContainText('العميل موقوف؛ لا يمكن تسجيل فاتورة');
+ const options=await (await page.request.get('/api/sales/options',{headers:admin})).json();expect(options.orders.some((o:{id:string})=>o.id===id)).toBe(false);
+ const impact=await (await page.request.get(`/api/reps/${rep.id}/impact`,{headers:admin})).json();expect(impact.pendingOrders).toBeGreaterThanOrEqual(1);
+});
+
+test('طلبية محفوظة على الهاتف تظل محفوظة إذا أوقف المكتب العميل قبل المزامنة',async({page,browser})=>{
+ await signInAsManager(page);const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));const admin={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const post=async(path:string,data:object)=>{const r=await page.request.post(path,{headers:admin,data});expect(r.ok(),await r.text()).toBeTruthy();return r.json();};
+ const suffix=Date.now();const email=`order-offline-${suffix}@test.example`,password='RepPassword123!';
+ const rep=(await post('/api/reps',{name:'مهندس اختبار طلبية غير متصلة',email,password,region:'الإسكندرية'})).user;
+ const customer=(await post('/api/customers',{name:`عميل طلبية أوفلاين ${suffix}`,repId:rep.id})).customer;
+ const product=(await post('/api/warehouse/products',{name:`صنف أوفلاين ${suffix}`,category:'other',unit:'عبوة'})).product;
+ const context=await browser.newContext({viewport:{width:420,height:850}});const phone=await context.newPage();
+ await phone.goto('http://127.0.0.1:3100/app/');await phone.getByPlaceholder('rep@company.com').fill(email);await phone.getByPlaceholder('••••••••').fill(password);await phone.getByRole('button',{name:'دخول',exact:true}).click();
+ await phone.getByRole('button',{name:'تسجيل طلبية'}).click();await phone.getByText(customer.name,{exact:true}).last().click();await expect(phone.getByRole('button',{name:'اختار واحد تاني'})).toBeVisible();
+ await phone.getByPlaceholder('مثال: يوريا أو شيكارة').fill(product.name);await phone.getByRole('button',{name:`ضيف ${product.name}`}).click();
+ await phone.route('**/api/orders',route=>route.request().method()==='POST'?route.abort('failed'):route.continue());
+ await phone.getByRole('button',{name:/ابعت الطلبية للمكتب/}).click();await expect(phone.getByText(/الطلبية اتحفظت على الموبايل/).first()).toBeVisible();
+ const saved=await phone.evaluate(()=>JSON.parse(localStorage.getItem('mandoub.outbox')||'[]'));const order=saved.find((x:{kind:string})=>x.kind==='order');expect(order).toBeTruthy();const payload=JSON.parse(order.payload);expect(payload.customerId).toBe(customer.id);
+ const stop=await page.request.patch(`/api/customers/${customer.id}`,{headers:admin,data:{active:false}});expect(stop.ok(),await stop.text()).toBeTruthy();
+ await phone.unroute('**/api/orders');await phone.getByRole('tab',{name:'حسابي'}).click();
+ const result=phone.waitForResponse(r=>r.url().endsWith('/api/orders')&&r.request().method()==='POST'&&r.status()===409);await phone.getByRole('button',{name:'مزامنة الآن'}).click();await result;
+ await expect(phone.getByText(/السيرفر لم يقبل بيانات محفوظة: العميل متوقف/)).toBeVisible();
+ await expect.poll(async()=>phone.evaluate(()=>JSON.parse(localStorage.getItem('mandoub.outbox')||'[]').some((x:{kind:string;rejected:boolean})=>x.kind==='order'&&x.rejected))).toBe(true);
+ const adminOrders=await (await page.request.get('/api/orders?status=sent',{headers:admin})).json();expect(adminOrders.orders.some((o:{id:string})=>o.id===payload.id)).toBe(false);
+ await context.close();
+});

@@ -275,6 +275,7 @@ test('the deletion impact names orders before removing an engineer', async () =>
   assert.equal(order.status, 201);
   const impact = await client.get(`/api/reps/${rep.id}/impact`).set(admin);
   assert.equal(impact.body.orders, 1);
+  assert.equal(impact.body.pendingOrders, 1);
   const deleted = await client.delete(`/api/reps/${rep.id}`).set(admin).send({ confirm: true });
   assert.equal(deleted.status, 200);
   assert.equal(deleted.body.removed.orders, 1);

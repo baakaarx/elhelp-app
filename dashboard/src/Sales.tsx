@@ -23,7 +23,7 @@ const cash=(n:number)=>`${n.toLocaleString('ar-EG',{maximumFractionDigits:2})} �
 const err=(e:unknown)=>e instanceof Error?e.message:'حصل خطأ. حاول تاني.';
 
 type Pending = {path:string; body:unknown; kind:'sale'|'receipt'|'opening'|'correction'};
-export default function Sales({timezone,userId}:{timezone?:string;userId:string}) {
+export default function Sales({timezone,userId,ordersVersion}:{timezone?:string;userId:string;ordersVersion:number}) {
   const pendingKey=`mandoub.sales.pending.${userId}`;
   const operationPanel=useReveal<HTMLDivElement>();
   const errorPanel=useReveal<HTMLParagraphElement>();
@@ -55,10 +55,13 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const salesRequest=useRef(0);
   const statementRequest=useRef(0),currentStatementCustomer=useRef(statementCustomer);currentStatementCustomer.current=statementCustomer;
   const [detail,setDetail]=useState<Detail|null>(null),[detailMode,setDetailMode]=useState<'invoice'|'correction'|null>(null);
+  const [ordersCheckedVersion,setOrdersCheckedVersion]=useState(ordersVersion);
   const [priceProduct,setPriceProduct]=useState(''),[priceTier,setPriceTier]=useState(''),[priceInput,setPriceInput]=useState('');
   const saleRequest=useRef(''),receiptRequest=useRef(''),openingRequest=useRef('');
   const load=useCallback(async()=>{const request=++salesRequest.current;statementRequest.current++;setStatementBusy(false);setStatement(null);setLoading(true);try {const [o,r]=await Promise.all([api<Options>('/api/sales/options'),api<Report>('/api/sales/overview')]);if(request===salesRequest.current){setOptions(o);setReport(r);setNeedsRefresh(false);setError('');}}catch(e){if(request===salesRequest.current){setNeedsRefresh(true);showError(err(e));}}finally{if(request===salesRequest.current)setLoading(false);}},[]);
   useEffect(()=>{void load();return()=>{statementRequest.current++;salesRequest.current++;};},[load]);
+  // Don't replace options under an open draft or review. Apply socket updates once it is safe.
+  useEffect(()=>{if(ordersVersion===ordersCheckedVersion||busy||loading||pendingRaw!==null||needsRefresh||review||detailMode||showSale||statement||view!=='summary')return;setOrdersCheckedVersion(ordersVersion);void load();},[ordersVersion,ordersCheckedVersion,busy,loading,pendingRaw,needsRefresh,review,detailMode,showSale,statement,view,load]);
   const selectedOrder=options?.orders.find(o=>o.id===orderId);
   const currentLines = lines.map(l=>({qty:parse(l.qty),price:parse(l.price)}));
   const validLines=currentLines.length>0 && currentLines.every((l,i)=>Number.isFinite(l.qty)&&l.qty>0&&l.qty<=100_000&&hasInputPrecision(lines[i].qty,3)&&Number.isFinite(l.price)&&l.price>=0&&l.price<=1_000_000_000&&hasInputPrecision(lines[i].price,2));
@@ -139,9 +142,11 @@ export default function Sales({timezone,userId}:{timezone?:string;userId:string}
   const selectPrice=(product:string,tier:string)=>{setPriceProduct(product);setPriceTier(tier);const value=options?.prices.find(p=>p.productId===product&&p.tierId===tier)?.price;setPriceInput(value===undefined?'':String(value));};
   return <section className="page sales-page">
     <header className="page-head"><div><h2>المبيعات والمخزون</h2><p className="muted">تابع البيعات والباقي على العملاء وأرصدة المخازن.</p></div><div className="filters">
+      <button className="btn ghost sm" disabled={pendingRaw!==null||!!review||!!detailMode||needsRefresh||busy||loading||showSale||!!statement||view!=='summary'} onClick={()=>{setOrdersCheckedVersion(ordersVersion);void load();}}>تحديث بيانات المبيعات</button>
       <button className="btn ghost sm" disabled={pendingRaw!==null||!!review||!!detailMode||needsRefresh||busy} onClick={()=>{setView(view==='prices'?'summary':'prices');setError('');setMessage('');}}>{view==='prices'?'رجوع للملخص':'تعديل الأسعار'}</button>
       {view==='summary'&&pendingRaw===null&&!review&&!detailMode&&!needsRefresh&&<button className="btn primary" onClick={()=>{setShowSale(!showSale);setError('');setMessage('');}}>{showSale?'إغلاق':'تسجيل فاتورة'}</button>}
     </div></header>
+    {ordersVersion!==ordersCheckedVersion && <p className="notice">حالة الطلبيات اتغيرت؛ هتتحدّث القائمة بعد إغلاق أي فاتورة أو مراجعة مفتوحة.</p>}
     {error&&<p className="error reveal-target" ref={errorPanel.ref} tabIndex={-1} role="alert">{error}</p>}{message&&<p className="ok-text" role="status">{message}</p>}
     {pendingRaw!==null?<div className="panel reveal-target" tabIndex={-1} ref={operationPanel.ref}><h3>عملية محتاجة تأكيد</h3>{pending?<><p>الاتصال وقف قبل ما نتأكد من حفظ {pending.kind==='sale'?'الفاتورة':pending.kind==='receipt'?'الدفعة':pending.kind==='correction'?'التصحيح':'المديونية القديمة'}. اضغط تأكيد العملية لإعادة إرسال نفس الطلب بأمان، من غير تكرار.</p><button className="btn primary" disabled={busy} onClick={()=>void retryPending()}>تأكيد العملية</button></>:<p className="error" role="alert">تعذر قراءة العملية المعلقة على الجهاز؛ قد تكون اتحفظت بالفعل. راجع المسؤول وحساب العميل قبل تسجيل أي عملية أخرى، ولا تمسح بيانات المتصفح.</p>}</div>:needsRefresh?<div className="panel"><h3>لازم نحدّث الأرقام الأول</h3><p>الأرقام غير متاحة أو ممكن تكون قديمة. حدّثها قبل أي عملية جديدة.</p><button className="btn primary" disabled={loading} onClick={()=>void load()}>تحديث الأرقام</button></div>:loading&&!options?<p>جارٍ التحميل…</p>:!options||!report?<button className="btn ghost sm" onClick={()=>void load()}>حاول تاني</button> :review?<div className="panel reveal-target" ref={operationPanel.ref} tabIndex={-1} aria-label="مراجعة العملية"><h3>راجع البيانات قبل الحفظ</h3>
       {review==='sale'?<>

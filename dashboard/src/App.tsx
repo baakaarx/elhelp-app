@@ -150,7 +150,7 @@ export default function App() {
     refresh();
     const socket = io('/', { auth: { token: getToken() }, transports: ['websocket', 'polling'], reconnectionDelayMax: 5000 });
     socketRef.current = socket;
-    socket.on('connect', () => { liveRef.current = true; setConnected(true); });
+    socket.on('connect', () => { liveRef.current = true; setConnected(true); bumpOrders(); });
     socket.on('disconnect', () => { liveRef.current = false; setConnected(false); });
     socket.on('connect_error', () => { liveRef.current = false; setConnected(false); });
     socket.on('overview', (data: Overview) => { setOverview(data); setSyncedAt(Date.now()); });
@@ -429,7 +429,7 @@ export default function App() {
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
-        {tab === 'products' && <Sales timezone={overview?.timezone} userId={user.id} />}
+        {tab === 'products' && <Sales timezone={overview?.timezone} userId={user.id} ordersVersion={ordersVersion} />}
         {tab === 'warehouses' && <Warehouses userId={user.id} />}
         {tab === 'staff' && <Staff />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
@@ -525,7 +525,7 @@ function Stat({ label, value, hint, icon }: { label: string; value: string; hint
 function impactText(impact: RepImpact): string {
   const rows = [
     impact.visits ? `${formatNumber(impact.visits)} زيارة` : '',
-    impact.orders ? `${formatNumber(impact.orders)} طلبية` : '',
+    impact.orders ? `${formatNumber(impact.orders)} طلبية${impact.pendingOrders ? ` (منها ${formatNumber(impact.pendingOrders)} مستنية فاتورة)` : ''}` : '',
     impact.reports ? `${formatNumber(impact.reports)} تقرير ميدان` : '',
     impact.dailyReports ? `${formatNumber(impact.dailyReports)} تقرير يومي` : '',
     impact.locations ? `${formatNumber(impact.locations)} نقطة موقع` : '',

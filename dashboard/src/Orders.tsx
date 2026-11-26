@@ -6,7 +6,7 @@ import { formatNumber } from './session';
 
 interface OrderLine { productId:string;productName:string;unit:string;unitSize:string;qty:number;notes:string }
 interface OrderRow {
-  id:string;customerName:string;customerPhone:string;repName:string;repColor:string;
+  id:string;customerName:string;customerPhone:string;customerActive:boolean;repName:string;repColor:string;
   status:'draft'|'sent'|'priced';sold:boolean;notes:string;sentAt:number|null;recordedOffline:boolean;lines:OrderLine[];
 }
 type Filter='sent'|'all';
@@ -34,6 +34,7 @@ export default function Orders({timezone,version}:{timezone?:string;version:numb
     {!ready&&!error?<p className="empty">جارٍ تحميل الطلبيات…</p>:!ready?null:orders.length===0?<p className="empty">{filter==='sent'?'مفيش طلبية مستنية فاتورة حاليًا.':'مفيش طلبيات مسجلة لحد دلوقتي.'}</p>:<div className="order-cards">
       {orders.map(order=><article className="order-card" key={order.id}>
         <div className="order-card-head"><div><strong>{order.customerName}</strong>{order.customerPhone&&<small> · {order.customerPhone}</small>}</div><span className={order.sold?'pill ok':'pill warn'}>{order.sold?'اتسجلت لها فاتورة':'مستنية فاتورة'}</span></div>
+        {!order.customerActive && !order.sold && <p className="notice">العميل موقوف؛ لا يمكن تسجيل فاتورة للطلبية حتى يعيد المكتب تفعيله.</p>}
         <p className="muted small">المهندس: {order.repName} · {order.sentAt?dateTimeText(order.sentAt,timezone):'—'}{order.recordedOffline?' · اتبعتت بعد رجوع الشبكة':''}</p>
         <ul>{order.lines.map(line=><li key={line.productId}><strong>{line.productName}</strong> · ترشيح {recommendationQty(line.qty)} {line.unit} {line.unitSize}{line.notes?` · ${line.notes}`:''}</li>)}</ul>
         {order.notes&&<p className="muted small">ملاحظة المهندس: {order.notes}</p>}

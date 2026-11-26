@@ -318,6 +318,7 @@ export interface RepImpact {
   visits: number;
   openVisits: number;
   orders: number;
+  pendingOrders: number;
   reports: number;
   dailyReports: number;
   idleReports: number;

@@ -944,6 +944,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       visits: count('SELECT COUNT(*) AS c FROM visits WHERE user_id=?', user.id),
       openVisits: count("SELECT COUNT(*) AS c FROM visits WHERE user_id=? AND status='open'", user.id),
       orders: count('SELECT COUNT(*) AS c FROM orders WHERE user_id=?', user.id),
+      pendingOrders: count("SELECT COUNT(*) AS c FROM orders o WHERE o.user_id=? AND o.status IN ('sent','priced') AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)", user.id),
       reports: count('SELECT COUNT(*) AS c FROM reports WHERE user_id=?', user.id),
       dailyReports: count('SELECT COUNT(*) AS c FROM daily_reports WHERE user_id=?', user.id),
       idleReports: count('SELECT COUNT(*) AS c FROM idle_reports WHERE user_id=?', user.id),
@@ -1324,6 +1325,8 @@ export function createApp(overrides: Partial<Config> = {}) {
       throw error;
     }
     store.audit(res.locals.user.id, 'customer.update', { customerId: current.id, fields: Object.keys(parsed.data) });
+    if ((parsed.data.active !== undefined || parsed.data.name !== undefined || parsed.data.phone !== undefined)
+      && store.get('SELECT 1 FROM orders WHERE customer_id=? LIMIT 1', current.id)) io.to('admins').emit('order', {customerChanged:true});
     invalidateKpis(); broadcast();
     res.json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
   });
@@ -2097,7 +2100,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
   /* The field sends quantities only. Prices belong to a sales invoice, never to the recommendation. */
   const ORDER_SELECT = `SELECT o.id, o.customer_id AS customerId, o.visit_id AS visitId, o.user_id AS userId,
-      c.name AS customerName, c.phone AS customerPhone, c.price_tier_id AS customerTierId, t.name AS customerTierName,
+      c.name AS customerName, c.phone AS customerPhone, c.active AS customerActive, c.price_tier_id AS customerTierId, t.name AS customerTierName,
       u.name AS repName, u.color AS repColor,
       o.status, o.notes, o.total, o.recorded_offline AS recordedOffline,
       EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) AS sold,
@@ -2126,6 +2129,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (withPrices) {
       shaped.visitId = row.visitId ?? null;
       shaped.customerPhone = row.customerPhone;
+      shaped.customerActive = Boolean(row.customerActive);
       shaped.customerTierId = row.customerTierId ?? null;
       shaped.customerTierName = row.customerTierName ?? '';
       shaped.repName = row.repName; shaped.repColor = row.repColor;

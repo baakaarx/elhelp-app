@@ -11,6 +11,7 @@ import type { FieldBundle } from './useField';
 
 export default function SettingsScreen({ user, field, onLogout, onDeleted }: { user: User; field: FieldBundle; onLogout: () => void; onDeleted: () => void | Promise<void> }) {
   const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState('');
   const [permission, setPermission] = useState<string | null>(null);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [pushPermission, setPushPermission] = useState<'granted' | 'denied' | 'unsupported'>('unsupported');
@@ -151,16 +152,17 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
         </Body>
         <Row style={{ gap: space.sm }}>
           <Button style={{ flex: 1 }} variant="soft" label={syncing ? 'جارٍ المزامنة…' : 'مزامنة الآن'} loading={syncing} onPress={async () => {
-            setSyncing(true);
+            setSyncing(true); setSyncResult('');
             try {
               const result = await flushOutbox(user.id, { retryRejected: true });
-              Alert.alert('المزامنة', result.notice || (result.pending ? `تم إرسال ${result.sent}، وباقي ${result.pending}.` : 'كل البيانات مُرسلة ✅'));
+              setSyncResult(result.notice || (result.pending ? `تم إرسال ${result.sent}، وباقي ${result.pending}.` : 'كل البيانات مُرسلة ✅'));
               await field.refresh();
-            } catch { Alert.alert('المزامنة', 'تعذر الاتصال بالسيرفر. حاول بعد قليل.'); }
+            } catch { setSyncResult('تعذر التأكد من نتيجة المزامنة. راجع البيانات المحفوظة وحاول بعد قليل.'); }
             finally { setSyncing(false); }
           }} />
           <Button style={{ flex: 1 }} variant="ghost" label="تحديث البيانات" onPress={() => void field.refresh()} />
         </Row>
+        {syncResult ? <Text accessibilityRole="alert">{syncResult}</Text> : null}
       </Card>
 
       <Card>

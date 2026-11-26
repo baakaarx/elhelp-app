@@ -11,6 +11,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   await managerTab.click();
   await manager.getByRole('tab', { name: /الطلبيات/ }).click();
   await expect(manager.locator('.order-card').filter({hasText:'عميل اختبار الطلبية'})).toBeVisible();
+  const initialBadge = Number((await managerTab.locator('em.badge').innerText()).replace(/[٠-٩]/g, c => String('٠١٢٣٤٥٦٧٨٩'.indexOf(c))));
   await page.setViewportSize({ width: 420, height: 850 });
   await page.goto(`${E2E_API}/app/`);
   await page.getByPlaceholder('rep@company.com').fill(E2E_REPS[0].email);
@@ -39,7 +40,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   expect(body.order.lines[0].qty).toBe(3);
   expect(body.order.lines[0]).not.toHaveProperty('price');
   expect(body.order).not.toHaveProperty('total');
-  await expect(managerTab.locator('em.badge')).toHaveText('٢');
+  await expect(managerTab.locator('em.badge')).toHaveText(new Intl.NumberFormat('ar-EG').format(initialBadge + 1));
   await expect(manager.locator('.order-card').filter({ hasText: 'مزرعة النور' })).toBeVisible();
   await page.getByRole('tab', { name: 'حسابي' }).click();
   await expect(page.getByText(/الطلبيات تفضل محفوظة لحد حذف الحساب/)).toBeVisible();
