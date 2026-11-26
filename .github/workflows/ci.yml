@@ -69,7 +69,8 @@ jobs:
             const fs = require('fs');
             let log = '';
             try { log = fs.readFileSync('playwright.log', 'utf8'); } catch {}
-            const lines = log.split(/\r?\n/);
+            // Browser console chatter can hide the failed locator and source line in annotations.
+            const lines = log.split(/\r?\n/).filter(line => !/^\s*\[pid=/.test(line));
             const start = lines.findIndex(line => /^\s*\d+\)/.test(line));
             const excerpt = (start >= 0 ? lines.slice(start, start + 30) : lines.slice(-30)).join(' | ');
             const clean = excerpt.replace(/%/g, '%25').replace(/\r?\n/g, '%0A').slice(0, 4000);

@@ -22,11 +22,14 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   await expect(page.getByText('التقرير اليومي')).toHaveCount(0);
   await page.getByRole('button', { name: 'تسجيل طلبية' }).click();
   await page.getByText('مزرعة النور', { exact: true }).last().click();
+  await expect(page.getByRole('button', { name: 'اختار واحد تاني' })).toBeVisible();
   // The phone only shows the first few catalogue entries until the engineer searches.
   await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('يوريا');
   await page.getByRole('button', { name: 'ضيف يوريا ٤٦٪' }).click();
   await page.getByLabel('كمية يوريا ٤٦٪').fill('3');
-  const response = page.waitForResponse(res => res.url().endsWith('/api/orders') && res.request().method() === 'POST');
+  await expect(page.getByLabel('كمية يوريا ٤٦٪')).toHaveValue('3');
+  const response = page.waitForResponse(res => res.url().endsWith('/api/orders') && res.request().method() === 'POST', { timeout: 12000 })
+    .catch(async () => { throw new Error(`لم يُرسل طلب الطلبية. حالة الشاشة: ${(await page.locator('body').innerText()).slice(-2500)}`); });
   await page.getByRole('button', { name: /ابعت الطلبية للمكتب/ }).click();
   const result = await response;
   expect(result.status()).toBe(201);

@@ -24,7 +24,9 @@ export default defineConfig({
   // A private server on its own ports: the browser suite must not consume the live preview's
   // login quota or write test accounts into real data.
   webServer: {
-    command: 'npm run dev',
+    // A private test-only API with a larger request budget for the shared test account.
+    // The normal development/production servers retain their real rate limits.
+    command: 'npx concurrently -k -n API,Dashboard "npx tsx scripts/e2e-server.ts" "npm run dev -w @mandoub/dashboard"',
     url: 'http://127.0.0.1:5174/api/health',
     reuseExistingServer: false,
     timeout: 90000,
