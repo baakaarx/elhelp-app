@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from './api';
+import { ApiError, api } from './api';
 import { dayBefore, localDay } from './dates';
 import { ago, formatNumber } from './session';
 import type { ManagerAlert } from './types';
@@ -35,7 +35,7 @@ export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:Ma
     catch(e){if(version===requestVersion.current)setError(e instanceof Error?e.message:'تعذر تحميل التحليل.');}
     finally{if(version===requestVersion.current)setLoading(false);}
   },[from,to,timezone]);
-  const loadPriorities=useCallback(async()=>{const request=++priorityRequest.current;setPriorities(null);setPriorityError('');setPriorityLoading(true);try{const result=await api<Priorities>('/api/work-priorities');if(request===priorityRequest.current)setPriorities(result);}catch(e){if(request===priorityRequest.current)setPriorityError(e instanceof Error?e.message:'تعذر تحميل الأولويات.');}finally{if(request===priorityRequest.current)setPriorityLoading(false);}},[]);
+  const loadPriorities=useCallback(async()=>{const request=++priorityRequest.current;setPriorities(null);setPriorityError('');setPriorityLoading(true);try{const result=await api<Priorities>('/api/work-priorities');if(request===priorityRequest.current)setPriorities(result);}catch(e){if(request===priorityRequest.current)setPriorityError(e instanceof ApiError && e.message?e.message:'حاول تاني.');}finally{if(request===priorityRequest.current)setPriorityLoading(false);}},[]);
   useEffect(()=>{void load();return()=>{requestVersion.current++;};},[load]);
   useEffect(()=>{void loadPriorities();return()=>{priorityRequest.current++;};},[loadPriorities]);
   const fieldAlerts=alerts.filter(a=>a.code!=='orders_awaiting_pricing');

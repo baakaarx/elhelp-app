@@ -1,14 +1,20 @@
 import { useReveal } from './useReveal';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, patch, post } from './api';
 type StaffUser={id:string; name:string; email:string; accessScope:'full'|'warehouse';active:boolean};
 export default function Staff() {
   const [list,setList]=useState<StaffUser[]|null>(null), [name,setName]=useState(''), [email,setEmail]=useState(''), [password,setPassword]=useState(''), [scope,setScope]=useState<'full'|'warehouse'>('warehouse'), [error,setError]=useState(''), [message,setMessage]=useState(''), [busy,setBusy]=useState(false);
   const resetForm=useReveal<HTMLFormElement>();
   const [resetUser,setResetUser]=useState<StaffUser|null>(null), [resetPassword,setResetPassword]=useState('');
-  const [loadingList,setLoadingList]=useState(false);
-  const load=async()=>{setList(null);setLoadingList(true);try{const result=await api<{staff:StaffUser[]}>('/api/staff');setList(result.staff);}finally{setLoadingList(false);}};
-  useEffect(()=>{ void load().catch(e=>setError(e instanceof Error?e.message:'تعذر تحميل الحسابات.')); },[]);
+  const [loadingList,setLoadingList]=useState(true);
+  const listRequest=useRef(0);
+  const load=async()=>{
+    const request=++listRequest.current;setList(null);setLoadingList(true);
+    try {const result=await api<{staff:StaffUser[]}>('/api/staff');if(request===listRequest.current)setList(result.staff);}
+    catch(e){if(request===listRequest.current)throw e;}
+    finally{if(request===listRequest.current)setLoadingList(false);}
+  };
+  useEffect(()=>{ void load().catch(e=>setError(e instanceof Error?e.message:'تعذر تحميل الحسابات.'));return()=>{listRequest.current++;}; },[]);
   async function retryLoad(){setError('');try{await load();}catch(e){setError(e instanceof Error?e.message:'تعذر تحميل الحسابات.');}}
   async function create(e:FormEvent) { e.preventDefault();setBusy(true);setError('');setMessage('');try {
     await post('/api/staff',{name,email,password,accessScope:scope}); setMessage(`اتعمل حساب ${name}.`); setName('');setEmail('');setPassword('');try {await load();} catch {setError('الحساب اتعمل، لكن القائمة ما اتحدّثتش. حدّث الصفحة قبل المحاولة مرة أخرى.');}
