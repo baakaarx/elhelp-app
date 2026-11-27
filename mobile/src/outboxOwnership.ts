@@ -9,7 +9,7 @@ export function outboxOwnership(ownerId: string | null, userId: string | null, p
   if (!ownerId) {
     return {
       allowed: false,
-      notice: 'هناك بيانات معلّقة من نسخة سابقة ولا نعرف الحساب صاحبها؛ لم نرسلها لتجنب نسبتها لحساب خطأ. سجّل بالحساب الصحيح أو احذف المعلّق بعد التأكد.',
+      notice: 'في بيانات معلّقة من نسخة سابقة ومش معروف صاحبها؛ لن نرسلها لحساب قد يكون خطأ. لا تمسح بيانات التطبيق، واطلب مساعدة المكتب لمراجعتها.',
     };
   }
   if (!userId) {
@@ -21,7 +21,7 @@ export function outboxOwnership(ownerId: string | null, userId: string | null, p
   if (ownerId !== userId) {
     return {
       allowed: false,
-      notice: 'هناك بيانات معلّقة لحساب آخر؛ لم نرسلها إلى حسابك الحالي. سجّل الدخول بالحساب صاحب البيانات لمزامنتها أو احذف المعلّق بعد التأكد.',
+      notice: 'في بيانات معلّقة لحساب آخر؛ لن نرسلها بالحساب الحالي. سجّل الدخول بالحساب صاحب البيانات لمزامنتها، ولا تمسح بيانات التطبيق.',
     };
   }
   return { allowed: true };

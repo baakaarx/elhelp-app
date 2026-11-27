@@ -44,7 +44,7 @@ export default function App() {
   const [idleReports, setIdleReports] = useState<IdleReport[]>([]);
   const [tab, setTab] = useState<Tab>('live');
   const pageHeader = useReveal<HTMLElement>();
-  const navigate = (next:Tab) => {setTab(next);pageHeader.reveal();};
+  const navigate = (next:Tab) => {if(next!=='products')setInvoiceOrderId(null);setTab(next);pageHeader.reveal();};
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectionJump, setSelectionJump] = useState(0);
   const [selectedIdleId, setSelectedIdleId] = useState<string | null>(null);
@@ -78,7 +78,9 @@ export default function App() {
   const [soundError, setSoundError] = useState('');
   const [orderNotice, setOrderNotice] = useState('');
   const [openOrdersRequest, setOpenOrdersRequest] = useState(0);
-  const updateOrderNotice = useCallback((id: unknown, detail?: { customerName?: unknown; repName?: unknown }, initial = false) => {
+  const [invoiceOrderId, setInvoiceOrderId] = useState<string | null>(null);
+  const orderNoticeOrderId = useRef<string | null>(null);
+  const updateOrderNotice = useCallback((id: unknown, detail?: { id?: unknown; sold?: unknown; customerName?: unknown; repName?: unknown }, initial = false) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) return;
     const before = orderNoticeCursor.current;
     if (before === null) {
@@ -88,6 +90,8 @@ export default function App() {
       if (id <= before) return;
       orderNoticeCursor.current = id;
     }
+    if (detail?.sold === true) return;
+    orderNoticeOrderId.current = typeof detail?.id === 'string' ? detail.id : null;
     const customer = typeof detail?.customerName === 'string' ? detail.customerName : '';
     const rep = typeof detail?.repName === 'string' ? detail.repName : '';
     setOrderNotice(customer ? `وصلت طلبية جديدة: ${customer}${rep ? ` · المهندس ${rep}` : ''}` : 'وصلت طلبية جديدة أثناء تحديث الاتصال.');
@@ -126,7 +130,7 @@ export default function App() {
     setConnected(false);
     setSyncedAt(null);
     setError('');
-    orderNoticeCursor.current = null; setOrderNotice(''); setOpenOrdersRequest(0);
+    orderNoticeCursor.current = null; orderNoticeOrderId.current = null; setOrderNotice(''); setOpenOrdersRequest(0); setInvoiceOrderId(null);
     soundOnRef.current = false; setSoundOn(false); setSoundError('');
     if (audioRef.current) { void audioRef.current.close(); audioRef.current = null; }
   }, []);
@@ -169,7 +173,8 @@ export default function App() {
         // the manager only saw the alert vanish — never why.
         api<{ reports: IdleReport[] }>('/api/idle-reports?limit=20').catch(() => ({ reports: [] })),
       ]);
-      updateOrderNotice(nextOverview.latestOrderNoticeId, undefined, orderNoticeCursor.current === null);
+      updateOrderNotice(nextOverview.latestOrderNoticeId, {id:nextOverview.latestOrderNoticeOrderId,sold:nextOverview.latestOrderNoticeSold}, orderNoticeCursor.current === null);
+      if ((nextOverview.sentOrders ?? 0) === 0 || (nextOverview.latestOrderNoticeSold && nextOverview.latestOrderNoticeOrderId === orderNoticeOrderId.current)) { orderNoticeOrderId.current = null; setOrderNotice(''); }
       setOverview(nextOverview);
       setAlerts(nextAlerts.alerts.filter(alert => alert.code !== 'missing_daily_report' && alert.code !== 'stale_reviews'));
       setIdleReports(nextIdle.reports);
@@ -197,11 +202,11 @@ export default function App() {
     socket.on('connect', () => { liveRef.current = true; setConnected(true); bumpOrders(); });
     socket.on('disconnect', () => { liveRef.current = false; setConnected(false); });
     socket.on('connect_error', () => { liveRef.current = false; setConnected(false); });
-    socket.on('overview', (data: Overview) => { updateOrderNotice(data.latestOrderNoticeId, undefined, orderNoticeCursor.current === null); setOverview(data); setSyncedAt(Date.now()); });
+    socket.on('overview', (data: Overview) => { updateOrderNotice(data.latestOrderNoticeId, {id:data.latestOrderNoticeOrderId,sold:data.latestOrderNoticeSold}, orderNoticeCursor.current === null); if ((data.sentOrders ?? 0) === 0 || (data.latestOrderNoticeSold && data.latestOrderNoticeOrderId === orderNoticeOrderId.current)) { orderNoticeOrderId.current = null; setOrderNotice(''); } setOverview(data); setSyncedAt(Date.now()); });
     socket.on('report', () => { bumpReports(); refresh(); });
     socket.on('daily-report', () => { bumpReports(); refresh(); });
     socket.on('visit', () => { bumpReports(); refresh(); });
-    socket.on('order', (event: { noticeId?: number; customerName?: string; repName?: string }) => { updateOrderNotice(event?.noticeId, event); bumpOrders(); refresh(); });
+    socket.on('order', (event: { id?: string; sold?: boolean; noticeId?: number; customerName?: string; repName?: string }) => { if (event?.sold && event.id && orderNoticeOrderId.current === event.id) { orderNoticeOrderId.current = null; setOrderNotice(''); } updateOrderNotice(event?.noticeId, event); bumpOrders(); refresh(); });
     return () => { liveRef.current = false; socket.close(); socketRef.current = null; };
     // `connected` is intentionally excluded: re-creating the socket on every connect event would
     // churn connections. The poll below has its own effect precisely so it can follow it.
@@ -474,9 +479,9 @@ export default function App() {
         )}
         {tab === 'performance' && <Performance reps={reps} staleGpsMinutes={overview?.staleGpsMinutes ?? 10} timezone={overview?.timezone} />}
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
-        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} openOrdersRequest={openOrdersRequest} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
+        {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} onInvoice={id=>{setInvoiceOrderId(id);navigate('products');}} version={reportsVersion} ordersVersion={ordersVersion} openOrdersRequest={openOrdersRequest} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
-        {tab === 'products' && (typeof globalThis.crypto?.randomUUID === 'function' ? <Sales timezone={overview?.timezone} userId={user.id} ordersVersion={ordersVersion} /> : <section className="page"><h2>المبيعات</h2><p className="error" role="alert">المتصفح لا يوفر حماية معرّفات العمليات على هذا الرابط. افتح اللوحة على نفس جهاز السيرفر عبر localhost، أو استخدم رابط HTTPS آمنًا ومتصفحًا حديثًا.</p></section>)}
+        {tab === 'products' && (typeof globalThis.crypto?.randomUUID === 'function' ? <Sales timezone={overview?.timezone} userId={user.id} ordersVersion={ordersVersion} requestedOrderId={invoiceOrderId} onOrderRequestHandled={()=>setInvoiceOrderId(null)} /> : <section className="page"><h2>المبيعات</h2><p className="error" role="alert">المتصفح لا يوفر حماية معرّفات العمليات على هذا الرابط. افتح اللوحة على نفس جهاز السيرفر عبر localhost، أو استخدم رابط HTTPS آمنًا ومتصفحًا حديثًا.</p></section>)}
         {tab === 'warehouses' && <Warehouses userId={user.id} />}
         {tab === 'staff' && <Staff />}
   {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} onAddWarehouseStaff={()=>navigate('staff')} />}

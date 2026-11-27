@@ -65,11 +65,13 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
         try {
           await enqueueReport(payload, ownerId);
           const result = await flushOutbox(ownerId).catch(() => null);
-          onPending?.(result?.pending ?? 0);
-          setMessage(result?.notice || 'تعذّر الإرسال الآن. حفظناه وسيُرسل تلقائيًا.');
+          if (result) onPending?.(result.pending);
+          setMessage(result?.notice || (result && result.pending === 0
+            ? 'تمت مزامنة التقرير مع السيرفر.'
+            : 'التقرير محفوظ على الهاتف، ولم نتأكد من وصوله بعد. سيحاول التطبيق مزامنته أثناء فتحه؛ لا ترسله مرة أخرى.'));
           setTitle(''); setBody(''); setCustomer('');
         } catch (queueError) {
-          setError(queueError instanceof Error ? queueError.message : 'تعذر حفظ التقرير على الهاتف.');
+          setError(`${queueError instanceof Error ? queueError.message : 'تعذر حفظ التقرير على الهاتف.'} قد يكون التقرير وصل للسيرفر قبل انقطاع الاتصال؛ راجع المكتب قبل إرساله مرة أخرى.`);
         }
       } else setError((e as Error).message);
     } finally { setBusy(false); }

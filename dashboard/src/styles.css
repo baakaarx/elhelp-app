@@ -518,6 +518,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; flex: 0 0 auto; }
 
 .sales-table { min-width: 580px; }
 .sale-line { display: grid; grid-template-columns: minmax(200px,2fr) repeat(2,minmax(120px,1fr)) auto; gap: 10px; align-items: end; }
+.sale-unit { grid-column: 1 / -1; margin: 0; color: var(--ink); }
 .sale-order-lines { display: grid; gap: 4px; margin: 12px 0; }
 .sales-page details { margin-top: 16px; }
 .sales-page summary { cursor: pointer; font-weight: 700; }

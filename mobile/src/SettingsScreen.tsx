@@ -63,7 +63,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       if (result === 'enabled') {
         setPushEnabled(true);
         setPushPermission('granted');
-        Alert.alert('الإشعارات', 'تم تفعيل إشعارات تحديث حالة الحساب.');
+        Alert.alert('الإشعارات', 'تم تسجيل هذا الجهاز للإشعارات. وصول كل إشعار يعتمد على الشبكة وخدمة الهاتف؛ راجع التطبيق أيضًا.');
       } else if (result === 'denied') {
         setPushPermission('denied');
         Alert.alert('الإشعارات غير مفعلة', 'اسمح بالإشعارات من إعدادات الهاتف ثم جرّب مرة أخرى.');
@@ -144,18 +144,18 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       </Card>
 
       <Card>
-        <SectionTitle title="المزامنة" action={<Pill label={field.pending ? `${field.pending} بالانتظار` : 'كل شيء مُرسل'} tone={field.pending ? 'warn' : 'mint'} />} />
+        <SectionTitle title="المزامنة" action={<Pill label={field.pending ? `${field.pending} بالانتظار` : 'لا توجد بيانات معلّقة'} tone={field.pending ? 'warn' : 'mint'} />} />
         <Body muted>
           {field.pending
-            ? 'فيه بيانات محفوظة على جهازك (مواقع أو زيارات أو طلبيات) وما اتبعتتش. هنحاول نبعتها تلقائيًا لما الشبكة ترجع؛ لو السيرفر رفض بيانات، هتظهر رسالة بالمشكلة.'
-            : 'كل بياناتك مُرسلة للسيرفر. المزامنة التلقائية كل ١٥ ثانية.'}
+            ? 'فيه بيانات محفوظة على جهازك لم نتأكد من وصولها للسيرفر. التطبيق يحاول مزامنتها أثناء فتحه؛ لو السيرفر رفض بيانات، هتظهر رسالة بالمشكلة.'
+            : 'لا توجد بيانات في قائمة المزامنة على الجهاز. التطبيق يفحص المزامنة كل ١٥ ثانية أثناء فتحه.'}
         </Body>
         <Row style={{ gap: space.sm }}>
           <Button style={{ flex: 1 }} variant="soft" label={syncing ? 'جارٍ المزامنة…' : 'مزامنة الآن'} loading={syncing} onPress={async () => {
             setSyncing(true); setSyncResult('');
             try {
               const result = await flushOutbox(user.id, { retryRejected: true });
-              setSyncResult(result.notice || (result.pending ? `تم إرسال ${result.sent}، وباقي ${result.pending}.` : 'كل البيانات مُرسلة ✅'));
+              setSyncResult(result.notice || (result.pending ? `تمت مزامنة ${result.sent} عنصر، وباقي ${result.pending} على الجهاز.` : 'لا توجد بيانات معلّقة في قائمة المزامنة.'));
               await field.refresh();
             } catch { setSyncResult('تعذر التأكد من نتيجة المزامنة. راجع البيانات المحفوظة وحاول بعد قليل.'); }
             finally { setSyncing(false); }
@@ -168,7 +168,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
       <Card>
         <SectionTitle title="الإشعارات" action={<Pill label={pushActive ? 'مفعلة' : pushEnabled ? 'تحتاج إذن الهاتف' : 'متوقفة'} tone={pushActive ? 'mint' : 'warn'} />} />
         <Body muted>
-          لو الإدارة غيّرت حالة حسابك، هيوصلك تنبيه حتى لو التطبيق مقفول. لا تحتوي الإشعارات على موقعك. يتفعّل التسجيل بعد ربط الحساب بهذا الهاتف ببدء وردية مرة واحدة.
+          عند تغيير حالة الحساب أو مراجعة تقرير أو تسجيل فاتورة طلبية، يمكن أن يصلك إشعار على الهاتف إذا سمحت بالإشعارات وكان الجهاز متصلًا. وصول الإشعار غير مضمون؛ راجع التطبيق أيضًا. الإشعارات لا تحتوي على موقعك. يُربط الحساب بهذا الهاتف عند بدء وردية مرة واحدة.
           {pushPermission === 'denied' ? '\nإذن الإشعارات مرفوض من إعدادات الهاتف.' : ''}
         </Body>
         <Button

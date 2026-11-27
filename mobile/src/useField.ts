@@ -116,8 +116,8 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     setProducts(next);
   }, []);
   const pendingVisitNotice = (visits: number, orders: number) => [
-    visits > 0 ? `هناك ${visits} زيارة محفوظة على الهاتف ولم تصل إلى السيرفر بعد.` : '',
-    orders > 0 ? `هناك ${orders} طلبية محفوظة على الهاتف ولم تصل إلى المكتب بعد.` : '',
+    visits > 0 ? `هناك ${visits} زيارة محفوظة على الهاتف ولم نتأكد من وصولها للسيرفر بعد.` : '',
+    orders > 0 ? `هناك ${orders} طلبية محفوظة على الهاتف ولم نتأكد من وصولها للمكتب بعد.` : '',
   ].filter(Boolean).join(' ');
   /**
    * True while one sync tick is still running.
@@ -404,7 +404,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       } catch (e) {
         if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckIn({ ...input, recordedAt: Date.now() }, user?.id);
-        setOfflineNotice('الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        setOfflineNotice('الزيارة محفوظة على الهاتف ولم نتأكد من وصولها. سيحاول التطبيق مزامنتها أثناء فتحه؛ لا تكررها.');
         const result = await flushOutbox(user?.id).catch(() => null);
         if (result && mounted.current) {
           setPending(result.pending);
@@ -452,7 +452,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       } catch (e) {
         if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckOut(id, { ...input, recordedAt: Date.now() }, user?.id);
-        setOfflineNotice('نتيجة الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
+        setOfflineNotice('نتيجة الزيارة محفوظة على الهاتف ولم نتأكد من وصولها. سيحاول التطبيق مزامنتها أثناء فتحه؛ لا تكررها.');
         const result = await flushOutbox(user?.id).catch(() => null);
         if (result && mounted.current) {
           setPending(result.pending);

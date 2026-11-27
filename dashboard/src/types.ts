@@ -142,6 +142,8 @@ export interface Overview {
   sentOrders?: number;
   /** Monotonic marker for newly received orders, including deliveries missed while disconnected. */
   latestOrderNoticeId?: number;
+  latestOrderNoticeOrderId?: string | null;
+  latestOrderNoticeSold?: boolean;
   /** Server-side staleness threshold (STALE_GPS_MINUTES), so both sides agree. */
   staleGpsMinutes?: number;
 }

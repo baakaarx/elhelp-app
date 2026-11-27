@@ -12,7 +12,7 @@ interface OrderRow {
 type Filter='sent'|'all';
 
 /** Recommendations are read-only: only sales invoices may contain prices. */
-export default function Orders({timezone,version}:{timezone?:string;version:number;onDone:()=>void}) {
+export default function Orders({timezone,version,onInvoice}:{timezone?:string;version:number;onInvoice:(orderId:string)=>void}) {
   const [filter,setFilter]=useState<Filter>('sent'),[offset,setOffset]=useState(0);
   const [result,setResult]=useState<{key:string;orders:OrderRow[];hasMore:boolean}|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
   const key=`${filter}:${offset}`,currentKey=useRef(key);currentKey.current=key;
@@ -38,9 +38,10 @@ export default function Orders({timezone,version}:{timezone?:string;version:numb
         <p className="muted small">المهندس: {order.repName} · {order.sentAt?dateTimeText(order.sentAt,timezone):'—'}{order.recordedOffline?' · اتبعتت بعد رجوع الشبكة':''}</p>
         {order.recommendation?<p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}><strong>ترشيح المهندس:</strong> {order.recommendation}</p>:<ul>{order.lines.map(line=><li key={line.productId}><strong>{line.productName}</strong> · ترشيح {recommendationQty(line.qty)} {line.unit} {line.unitSize}{line.notes?` · ${line.notes}`:''}</li>)}</ul>}
         {order.notes&&<p className="muted small">ملاحظة المهندس: {order.notes}</p>}
+        {!order.sold&&<button type="button" className="btn primary sm" disabled={!order.customerActive} onClick={()=>onInvoice(order.id)}>تسجيل فاتورة للطلبية</button>}
       </article>)}
     </div>}
     {ready&&(offset>0||result.hasMore)&&<div className="confirm-pair" aria-label="صفحات الطلبيات"><button className="btn ghost sm" disabled={loading||offset===0} onClick={()=>{setLoading(true);setOffset(Math.max(0,offset-pageSize));}}>السابق</button><span className="muted small">صفحة {formatNumber(Math.floor(offset/pageSize)+1)}</span><button className="btn ghost sm" disabled={loading||!result.hasMore} onClick={()=>{setLoading(true);setOffset(offset+pageSize);}}>التالي</button></div>}
-    <p className="muted small">لتسجيل فاتورة من طلبية، افتح المبيعات ثم «تسجيل فاتورة» واختار الطلبية.</p>
+    <p className="muted small">زر تسجيل الفاتورة يفتح مراجعة الطلبية في المبيعات؛ الخصم يتم عند تأكيد الفاتورة فقط.</p>
   </section>;
 }

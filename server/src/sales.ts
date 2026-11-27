@@ -313,6 +313,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
           store.run('INSERT INTO office_sales_lines_v1 VALUES(?,?,?,?,?,?,?,?,?)',randomUUID(),data.id,line.productId,line.name,line.unit,line.unitSize,line.qtyMilli,line.priceCents,line.amount);
           store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'out',?,?,NULL,?,?,?,?,?)",randomUUID(),line.productId,data.warehouseId,line.qtyMilli,`صرف للفاتورة رقم ${invoiceNumber}`,actor.id,actor.name,now);
         }
+        if(data.orderId) store.run('INSERT INTO order_invoice_notices_v1(order_id,user_id,created_at) SELECT id,user_id,? FROM orders WHERE id=?',now,data.orderId);
         store.audit(actor.id,'sales.confirm',{saleId:data.id,customerId:data.customerId,orderId:data.orderId??null});
       });
     } catch(e) { const code=(e as Error).message; if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;} if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }

@@ -2,6 +2,7 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
 import { isConfirmedOrderResponse } from './orderDelivery';
+import { networkMessage } from './networkMessage';
 import type { Customer, DailyReportInput, GeoPoint, OrderInput, OrderView, Product, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
@@ -32,12 +33,10 @@ export const API_BASE = resolveBase();
 export const UNCONFIGURED = API_BASE === '' && Platform.OS !== 'web';
 
 /**
- * `queued` marks the endpoints whose caller stores the payload on the phone and retries it: only
- * for those is "saved and will be sent" true. A visit, a shift or a password change is not
- * queued, and telling an engineer in the field that his visit was saved when it was not is the
- * worst message this app can print.
+ * A network failure cannot tell us whether the server committed a write. Queueing callers
+ * report local persistence only after it succeeds; other callers must verify before repeating.
  */
-async function request<T>(path: string, init: RequestInit = {}, options: { queued?: boolean } = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = await getToken();
   const headers: Record<string, string> = { Accept: 'application/json', 'X-Mandoub-Client': 'rep', ...(init.headers as Record<string, string> | undefined) };
   if (token) headers['X-Mandoub-Token'] = token;
@@ -46,9 +45,7 @@ async function request<T>(path: string, init: RequestInit = {}, options: { queue
   try {
     res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   } catch {
-    throw new ApiError(options.queued
-      ? 'لا يوجد اتصال بالإنترنت. سيتم حفظ البيانات وإرسالها تلقائيًا.'
-      : 'لا يوجد اتصال بالإنترنت — لم يُحفظ أي شيء. أعد المحاولة عندما تعود الشبكة.', 0);
+    throw new ApiError(networkMessage(path, init.method), 0);
   }
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   const body = isJson ? await res.json().catch(() => null) : null;
@@ -59,8 +56,8 @@ async function request<T>(path: string, init: RequestInit = {}, options: { queue
   }
   return body as T;
 }
-export const post = <T>(path: string, data: unknown, options: { queued?: boolean } = {}) =>
-  request<T>(path, { method: 'POST', body: JSON.stringify(data) }, options);
+export const post = <T>(path: string, data: unknown) =>
+  request<T>(path, { method: 'POST', body: JSON.stringify(data) });
 export const get = <T>(path: string) => request<T>(path, { method: 'GET' });
 /**
  * Erases the signed-in account on the server. The email acts as the confirmation step the
@@ -77,13 +74,16 @@ export const deleteMyAccount = (email: string) =>
  * فالطابور هنا بيستقبل نفس الجسم لو الشبكة قطعت، والسيرفر بيقبل إعادة الإرسال من غير ما يضاعف.
  */
 export async function createOrder(order: OrderInput) {
-  const result = await post<{ order: OrderView; duplicate: boolean }>('/api/orders', order, { queued: true });
+  const result = await post<{ order: OrderView; duplicate: boolean }>('/api/orders', order);
   if (!isConfirmedOrderResponse(order, result)) {
-    throw new ApiError('تعذر التأكد من بيانات الطلبية المحفوظة عند المكتب. الطلب محفوظ على الهاتف؛ راجع المكتب قبل إعادة إرساله.', 503, 'ORDER_CONFIRMATION_UNCERTAIN');
+    throw new ApiError('تعذر التأكد من بيانات الطلبية عند المكتب. راجع المكتب قبل إعادة إرسالها.', 503, 'ORDER_CONFIRMATION_UNCERTAIN');
   }
   return result;
 }
 export const myOrders = () => get<{ orders: OrderView[] }>('/api/orders?limit=50');
+export type OrderInvoiceNotice = { orderId: string; customerName: string; createdAt: number };
+export const orderInvoiceNotices = () => get<{ notices: OrderInvoiceNotice[] }>('/api/me/order-invoice-notices');
+export const readOrderInvoiceNotice = (orderId:string) => post<{ok:true}>(`/api/me/order-invoice-notices/${encodeURIComponent(orderId)}/read`, {});
 
 export async function login(email: string, password: string) {
   const res = await post<{ token: string; user: User }>('/api/auth/login', { email: email.trim().toLowerCase(), password });
@@ -116,9 +116,9 @@ export async function oauthLogin(provider: 'google' | 'apple', idToken: string, 
   await setToken(res.token);
   return res.user;
 }
-export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points }, { queued: true });
-export const sendReport = (report: ReportInput) => post<{ report: { id: string } }>('/api/reports', report, { queued: true });
-export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id: string } }>('/api/daily-reports', report, { queued: true });
+export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points });
+export const sendReport = (report: ReportInput) => post<{ report: { id: string } }>('/api/reports', report);
+export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id: string } }>('/api/daily-reports', report);
 export const myReports = () => get<{ reports: ReportInput[] }>('/api/reports');
 export const myDailyReports = () => get<{ reports: unknown[] }>('/api/daily-reports');
 export const presence = () => post<{ ok: true }>('/api/presence', {});

@@ -389,6 +389,14 @@ export class Store {
         -- Which account closed it. A number written into the company's book carries a name with it.
         priced_by TEXT REFERENCES users(id) ON DELETE SET NULL
       );
+      -- Durable inbox: created with the invoice transaction and scoped to its engineer.
+      CREATE TABLE IF NOT EXISTS order_invoice_notices_v1 (
+        order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        read_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS order_invoice_notices_unread_v1 ON order_invoice_notices_v1(user_id, read_at, created_at);
       -- One line per item per order. Two lines for the same item are not two agreements — they are one
       -- agreement counted twice, which is exactly what a replayed offline send would do to the numbers.
       CREATE TABLE IF NOT EXISTS order_lines (

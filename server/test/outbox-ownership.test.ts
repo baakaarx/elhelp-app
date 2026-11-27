@@ -6,13 +6,15 @@ test('pending work is replayed only for the account that queued it', () => {
   assert.deepEqual(outboxOwnership('engineer-a', 'engineer-a', 3), { allowed: true });
   const switched = outboxOwnership('engineer-a', 'engineer-b', 3);
   assert.equal(switched.allowed, false);
-  assert.match(switched.notice || '', /لم نرسلها إلى حسابك الحالي/);
+  assert.match(switched.notice || '', /لن نرسلها بالحساب الحالي/);
+  assert.match(switched.notice || '', /لا تمسح بيانات التطبيق/);
 });
 
 test('legacy work with no recorded owner remains on the device instead of being misattributed', () => {
   const legacy = outboxOwnership(null, 'engineer-b', 1);
   assert.equal(legacy.allowed, false);
-  assert.match(legacy.notice || '', /لا نعرف الحساب صاحبها/);
+  assert.match(legacy.notice || '', /مش معروف صاحبها/);
+  assert.match(legacy.notice || '', /لا تمسح بيانات التطبيق/);
 });
 
 test('an unknown or signed-out session cannot replay saved work', () => {
