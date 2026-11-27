@@ -131,18 +131,27 @@ export function createWarehouseRouter(store: Store) {
     const m = parsed.data, scaled = m.qty * 1000, milli = Math.round(scaled);
     const from = m.kind === 'in' || m.kind === 'opening' ? null : m.fromWarehouseId ?? null, to = m.kind === 'out' ? null : m.toWarehouseId ?? null;
     if ((m.kind !== 'in' && m.kind !== 'opening' && !from) || (m.kind !== 'out' && !to) || (from && to && from === to) || ((m.kind === 'in' || m.kind === 'opening') && m.fromWarehouseId) || (m.kind === 'out' && m.toWarehouseId)) { res.status(400).json({ error: 'اختار مخازن الحركة بشكل صحيح.' }); return; }
-    const existing = store.get('SELECT * FROM inventory_movements WHERE id=?', m.id);
-    if (existing) {
-      if (existing.actor_id !== res.locals.user.id || existing.kind !== m.kind || existing.product_id !== m.productId || existing.from_warehouse_id !== from || existing.to_warehouse_id !== to || Number(existing.milli_qty) !== milli || existing.note !== m.note) { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.' }); return; }
-      res.json({ ok:true, duplicate:true }); return;
-    }
+    const duplicate = () => {
+      const existing = store.get('SELECT * FROM inventory_movements WHERE id=?', m.id);
+      if (!existing) return 0;
+      return existing.actor_id === res.locals.user.id && existing.kind === m.kind && existing.product_id === m.productId
+        && existing.from_warehouse_id === from && existing.to_warehouse_id === to && Number(existing.milli_qty) === milli && existing.note === m.note ? 1 : -1;
+    };
+    const existing = duplicate();
+    if (existing) { res.status(existing === 1 ? 200 : 409).json(existing === 1 ? {ok:true, duplicate:true} : {error:'معرّف الحركة مستخدم لبيانات مختلفة.'}); return; }
+    // Older clients could submit excess precision; a recorded movement remains retryable above.
     if (!hasDecimalPrecision(m.qty,3)) { res.status(400).json({ error: 'الكمية تقبل لحد ٣ أرقام بعد العلامة العشرية.' }); return; }
     if (m.kind !== 'opening' && milli < 1) { res.status(400).json({ error: 'اكتب كمية أكبر من صفر للحركة؛ الصفر مسموح للرصيد الافتتاحي فقط.' }); return; }
     const item = product(m.productId);
     if (!item) { res.status(400).json({ error: 'الصنف غير موجود.' }); return; }
     if ((from && !store.get('SELECT id FROM warehouses WHERE id=?', from)) || (to && !store.get('SELECT id FROM warehouses WHERE id=?', to))) { res.status(400).json({ error: 'المخزن غير موجود.' }); return; }
+    let replay = false;
     try {
       store.transaction(() => {
+        // Another process can commit the request after the initial check but before this lock.
+        const previous = duplicate();
+        if (previous === 1) { replay = true; return; }
+        if (previous === -1) throw new Error('REQUEST_CONFLICT');
         if (m.kind === 'opening') {
           if (store.get('SELECT 1 FROM warehouse_stock WHERE warehouse_id=? AND product_id=?', to, m.productId)) throw new Error('STOCK_INITIALIZED');
           store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES (?,?,?)', to, m.productId, milli);
@@ -158,15 +167,17 @@ export function createWarehouseRouter(store: Store) {
         if (to && m.kind !== 'opening' && Number(store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',to,m.productId)!.milli_qty) > Number.MAX_SAFE_INTEGER-milli) throw new Error('STOCK_LIMIT');
         if (to && m.kind !== 'opening') store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES (?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET milli_qty=milli_qty+excluded.milli_qty', to, m.productId, milli);
         store.run('INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)', m.id,m.kind,m.productId,from,to,milli,m.note,res.locals.user.id,res.locals.user.name,Date.now());
+        store.audit(res.locals.user.id, 'warehouse.movement', { movementId:m.id, kind:m.kind, productId:m.productId, from, to, qty:m.qty });
       });
     } catch (e) {
+      if ((e as Error).message === 'REQUEST_CONFLICT') { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.' }); return; }
       if ((e as Error).message === 'STOCK_INITIALIZED') { res.status(409).json({ error: 'الرصيد الافتتاحي اتسجل قبل كده.' }); return; }
       if ((e as Error).message === 'STOCK_NOT_INITIALIZED') { res.status(409).json({ error: 'سجّل الرصيد الافتتاحي للصنف في كل مخزن للحركة الأول.' }); return; }
       if ((e as Error).message === 'STOCK_LIMIT') { res.status(409).json({ error: 'الرصيد أكبر من الحد الآمن للتسجيل. راجع المسؤول.', code:'STOCK_LIMIT' }); return; }
       if ((e as Error).message === 'INSUFFICIENT_STOCK') { res.status(409).json({ error: 'الكمية أكبر من الرصيد المتاح في المخزن.', code:'INSUFFICIENT_STOCK' }); return; }
       throw e;
     }
-    store.audit(res.locals.user.id, 'warehouse.movement', { movementId:m.id, kind:m.kind, productId:m.productId, from, to, qty:m.qty });
+    if (replay) { res.json({ok:true, duplicate:true}); return; }
     res.status(201).json({ ok:true, duplicate:false });
   });
   return router;

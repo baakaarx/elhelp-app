@@ -171,3 +171,37 @@ test('zero is allowed only for opening stock and gives a specific error otherwis
  assert.equal(zero.status,400);assert.match(zero.body.error,/أكبر من صفر/);
  const opening=await client.post('/api/warehouse/movements').set(admin).send({...base,id:randomUUID(),kind:'opening'});assert.equal(opening.status,201);
 });
+
+test('movement retry is rechecked after acquiring the transaction lock', async () => {
+  const w=(await client.post('/api/warehouse/warehouses').set(admin).send({name:'مخزن تزاحم الحركة'})).body.warehouse.id;
+  const p=(await client.post('/api/warehouse/products').set(admin).send({name:'صنف تزاحم الحركة',category:'other',unit:'عبوة'})).body.product.id;
+  const id=randomUUID();
+  const original=instance.store.transaction.bind(instance.store);
+  instance.store.transaction = (fn: () => void) => {
+    // Simulate the same operation committing between the first lookup and BEGIN IMMEDIATE.
+    original(() => {
+      instance.store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES(?,?,?)',w,p,1000);
+      instance.store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'opening',?,NULL,?,1000,'',?,?,?)",id,p,w,adminLogin.body.user.id,adminLogin.body.user.name,Date.now());
+    });
+    original(fn);
+  };
+  try {
+    const result=await client.post('/api/warehouse/movements').set(admin).send({id,kind:'opening',productId:p,toWarehouseId:w,qty:1});
+    assert.equal(result.status,200);assert.equal(result.body.duplicate,true);
+    assert.equal(Number(instance.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p)?.milli_qty),1000);
+  } finally { instance.store.transaction = original; }
+});
+
+test('an audit failure rolls back both the stock movement and its balance', async () => {
+  const w=(await client.post('/api/warehouse/warehouses').set(admin).send({name:'مخزن فشل السجل'})).body.warehouse.id;
+  const p=(await client.post('/api/warehouse/products').set(admin).send({name:'صنف فشل السجل',category:'other',unit:'عبوة'})).body.product.id;
+  const input={id:randomUUID(),kind:'opening',productId:p,toWarehouseId:w,qty:5};
+  instance.store.db.exec("CREATE TRIGGER fail_warehouse_audit BEFORE INSERT ON audit_log WHEN NEW.action='warehouse.movement' BEGIN SELECT RAISE(ABORT, 'simulated audit failure'); END");
+  try {
+    assert.equal((await client.post('/api/warehouse/movements').set(admin).send(input)).status,500);
+    assert.equal(instance.store.get('SELECT 1 FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p),undefined);
+    assert.equal(instance.store.get('SELECT 1 FROM inventory_movements WHERE id=?',input.id),undefined);
+  } finally { instance.store.db.exec('DROP TRIGGER fail_warehouse_audit'); }
+  assert.equal((await client.post('/api/warehouse/movements').set(admin).send(input)).status,201);
+  assert.equal(Number(instance.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p)?.milli_qty),5000);
+});

@@ -205,7 +205,10 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const data=parsed.data,actor=res.locals.user,request=JSON.stringify({type,targetId,...data});
     const old=duplicate('office_corrections_v1',data.id,request,actor.id);
     if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    let replay=false;
     try {store.transaction(()=>{
+      const locked=duplicate('office_corrections_v1',data.id,request,actor.id);
+      if(locked===1){replay=true;return;} if(locked===-1)throw Error('REQUEST_CONFLICT');
       const current=detail(type,targetId);if(!current)throw Error('NOT_FOUND');
       if(current.balancePiasters!==data.balancePiasters || current.revision!==data.revision)throw Error('STALE');
       if(new Set(data.lines.map(l=>l.lineId)).size!==data.lines.length || (type==='receipt'&&data.lines.length))throw Error('LINES');
@@ -234,7 +237,8 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         }
       }
       store.audit(actor.id,'sales.correction',{correctionId:data.id,type,targetId});
-    });}catch(e){const code=(e as Error).message;const errors:Record<string,string>={NOT_FOUND:'العملية غير موجودة.',STALE:'الحساب أو التصحيحات اتغيرت؛ افتح العملية وراجعها من جديد.',LINES:'راجع أصناف التصحيح.',EMPTY:'حدد تغييرًا واحدًا على الأقل.',CASH:'المبلغ أكبر من المدفوع المتبقي في العملية.',QUANTITY:'الكمية أكبر من المسموح أو البضاعة المرتجعة أكبر من الكمية المصححة.',STOCK:'تعذر إضافة المرتجع للمخزن؛ راجع المسؤول.'};if(errors[code]){res.status(409).json({error:errors[code],code});return;}throw e;}
+    });}catch(e){const code=(e as Error).message;const errors:Record<string,string>={REQUEST_CONFLICT:'رقم العملية مستخدم لبيانات مختلفة.',NOT_FOUND:'العملية غير موجودة.',STALE:'الحساب أو التصحيحات اتغيرت؛ افتح العملية وراجعها من جديد.',LINES:'راجع أصناف التصحيح.',EMPTY:'حدد تغييرًا واحدًا على الأقل.',CASH:'المبلغ أكبر من المدفوع المتبقي في العملية.',QUANTITY:'الكمية أكبر من المسموح أو البضاعة المرتجعة أكبر من الكمية المصححة.',STOCK:'تعذر إضافة المرتجع للمخزن؛ راجع المسؤول.'};if(errors[code]){res.status(409).json({error:errors[code],code});return;}throw e;}
+    if(replay){res.json({ok:true,duplicate:true});return;}
     res.status(201).json({ok:true,duplicate:false});
   });
   router.post('/', (req,res) => {
@@ -326,12 +330,16 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user, old=duplicate('office_debts_v1',data.id,request,actor.id);
     if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
     if(!exact(data.amount,100)){res.status(400).json({error:'اكتب المديونية بالجنيه والقرش.'});return;}
+    let replay=false;
     try { store.transaction(()=>{
+      const locked=duplicate('office_debts_v1',data.id,request,actor.id);
+      if(locked===1){replay=true;return;} if(locked===-1)throw Error('REQUEST_CONFLICT');
       if(!store.get('SELECT 1 FROM customers WHERE id=? AND active=1',data.customerId))throw Error('CUSTOMER');
       if(store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=?',data.customerId))throw Error('OPENING');
       store.run('INSERT INTO office_debts_v1 VALUES(?,?,?,?,?,?,?)',data.id,data.customerId,cents(data.amount),actor.id,actor.name,request,Date.now());
       store.audit(actor.id,'sales.opening',{customerId:data.customerId});
-    }); } catch(e) {const code=(e as Error).message;if(['CUSTOMER','OPENING'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
+    }); } catch(e) {const code=(e as Error).message;if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}if(['CUSTOMER','OPENING'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
+    if(replay){res.json({ok:true,duplicate:true});return;}
     res.status(201).json({ok:true,duplicate:false});
   });
   router.post('/receipts', (req,res) => {
@@ -339,12 +347,16 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user, old=duplicate('office_receipts_v1',data.id,request,actor.id);
     if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
     if(!exact(data.amount,100)||data.amount<=0){res.status(400).json({error:'اكتب مبلغ الدفعة بالجنيه والقرش.'});return;}
+    let replay=false;
     try {store.transaction(()=>{
+      const locked=duplicate('office_receipts_v1',data.id,request,actor.id);
+      if(locked===1){replay=true;return;} if(locked===-1)throw Error('REQUEST_CONFLICT');
       if(!store.get('SELECT 1 FROM customers WHERE id=?',data.customerId))throw Error('CUSTOMER');
       if(cents(data.amount)>balance(data.customerId))throw Error('PAYMENT');
       store.run('INSERT INTO office_receipts_v1 VALUES(?,?,?,?,?,?,?)',data.id,data.customerId,cents(data.amount),actor.id,actor.name,request,Date.now());
       store.audit(actor.id,'sales.receipt',{receiptId:data.id,customerId:data.customerId});
-    });} catch(e){const code=(e as Error).message;if(['CUSTOMER','PAYMENT'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
+    });} catch(e){const code=(e as Error).message;if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}if(['CUSTOMER','PAYMENT'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
+    if(replay){res.json({ok:true,duplicate:true});return;}
     res.status(201).json({ok:true,duplicate:false});
   });
   return router;
