@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { agoText, parseMoneyText } from './format';
+import { agoText } from './format';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { captureOnce, locationIssueMessage } from './location';
@@ -10,7 +10,7 @@ import { Body, Button, Card, Empty, Field, Row, Sheet } from './ui';
 import type { FieldBundle } from './useField';
 import { customerStageLabels, visitPurposeLabels, type Customer, type User, type Visit, type VisitPurpose } from './types';
 
-const purposes: VisitPurpose[] = ['visit', 'order', 'collection', 'note', 'issue', 'other'];
+const purposes: VisitPurpose[] = ['visit', 'order', 'note', 'issue', 'other'];
 const haptic = () => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined); };
 
 /** How many rows the picker shows before it asks for a search instead of making him scroll. */
@@ -172,31 +172,27 @@ export function CheckInSheet({ visible, onClose, field, user }: { visible: boole
 export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; onClose: () => void; field: FieldBundle }) {
   const [outcome, setOutcome] = useState('');
   const [notes, setNotes] = useState('');
-  const [amount, setAmount] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { setOutcome(''); setNotes(''); setAmount(''); setError(''); }, [visit?.id]);
+  useEffect(() => { setOutcome(''); setNotes(''); setError(''); }, [visit?.id]);
 
   if (!visit) return null;
-  const isMoney = visit.purpose === 'collection';
   // A visit the system closed (the shift ended, or the phone died) never got its result. The
-  // same sheet records it now — the row is already closed, so only the text and the amount go.
+  // same sheet records it now — the row is already closed, so only the result goes.
   const late = visit.status === 'closed' && Boolean(visit.pendingResult || visit.autoClosed);
 
   async function submit() {
     // The label already says "*": closing a visit with no result leaves the manager's timeline
     // with a visit that has no outcome, which is the one thing the audit trail needs.
     if (outcome.trim().length < 2) { setError(late ? 'اكتب نتيجة الزيارة.' : 'اكتب نتيجة الزيارة قبل الإنهاء.'); return; }
-    const parsedAmount = parseMoneyText(amount);
-    if (amount.trim() !== '' && parsedAmount === null) { setError('المبلغ غير صحيح — اكتب الجنيه والقرش بعلامة عشرية مثل ١٫٥٠، والفواصل للآلاف فقط.'); return; }
     setSaving(true); setError('');
     try {
       const location = await captureOnce();
       const locationError = locationIssueMessage();
       if (locationError) throw new Error(locationError);
       await field.checkOut(visit!.id, {
-        outcome: outcome.trim(), notes: notes.trim(), amount: parsedAmount,
+        outcome: outcome.trim(), notes: notes.trim(), amount: null,
         location: location ? { lat: location.lat, lng: location.lng, accuracy: location.accuracy } : null,
       });
       haptic();
@@ -208,7 +204,6 @@ export function CheckOutSheet({ visit, onClose, field }: { visit: Visit | null; 
   return (
     <Sheet visible={Boolean(visit)} onClose={onClose} title={`${late ? 'تسجيل نتيجة الزيارة' : 'إنهاء زيارة'} · ${visit.customerName}`}>
       <Field label="نتيجة الزيارة *" value={outcome} onChangeText={setOutcome} multiline placeholder="اتفقنا على توريد ٢٠ كرتونة الأسبوع القادم" style={{ minHeight: 80 }} />
-      {isMoney && <Field label="المبلغ المحصَّل (ج.م)" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" style={styles.ltr} hint="يُضاف تلقائيًا إلى تقارير التحصيل في لوحة المدير." />}
       <Field label="ملاحظات إضافية" value={notes} onChangeText={setNotes} multiline style={{ minHeight: 60 }} />
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Button label={saving ? 'جارٍ الحفظ…' : late ? 'حفظ النتيجة' : 'إنهاء الزيارة وإرسال النتيجة'} onPress={submit} loading={saving} />

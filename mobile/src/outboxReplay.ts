@@ -37,7 +37,11 @@ export async function replayOutboxActions(
 
     if (item.rejected && !options.retryRejected) {
       if (item.kind === 'visit-checkin') checkInsToRetry.add((payload as QueuedCheckIn).id);
-      notice ||= 'هناك بيانات محفوظة رفضها السيرفر؛ ما زالت على الهاتف ولم نكرر إرسالها تلقائيًا. افتح «حسابي» واضغط «مزامنة الآن» لإعادة المحاولة.';
+      const oldFieldMoney = (item.kind === 'visit-checkout' && Number((payload as QueuedCheckOut).body?.amount) > 0)
+        || (item.kind === 'report' && ((payload as ReportInput).type === 'collection' || Number((payload as ReportInput).amount) > 0));
+      notice ||= oldFieldMoney
+        ? 'بيانات تحصيل ميداني قديمة لم تُرسل وما زالت محفوظة على الهاتف، ولم تُخصم من حساب العميل. لا تحذف البيانات؛ راجع فريق المبيعات للدفع ومساعدة المكتب للبيانات المعلقة.'
+        : 'هناك بيانات محفوظة رفضها السيرفر؛ ما زالت على الهاتف ولم نكرر إرسالها تلقائيًا. افتح «حسابي» واضغط «مزامنة الآن» لإعادة المحاولة.';
       continue;
     }
     if (item.rejected && options.retryRejected) await queue.unreject(item.key);
@@ -77,10 +81,13 @@ export async function replayOutboxActions(
       if (item.kind === 'visit-checkin') checkInsToRetry.add((payload as QueuedCheckIn).id);
       // A permanent rejection must not block other items, but it must not erase field work
       // either. Keep the payload on-device and surface the server's reason for manual follow-up.
-      if (status >= 400 && status < 500 && status !== 401 && status !== 429) {
+      if (status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429) {
         await queue.reject(item.key);
         const detail = error instanceof Error ? error.message : `HTTP ${status}`;
         notice ||= `السيرفر لم يقبل بيانات محفوظة: ${detail} — البيانات ما زالت على الهاتف. راجعها، ثم أعد المحاولة يدويًا.`;
+      }
+      if ((error as { code?: string }).code === 'ORDER_CONFIRMATION_UNCERTAIN') {
+        notice ||= 'تعذر التأكد من بيانات طلبية محفوظة عند المكتب. هي ما زالت على الهاتف؛ راجع المكتب ولا تكرر الطلبية.';
       }
       if (status === 401) break;
     }

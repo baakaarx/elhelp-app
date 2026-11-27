@@ -65,7 +65,7 @@ test('one run of the repair leaves the child pointing at the real parent', () =>
   assert.match(output, /order_lines/, '…and it says it dealt with the child that got dragged along');
   const { store, complaints } = boot(file);
   assert.deepEqual(complaints, [], 'the second boot has nothing to complain about — the script is not a two-pass ritual');
-  assert.equal((store.all('PRAGMA table_info(orders)') as unknown[]).length, 13, 'the current schema owns its table now');
+  assert.equal((store.all('PRAGMA table_info(orders)') as unknown[]).length, 14, 'the current schema owns its table now');
   assert.deepEqual(foreignKeysOf(store, 'order_lines').sort(),
     ['order_id->orders', 'product_id->products', 'tier_id->price_tiers'].sort(), 'and the line points at a live parent');
   assert.equal(store.get("SELECT rep_id FROM orders_legacy_rejected_batch WHERE id='legacy-1'")!.rep_id, 'rep-x', 'nothing was thrown away on the way');

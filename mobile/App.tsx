@@ -7,6 +7,7 @@ import './src/trackingTask';
 import LoginScreen from './src/LoginScreen';
 import HomeScreen from './src/HomeScreen';
 import VisitsScreen from './src/VisitsScreen';
+import CustomersScreen from './src/CustomersScreen';
 import SettingsScreen from './src/SettingsScreen';
 import { UNCONFIGURED, me, logout } from './src/api';
 import { clearDeviceData, getToken } from './src/storage';
@@ -19,10 +20,11 @@ import { initializePushHandling } from './src/push';
 import { colors, fonts, radius, space } from './src/theme';
 import type { User } from './src/types';
 
-type Tab = 'home' | 'visits' | 'settings';
+type Tab = 'home' | 'visits' | 'customers' | 'settings';
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'home', label: 'الرئيسية', icon: '◉' },
   { id: 'visits', label: 'الزيارات', icon: '☷' },
+  { id: 'customers', label: 'عملائي', icon: '♙' },
   { id: 'settings', label: 'حسابي', icon: '⚙' },
 ];
 
@@ -204,6 +206,7 @@ function Root() {
               />
             )}
             {tab === 'visits' && <VisitsScreen user={user} field={field} />}
+            {tab === 'customers' && <CustomersScreen field={field} />}
             {tab === 'settings' && (
               <SettingsScreen
                 user={user}

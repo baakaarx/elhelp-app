@@ -38,23 +38,20 @@ test('فشل تحميل الطلبيات بعد تغيير الفلتر لا ي�
  await page.unroute('**/api/orders?*');await page.locator('.orders-panel').getByRole('button',{name:'حاول تاني'}).click();await expect(page.locator('.order-card').first()).toBeVisible();
 });
 
-test('خانة تحصيل المهندس ترفض الفاصلة الملتبسة وتسجيل الكسور الزائدة قبل الإرسال',async({page})=>{
- const managerToken=process.env.E2E_ADMIN_TOKEN!;const admin={Authorization:`Bearer ${managerToken}`};
+test('المهندس ينهي الزيارة بدون خانة تحصيل ولا يقدر يسجل دفعة',async({page})=>{
+ const admin={Authorization:`Bearer ${process.env.E2E_ADMIN_TOKEN!}`};
  const auth=await page.request.post(`${E2E_API}/api/auth/login`,{data:{email:E2E_REPS[2].email,password:E2E_REP_PASSWORD}});expect(auth.ok()).toBeTruthy();
  const {token,user}=await auth.json();const rep={Authorization:`Bearer ${token}`};
- const customer=await page.request.post(`${E2E_API}/api/customers`,{headers:admin,data:{name:`عميل تحصيل ${Date.now()}`,repId:user.id}});expect(customer.ok(),await customer.text()).toBeTruthy();
+ const customer=await page.request.post(`${E2E_API}/api/customers`,{headers:admin,data:{name:`عميل زيارة ${Date.now()}`,repId:user.id}});expect(customer.ok(),await customer.text()).toBeTruthy();
  const customerId=(await customer.json()).customer.id;
- const visit=await page.request.post(`${E2E_API}/api/visits/check-in`,{headers:rep,data:{id:randomUUID(),customerId,purpose:'collection',location:{lat:31.2,lng:29.91,accuracy:12}}});expect(visit.ok(),await visit.text()).toBeTruthy();
+ const visit=await page.request.post(`${E2E_API}/api/visits/check-in`,{headers:rep,data:{id:randomUUID(),customerId,purpose:'visit',location:{lat:31.2,lng:29.91,accuracy:12}}});expect(visit.ok(),await visit.text()).toBeTruthy();
  await page.setViewportSize({width:420,height:850});await page.context().grantPermissions(['geolocation'],{origin:E2E_API});await page.context().setGeolocation({latitude:31.2,longitude:29.91,accuracy:12});
  await page.goto(`${E2E_API}/app/`);await page.getByPlaceholder('rep@company.com').fill(E2E_REPS[2].email);await page.getByPlaceholder('••••••••').fill(E2E_REP_PASSWORD);await page.getByRole('button',{name:'دخول',exact:true}).click();
  await page.getByRole('button',{name:'إنهاء الزيارة',exact:true}).click();
- await page.getByPlaceholder('اتفقنا على توريد ٢٠ كرتونة الأسبوع القادم').fill('تم تحصيل المبلغ');
- const amount=page.locator('input[inputmode="decimal"]').first();await expect(amount).toBeVisible();
- let sent=0;page.on('request',req=>{if(req.url().includes('/check-out')&&req.method()==='POST')sent++;});
- await amount.fill('1,5');await page.getByRole('button',{name:'إنهاء الزيارة وإرسال النتيجة'}).click();await expect(page.getByText(/المبلغ غير صحيح/)).toBeVisible();expect(sent).toBe(0);
- await amount.fill('0.001');await page.getByRole('button',{name:'إنهاء الزيارة وإرسال النتيجة'}).click();await expect(page.getByText(/المبلغ غير صحيح/)).toBeVisible();expect(sent).toBe(0);
- await amount.fill('١٬٢٣٤٫٥٠');const response=page.waitForResponse(r=>r.url().includes('/check-out')&&r.request().method()==='POST');
- await page.getByRole('button',{name:'إنهاء الزيارة وإرسال النتيجة'}).click();const done=await response;expect(done.ok(),await done.text()).toBeTruthy();expect(done.request().postDataJSON().amount).toBe(1234.5);
+ await page.getByPlaceholder('اتفقنا على توريد ٢٠ كرتونة الأسبوع القادم').fill('تمت المتابعة');
+ await expect(page.locator('input[inputmode="decimal"]')).toHaveCount(0);
+ const response=page.waitForResponse(r=>r.url().includes('/check-out')&&r.request().method()==='POST');
+ await page.getByRole('button',{name:'إنهاء الزيارة وإرسال النتيجة'}).click();const done=await response;expect(done.ok(),await done.text()).toBeTruthy();expect(done.request().postDataJSON().amount).toBeNull();
 });
 
 test('أزرار الترشيح وقائمة الأصناف على واجهة المهندس تستجيب وتحمي الخانات المطلوبة',async({page})=>{
@@ -62,13 +59,8 @@ test('أزرار الترشيح وقائمة الأصناف على واجهة ا
  await page.getByPlaceholder('rep@company.com').fill(E2E_REPS[1].email);await page.getByPlaceholder('••••••••').fill(E2E_REP_PASSWORD);await page.getByRole('button',{name:'دخول',exact:true}).click();
  await page.getByRole('button',{name:'تسجيل طلبية'}).click();
  await page.getByRole('button',{name:'ابعت الطلبية للمكتب'}).click();await expect(page.getByText('اختار العميل من قائمتك الأول', {exact:false})).toBeVisible();
- await page.getByText('مزرعة الدلتا',{exact:true}).last().click();await page.getByRole('button',{name:'ابعت الطلبية للمكتب'}).click();await expect(page.getByText('ضيف صنف واحد على الأقل', {exact:false})).toBeVisible();
- await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('يوريا');await page.getByRole('button',{name:'ضيف يوريا ٤٦٪'}).click();
- const quantity=page.getByLabel('كمية يوريا ٤٦٪');await expect(quantity).toHaveValue('1');
- await page.getByRole('button',{name:'زود يوريا ٤٦٪'}).click();await expect(quantity).toHaveValue('2');
- await page.getByRole('button',{name:'ناقص يوريا ٤٦٪'}).click();await expect(quantity).toHaveValue('1');
- await quantity.fill('٠');await page.getByRole('button',{name:/ابعت الطلبية للمكتب/}).click();await expect(page.getByText('اكتب كمية أكبر من صفر لكل صنف.')).toBeVisible();
- await page.getByRole('button',{name:'احذف يوريا ٤٦٪'}).click();await expect(quantity).toHaveCount(0);
+ await page.getByText('مزرعة الدلتا',{exact:true}).last().click();await page.getByRole('button',{name:'ابعت الطلبية للمكتب'}).click();await expect(page.getByText('اكتب ترشيحك والأصناف والكميات المطلوبة الأول.')).toBeVisible();
+ await page.getByPlaceholder('مثال: ٢٠ مبيد حشري فرتاك').fill('٢٠ مبيد حشري فرتاك');
  await page.getByRole('button',{name:'إغلاق',exact:true}).click();await page.getByRole('tab',{name:'الزيارات'}).click();
  await page.getByRole('button',{name:'قائمة الأصناف اللي بنبيعها'}).click();await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('صنف غير موجود');
  await expect(page.getByText('مفيش صنف بالاسم ده في القائمة')).toBeVisible();await page.getByRole('button',{name:'إغلاق',exact:true}).click();

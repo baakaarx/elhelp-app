@@ -62,8 +62,8 @@ export default function AgentPanel({ alerts, onNavigate, timezone }: { alerts:Ma
       <h3>الميدان</h3><p>{formatNumber(priorities.openVisitCount)} زيارة مفتوحة · {formatNumber(fieldAlerts.length)} تنبيه ميداني حالي.</p>{fieldAlerts.length>0&&<ul>{fieldAlerts.slice(0,5).map(a=><li key={a.id}>{a.repName?`${a.repName}: `:''}{a.title}</li>)}</ul>}
       {priorities.openVisits.length>0&&<ul>{priorities.openVisits.slice(0,5).map(v=><li key={v.id}>{v.repName} عند {v.customerName} · {ago(v.checkedInAt)}</li>)}</ul>}
       <button className="btn ghost sm" onClick={()=>onNavigate('live')}>افتح المتابعة والتنبيهات</button>
-      <h3>المخازن</h3>{priorities.warehouses===0?<p>لسه مفيش مخازن؛ سجّل المخازن والأرصدة الافتتاحية.</p>:<p>{formatNumber(priorities.emptyStockCount)} صنف رصيده المسجّل صفر · {formatNumber(priorities.uninitialized)} رصيد افتتاحي غير مسجّل.</p>}
-      {priorities.emptyStock.length>0&&<ul>{priorities.emptyStock.slice(0,10).map((s,i)=><li key={`${s.warehouseName}-${s.productName}-${i}`}>{s.productName} · {s.warehouseName}</li>)}</ul>}<button className="btn ghost sm" onClick={()=>onNavigate('warehouses')}>افتح المخازن</button><p className="muted small">الرصيد غير المسجّل مش بنحسبه صفر.</p>
+      <h3>المخازن</h3>{priorities.warehouses===0?<p>لسه مفيش مخازن؛ سجّل المخازن والأرصدة الافتتاحية.</p>:<p>{formatNumber(priorities.emptyStockCount)} صنف رصيده المسجّل صفر.</p>}
+      {priorities.emptyStock.length>0&&<ul>{priorities.emptyStock.slice(0,10).map((s,i)=><li key={`${s.warehouseName}-${s.productName}-${i}`}>{s.productName} · {s.warehouseName}</li>)}</ul>}<button className="btn ghost sm" onClick={()=>onNavigate('warehouses')}>افتح المخازن</button><p className="muted small">الأصناف تظهر في المخزن بعد تسجيل رصيدها فيه؛ عدم تسجيلها لا يعني أن رصيدها صفر.</p>
     </>}</details>
   </section>;
 }

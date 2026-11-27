@@ -23,9 +23,7 @@ async function fixture(manager: Page, browser: Browser) {
   await expect(phone.getByRole('button', { name: 'تسجيل طلبية' })).toBeVisible();
   await phone.getByRole('button', { name: 'تسجيل طلبية' }).click();
   await phone.getByText(customer.name, { exact: true }).last().click();
-  await phone.getByPlaceholder('مثال: يوريا أو شيكارة').fill(product.name);
-  await phone.getByRole('button', { name: `ضيف ${product.name}` }).click();
-  await phone.getByLabel(`كمية ${product.name}`).fill('3');
+  await phone.getByPlaceholder('مثال: ٢٠ مبيد حشري فرتاك').fill(`٣ ${product.name} عبوة ٥ لتر`);
   return { phone, phoneContext, customer, product, rep, headers };
 }
 
@@ -75,7 +73,7 @@ test('طلبية بعد انقطاع الهاتف تصل مع صوت حتى لو
   try {
     await phone.route('**/api/orders', route => route.request().method() === 'POST' ? route.abort('failed') : route.continue());
     await phone.getByRole('button', { name: /ابعت الطلبية للمكتب/ }).click();
-    await expect(phone.getByText(/الطلبية اتحفظت على الموبايل/).first()).toBeVisible();
+    await expect(phone.getByText(/الطلبية محفوظة على الهاتف، ولم نتأكد من وصولها للمكتب بعد/).first()).toBeVisible();
     expect(await chimes(page)).toBe(1);
     await phone.unroute('**/api/orders');
     await phone.getByRole('tab', { name: 'حسابي' }).click();

@@ -4,6 +4,7 @@ import { sendLocationChunks } from './locationQueue';
 import { replayOutboxActions } from './outboxReplay';
 import { outboxOwnership } from './outboxOwnership';
 import { createOutboxRunner } from './outboxRunner';
+import { deliverOrderSafely, type OrderDelivery } from './orderDelivery';
 import { getActiveUserId, getOutboxOwner, setActiveUserId, setOutboxOwner } from './storage';
 import type { DailyReportInput, GeoPoint, OutboxItem, ReportInput, VisitInput } from './types';
 
@@ -97,10 +98,31 @@ export interface FlushResult {
   blockedByOwner?: boolean;
 }
 
-const runFlush = createOutboxRunner<FlushResult>();
+const runOutbox = createOutboxRunner<FlushResult | OrderDelivery>();
+
+/** Serialize the initial attempt with replays so they cannot remove each other's queued record. */
+export function sendOrderWithOutbox(order: import('./types').OrderInput, userId?: string): Promise<OrderDelivery> {
+  return runOutbox(`order:${order.id}`, async () => {
+    const queue = await outbox();
+    return deliverOrderSafely(order, {
+      save: async payload => {
+        await enqueueOrder(payload, userId);
+      },
+      send: async payload => {
+        // A visit created offline needs to reach the server before an order referencing it.
+        if (payload.visitId && (await queue.listForReplay(0)).some(item => item.kind === 'visit-checkin' && item.key === payload.visitId)) {
+          throw Object.assign(new Error('الزيارة لم تتزامن بعد'), { status: 0 });
+        }
+        return createOrder(payload);
+      },
+      remove: id => queue.remove(id),
+    });
+  }) as Promise<OrderDelivery>;
+}
+
 export function flushOutbox(userId?: string, options: { retryRejected?: boolean } = {}): Promise<FlushResult> {
-  const key = `${userId ?? activeUserId ?? 'background'}:${options.retryRejected ? 'manual' : 'automatic'}`;
-  return runFlush(key, () => flushOnce(userId, options.retryRejected === true));
+  const key = `flush:${userId ?? activeUserId ?? 'background'}:${options.retryRejected ? 'manual' : 'automatic'}`;
+  return runOutbox(key, () => flushOnce(userId, options.retryRejected === true)) as Promise<FlushResult>;
 }
 
 async function flushOnce(requestedUserId?: string, retryRejected = false): Promise<FlushResult> {

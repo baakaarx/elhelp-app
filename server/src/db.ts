@@ -176,6 +176,9 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS inventory_movements_time ON inventory_movements(created_at DESC);
       CREATE TABLE IF NOT EXISTS inventory_migrations (name TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS warehouse_item_requests_v1 (
+        id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, request_json TEXT NOT NULL, product_id TEXT NOT NULL
+      );
       -- Confirmed sales and customer balances are independent of priced orders and old collection reports.
       CREATE TABLE IF NOT EXISTS office_sales_v1 (
         id TEXT PRIMARY KEY, order_id TEXT UNIQUE, customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
@@ -373,6 +376,8 @@ export class Store {
         -- somebody signs, not a row that disappears, and it will be added with its reason when it is needed.
         status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','sent','priced')),
         notes TEXT NOT NULL DEFAULT '',
+        -- The engineer's free-text recommendation, preserved separately from the office's invoice.
+        recommendation TEXT NOT NULL DEFAULT '',
         -- The phone's own clock on a replayed order, exactly as visits carry it, so the office can tell
         -- «أُرسلت من المزرعة» from «أُرسلت لما الشبكة رجعت» instead of guessing.
         recorded_offline INTEGER NOT NULL DEFAULT 0,
@@ -507,6 +512,13 @@ export class Store {
       // than «جملة by default»: an order for such a customer is priced by hand.
       "ALTER TABLE customers ADD COLUMN price_tier_id TEXT REFERENCES price_tiers(id) ON DELETE SET NULL",
     ]) { try { this.db.exec(sql); } catch {} }
+    // Some old installations have an unrelated table called orders. Do not alter it; the existing
+    // schema diagnostics explain how to repair it. Only migrate our own recognizable order schema.
+    const orderColumns = new Set(this.all('PRAGMA table_info(orders)').map(column => String(column.name)));
+    const ownOrderShape = ['id','user_id','customer_id','visit_id','status','notes','recorded_offline','created_at','updated_at','sent_at','priced_by'].every(column => orderColumns.has(column));
+    if (ownOrderShape && !orderColumns.has('recommendation')) {
+      this.db.exec("ALTER TABLE orders ADD COLUMN recommendation TEXT NOT NULL DEFAULT ''");
+    }
     if (!this.all('PRAGMA table_info(users)').some(column => column.name === 'access_scope')) {
       throw new Error('تعذر إضافة صلاحيات حساب المخازن؛ السيرفر لن يعمل قبل إصلاح قاعدة البيانات.');
     }

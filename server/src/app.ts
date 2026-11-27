@@ -215,13 +215,16 @@ const newOrder = z.object({
   customerId: z.uuid('الطلبية تتسجل على عميل من قائمتك — اختاره من القائمة.'),
   visitId: z.uuid().optional(),
   notes: z.string().trim().max(2000).default(''),
-  lines: z.array(orderLineInput).min(1, 'الطلبية محتاجة صنف واحد على الأقل.').max(100),
+  lines: z.array(orderLineInput).max(100).default([]),
+  recommendation: z.string().trim().max(4000).default(''),
   // A press in the field means «send this»: the draft state exists for a phone that saves its work
   // to keep editing, and the office queue never sees an order that stayed one.
   send: z.boolean().default(true),
   /** The moment the order was actually written, sent by the offline queue like a check-in. */
   recordedAt: z.number().int().nonnegative().optional(),
-}).strict();
+}).strict().refine(data => (data.recommendation.length > 0) !== (data.lines.length > 0), {
+  message: 'اكتب ترشيح الطلبية أو اختار أصنافًا، وليس الاثنين معًا.',
+}).refine(data => !data.recommendation || data.send, { message: 'ترشيح المهندس يُرسل للمكتب مباشرة.' });
 const patchOrder = z.object({
   notes: z.string().trim().max(2000).optional(),
   // A whole replacement, not a diff: the sheet holds the order, and «replace line 3 only» is a client
@@ -1931,6 +1934,11 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (existing.userId !== res.locals.user.id) { res.status(409).json({ error: 'معرّف الزيارة مستخدم بالفعل.' }); return; }
       res.status(200).json({ visit: existing, duplicate: true }); return;
     }
+    // A queued check-in from an old phone may have dependent visits and orders; retain that
+    // historical visit label rather than silently losing it. It is never an office receipt.
+    if (data.purpose === 'collection' && data.recordedAt === undefined) {
+      res.status(403).json({ error: 'التحصيل لفريق المبيعات فقط. اختار غرض زيارة آخر وحدّث التطبيق.', code: 'FIELD_COLLECTION_DISABLED' }); return;
+    }
     /*
      * A visit typed in a field with no signal is sent later by the phone's outbox, naming the
      * moment it was actually recorded. The server cannot see that moment, so the only thing it
@@ -2018,6 +2026,15 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات إنهاء الزيارة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const visit = visitRow(String(req.params.id));
     if (!visit || visit.userId !== res.locals.user.id) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
+    if (parsed.data.amount !== null && parsed.data.amount > 0) {
+      // Only acknowledge a replay of a previously saved legacy amount. Never treat a new
+      // field amount as a customer receipt or discard it while claiming a successful save.
+      const old = store.get("SELECT amount FROM reports WHERE id=? AND user_id=? AND type='collection'", `visit:${visit.id}`, res.locals.user.id);
+      const completed = visit.status === 'closed' && !(Number(visit.autoClosed) === 1 && visit.outcome === AUTO_CLOSED_OUTCOME);
+      if (!completed || !old || Number(old.amount) !== parsed.data.amount || visit.outcome !== parsed.data.outcome) {
+        res.status(403).json({ error: 'التحصيل لفريق المبيعات فقط. المبلغ لم يُسجّل ولم يُخصم من حساب العميل؛ راجع المكتب. حدّث التطبيق لتسجيل نتيجة الزيارة بدون مبلغ.', code: 'FIELD_COLLECTION_DISABLED' }); return;
+      }
+    }
     const now = Date.now();
     if (visit.status === 'closed') {
       /*
@@ -2048,18 +2065,12 @@ export function createApp(overrides: Partial<Config> = {}) {
         lateAt = Math.max(Number(visit.checkedInAt), at);
       }
       const lateDuration = lateAt === null ? null : Math.max(0, Math.round((lateAt - Number(visit.checkedInAt)) / 1000));
-      // The result and its collection report must commit together, or a retry sees a closed visit and loses the amount.
+      // The visit result and its audit entry must commit together.
       store.transaction(() => {
         store.run('UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=?',
           late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id);
         if (lateAt !== null) {
           store.run('UPDATE visits SET checked_out_at=?, duration_seconds=?, recorded_offline=1 WHERE id=?', lateAt, lateDuration, visit.id);
-        }
-        if (late.amount !== null && late.amount > 0) {
-          store.run(`INSERT INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
-            `تحصيل - ${visit.customerName}`, late.outcome || visit.notes, visit.customerName, late.amount,
-            late.location?.lat ?? visit.inLat ?? null, late.location?.lng ?? visit.inLng ?? null, late.location?.accuracy ?? null, lateAt ?? Date.now());
         }
         store.audit(res.locals.user.id, 'visit.result_recorded_late', { visitId: visit.id });
       });
@@ -2087,18 +2098,11 @@ export function createApp(overrides: Partial<Config> = {}) {
       offline = true;
     }
     const duration = Math.max(0, Math.round((closedAt - Number(visit.checkedInAt)) / 1000));
-    // Closing a visit, recording its collection, and the audit trail are one operation.
+    // Closing a visit and its audit entry are one operation.
     store.transaction(() => {
       store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
         out_lat=?, out_lng=?, recorded_offline=MAX(recorded_offline, ?) WHERE id=?`, closedAt, duration, data.outcome, data.notes || visit.notes,
         data.location?.lat ?? null, data.location?.lng ?? null, offline ? 1 : 0, visit.id);
-      // A collection is also a financial event: mirror it into the reports feed for the manager.
-      if (data.amount !== null && data.amount > 0) {
-        store.run(`INSERT INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, `visit:${visit.id}`, res.locals.user.id, null, 'collection',
-          `تحصيل - ${visit.customerName}`, data.outcome || visit.notes, visit.customerName, data.amount,
-          data.location?.lat ?? visit.inLat ?? null, data.location?.lng ?? visit.inLng ?? null, data.location?.accuracy ?? null, closedAt);
-      }
       store.audit(res.locals.user.id, offline ? 'visit.check_out_offline' : 'visit.check_out',
         { visitId: visit.id, durationSeconds: duration, ...(offline ? { recordedAt: closedAt } : {}) });
     });
@@ -2110,7 +2114,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const ORDER_SELECT = `SELECT o.id, o.customer_id AS customerId, o.visit_id AS visitId, o.user_id AS userId,
       c.name AS customerName, c.phone AS customerPhone, c.active AS customerActive, c.price_tier_id AS customerTierId, t.name AS customerTierName,
       u.name AS repName, u.color AS repColor,
-      o.status, o.notes, o.total, o.recorded_offline AS recordedOffline,
+      o.status, o.notes, o.recommendation, o.total, o.recorded_offline AS recordedOffline,
       EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) AS sold,
       o.created_at AS createdAt, o.updated_at AS updatedAt, o.sent_at AS sentAt,
       o.priced_at AS pricedAt, pb.name AS pricedByName
@@ -2130,6 +2134,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const withPrices = audience === 'office';
     const shaped: Record<string, any> = {
       id: row.id, customerId: row.customerId, status: row.status, sold:Boolean(row.sold), notes: row.notes,
+      recommendation: row.recommendation,
       customerName: row.customerName, recordedOffline: Boolean(row.recordedOffline),
       createdAt: row.createdAt, sentAt: row.sentAt ?? null,
       lines: orderLineRows(id, false),
@@ -2197,7 +2202,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       const visit = store.get('SELECT id FROM visits WHERE id=? AND user_id=? AND customer_id=?', data.visitId, res.locals.user.id, data.customerId);
       if (!visit) { res.status(400).json({ error: 'الزيارة المرتبطة مش لنفس العميل في سجلّك — اختار زيارته، أو ابعت الطلبية من غير ربط.', code: 'VISIT_NOT_YOURS' }); return; }
     }
-    const lines = resolveOrderLines(data.lines);
+    const lines = data.lines.length ? resolveOrderLines(data.lines) : { resolved: [] };
     if ('error' in lines) { res.status(400).json({ error: lines.error, code: 'ORDER_LINES' }); return; }
     const now = Date.now();
     let sentAt: number | null = null;
@@ -2216,9 +2221,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     let noticeId = 0;
     try {
       store.transaction(() => {
-        store.run(`INSERT INTO orders(id,user_id,customer_id,visit_id,status,notes,recorded_offline,created_at,updated_at,sent_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerId, data.visitId ?? null,
-          data.send ? 'sent' : 'draft', data.notes, offline ? 1 : 0, now, now, sentAt);
+        store.run(`INSERT INTO orders(id,user_id,customer_id,visit_id,status,notes,recommendation,recorded_offline,created_at,updated_at,sent_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerId, data.visitId ?? null,
+          data.send ? 'sent' : 'draft', data.notes, data.recommendation, offline ? 1 : 0, now, now, sentAt);
         lines.resolved.forEach((line, index) => store.run(`INSERT INTO order_lines(id,order_id,position,product_id,product_name,unit,unit_size,qty,notes,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?)`, randomUUID(), data.id, index, line.productId, line.name, line.unit, line.unitSize, line.qty, line.notes, now));
         store.audit(res.locals.user.id, offline ? 'order.create_offline' : 'order.create',
@@ -2784,7 +2789,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (rangeTooLong(from, to)) { res.status(400).json(RANGE_ERROR); return; }
     res.json({ from, to, timezone: config.timezone, rows: kpiRowsFor(from, to) });
   });
-  const KPI_HEADER = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'التحصيل (ج.م)', 'التقارير اليومية'];
+  const KPI_HEADER = ['المهندس', 'المنطقة', 'أيام النشاط', 'عدد الزيارات', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير', 'مبالغ ميدانية قديمة غير محاسبية (ج.م)', 'التقارير اليومية'];
   const KPI_WIDTHS = [26, 18, 12, 14, 16, 12, 12, 14, 14];
   function kpiExportRows(from: string, to: string): CellValue[][] {
     return byActivity(kpiRowsFor(from, to)).map(r => [
@@ -2907,7 +2912,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.json({ month, from, to, timezone: config.timezone, rows });
     } catch (e) { res.status(400).json({ error: (e as Error).message }); }
   });
-  const MONTHLY_HEADER = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'التحصيل (ج.م)'];
+  const MONTHLY_HEADER = ['المهندس', 'المنطقة', 'الشهر', 'عدد الزيارات', 'مكتملة', 'متوسط الزيارة (دقيقة)', 'المسافة (كم)', 'التقارير الميدانية', 'التقارير اليومية', 'مبالغ ميدانية قديمة غير محاسبية (ج.م)'];
   const MONTHLY_WIDTHS = [26, 18, 10, 12, 10, 16, 12, 14, 14, 14];
   function monthlyExportRows(month: string, from: string, to: string): CellValue[][] {
     return byActivity(kpiRowsFor(from, to)).map(r => [
@@ -2939,6 +2944,16 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (existing && existing.userId !== ownerId) {
       res.status(409).json({ error: 'معرّف التقرير مستخدم بالفعل.', code: 'REPORT_ID_IN_USE' });
       return;
+    }
+    if (data.type === 'collection' || (data.amount !== null && data.amount > 0)) {
+      // Preserve idempotent replays of the same legacy report, but reject new financial data.
+      const old = existing ? reportRow(data.id) : undefined;
+      if (old && old.type === data.type && old.title === data.title && old.body === data.body && old.customer === data.customer
+          && old.amount === data.amount && old.lat === (data.location?.lat ?? null)
+          && old.lng === (data.location?.lng ?? null) && old.accuracy === (data.location?.accuracy ?? null)) {
+        res.json({ report: old, duplicate: true }); return;
+      }
+      res.status(403).json({ error: 'التحصيل لفريق المبيعات فقط. التقرير لم يُسجّل ولم يُخصم مبلغ من حساب العميل؛ راجع المكتب وحدّث التطبيق.', code: 'FIELD_COLLECTION_DISABLED' }); return;
     }
     const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', ownerId);
     const now = Date.now();

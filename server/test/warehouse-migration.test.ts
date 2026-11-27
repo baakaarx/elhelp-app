@@ -81,3 +81,21 @@ test('old sales tables are preserved and are not mistaken for the new financial 
     assert.equal(instance.store.get('SELECT value FROM sales_opening_debts WHERE id=?','old-debt')?.value,8);
   } finally {await instance.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('old database gains safe stock creation without changing previously recorded balances',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'warehouse-stock-item-upgrade-'));const dbPath=join(dir,'app.db');
+ let store=new Store(dbPath);
+ store.run('INSERT INTO warehouses(id,name,created_at) VALUES(?,?,?)','old-w','مخزن موجود',1);
+ store.run("INSERT INTO products(id,name,category,unit,created_at,updated_at) VALUES('old-p','صنف موجود','other','عبوة',1,1)");
+ store.run("INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES('old-w','old-p',12345)");
+ store.db.exec('DROP TABLE warehouse_item_requests_v1');store.close();
+ const instance=createApp({...config,dbPath});
+ try {
+  const client=request(instance.app);const login=await client.post('/api/auth/login').send({email:config.adminEmail,password:config.adminPassword});const auth={Authorization:`Bearer ${login.body.token}`};
+  const input={id:randomUUID(),warehouseId:'old-w',product:{name:'صنف جديد للقديم',category:'other',unit:'عبوة',unitSize:''},qty:100};
+  const created=await client.post('/api/warehouse/stock-items').set(auth).send(input);assert.equal(created.status,201,JSON.stringify(created.body));
+  const retry=await client.post('/api/warehouse/stock-items').set(auth).send(input);assert.equal(retry.status,200);assert.equal(retry.body.productId,created.body.productId);
+  assert.equal(instance.store.get("SELECT milli_qty FROM warehouse_stock WHERE warehouse_id='old-w' AND product_id='old-p'")?.milli_qty,12345);
+  assert.equal(instance.store.get("SELECT COUNT(*) AS n FROM inventory_movements WHERE product_id=?",created.body.productId)?.n,1);
+ } finally {await instance.close();rmSync(dir,{recursive:true,force:true});}
+});

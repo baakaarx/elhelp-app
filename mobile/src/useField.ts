@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit, createOrder } from './api';
-import { enqueueOrder, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
+import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
+import { sendOrderWithOutbox, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
+import { shouldQueue } from './retry';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
 import type { Customer, OrderInput, Product, RepSummary, User, Visit, VisitInput } from './types';
@@ -103,6 +104,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const productsOwnerRef = useRef<string | null>(null);
   /** Whose list is currently in memory: a second engineer on this phone must never see the first one's. */
   const listOwnerRef = useRef<string | null>(null);
+  const customerRequestRef = useRef(0);
+  const currentUserId = useRef(user?.id ?? null);
+  currentUserId.current = user?.id ?? null;
   const writeCustomers = useCallback((next: Customer[]) => {
     customersRef.current = next;
     setCustomers(next);
@@ -170,7 +174,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
    * not pay for it every quarter-minute.
    */
   const loadCustomers = useCallback(async () => {
+    const request = ++customerRequestRef.current;
     if (!user) { writeCustomers([]); setCustomersNotice(''); listOwnerRef.current = null; return; }
+    const isCurrent = () => mounted.current && customerRequestRef.current === request && currentUserId.current === user.id;
     if (listOwnerRef.current !== user.id) {
       listOwnerRef.current = user.id;
       writeCustomers([]);
@@ -179,11 +185,11 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     setCustomersLoading(true);
     try {
       const res = await myCustomers();
-      if (!mounted.current) return;
-      writeCustomers(Array.isArray(res.customers) ? res.customers : []);
+      if (!isCurrent()) return;
+      writeCustomers(res.customers);
       setCustomersNotice('');
     } catch (e) {
-      if (!mounted.current) return;
+      if (!isCurrent()) return;
       const status = (e as { status?: number }).status ?? 0;
       if (status === 401) { onSessionExpired(); return; }
       // Answering an unreachable server with an empty list would tell the engineer he has no
@@ -192,7 +198,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         ? 'القائمة المعروضة من آخر اتصال — لو المكتب ضاف عميل أو نقل واحد، هتظهر أول ما الشبكة ترجع.'
         : `تعذر تحميل قائمة العملاء. ${(e as Error).message || ''}`.trim());
     } finally {
-      if (mounted.current) setCustomersLoading(false);
+      if (isCurrent()) setCustomersLoading(false);
     }
   }, [onSessionExpired, user, writeCustomers]);
 
@@ -396,7 +402,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       try {
         await checkInVisit(input);
       } catch (e) {
-        if ((e as { status?: number }).status !== 0) throw e;
+        if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckIn({ ...input, recordedAt: Date.now() }, user?.id);
         setOfflineNotice('الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
         const result = await flushOutbox(user?.id).catch(() => null);
@@ -421,22 +427,22 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const submitOrder = useCallback(async (input: OrderInput) => {
     setBusy(true); setError('');
     try {
-      try {
-        await createOrder(input);
-      } catch (e) {
-        if ((e as { status?: number }).status !== 0) throw e;
-        await enqueueOrder({ ...input, recordedAt: Date.now() }, user?.id);
+      const result = await sendOrderWithOutbox(input, user?.id);
+      if (result.status === 'queued') {
         setPending(value => value + 1);
-        setOfflineNotice('الطلبية اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
-        // The regular sync loop retries it. Return only after the durable write succeeds so the
-        // confirmation never says it was saved when the device storage was full.
+        setOfflineNotice(result.reason === 'session'
+          ? 'الطلبية محفوظة على الهاتف لكن الجلسة انتهت؛ سجّل بنفس الحساب لمزامنتها.'
+          : result.reason === 'storage' || result.reason === 'confirmation'
+            ? 'الطلبية محفوظة لكن تعذر التأكد من تأكيدها أو تحديث المزامنة؛ راجع المكتب ولا تكررها.'
+            : 'الطلبية محفوظة على الهاتف؛ لم نتأكد من وصولها بعد، وسيُعاد إرسالها بنفس المعرّف.');
+        if (result.reason === 'session') onSessionExpired();
         return 'queued' as const;
       }
       await refresh();
       return 'sent' as const;
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, user?.id]);
+  }, [refresh, user?.id, onSessionExpired]);
 
   const checkOut = useCallback(async (id: string, input: CheckOutInput) => {
     setBusy(true); setError('');
@@ -444,7 +450,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       try {
         await checkOutVisit(id, input);
       } catch (e) {
-        if ((e as { status?: number }).status !== 0) throw e;
+        if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckOut(id, { ...input, recordedAt: Date.now() }, user?.id);
         setOfflineNotice('نتيجة الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
         const result = await flushOutbox(user?.id).catch(() => null);

@@ -41,8 +41,8 @@ test('the visits register exports what the board shows', async () => {
   await client.post('/api/shifts/start').set(auth(rep.token)).send({ consentVersion: '1.0', deviceId: rep.device, location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   const id = randomUUID();
   await client.post('/api/visits/check-in').set(auth(rep.token))
-    .send({ id, customerId: bookCustomer(store, rep.id, 'مزرعة التصدير'), customerName: 'مزرعة التصدير', purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
-  await client.post(`/api/visits/${id}/check-out`).set(auth(rep.token)).send({ outcome: '=cmd|calc', notes: 'ملاحظة', amount: 100, location: null });
+    .send({ id, customerId: bookCustomer(store, rep.id, 'مزرعة التصدير'), customerName: 'مزرعة التصدير', purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  await client.post(`/api/visits/${id}/check-out`).set(auth(rep.token)).send({ outcome: '=cmd|calc', notes: 'ملاحظة', amount: null, location: null });
 
   const csv = await client.get(`/api/visits.csv?from=${today}&to=${today}`).set(auth(await admin()));
   assert.equal(csv.status, 200, csv.text.slice(0, 120));

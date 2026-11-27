@@ -52,12 +52,62 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const warehouses=store.all('SELECT id,name FROM warehouses ORDER BY name COLLATE NOCASE,id');
     const reps=store.all("SELECT id,name,region FROM users WHERE role='rep' AND active=1 ORDER BY name COLLATE NOCASE,id");
     const prices=store.all('SELECT product_id AS productId,tier_id AS tierId,price FROM product_prices');
-    const orders=store.all(`SELECT o.id,o.customer_id AS customerId,c.name AS customerName,o.status,o.notes,o.total,o.sent_at AS sentAt,o.priced_at AS pricedAt,u.name AS repName
+    const orders=store.all(`SELECT o.id,o.customer_id AS customerId,c.name AS customerName,o.status,o.notes,o.recommendation,o.total,o.sent_at AS sentAt,o.priced_at AS pricedAt,u.name AS repName
       FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id WHERE o.status IN ('sent','priced') AND c.active=1
       AND NOT EXISTS (SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.sent_at,o.id`);
     const pendingOrders=orders.map(order=>({...order,lines:store.all('SELECT product_id AS productId,product_name AS name,unit,unit_size AS unitSize,qty,price,notes FROM order_lines WHERE order_id=? ORDER BY position',order.id)}));
     const tiers=store.all('SELECT id,name,active FROM price_tiers ORDER BY position,name COLLATE NOCASE');
     res.json({customers,statementCustomers,products,warehouses,reps,prices,tiers,orders:pendingOrders});
+  });
+  // Ranking is computed across the full company book before search/pagination. Ties share a
+  // class, zero-value customers remain unclassified, and all arithmetic stays in piasters.
+  const customerRankCte = `WITH totals AS (
+    SELECT customer_id, SUM(total_piasters) AS amount FROM office_sales_net_v1 GROUP BY customer_id
+  ), buyers AS (
+    SELECT customer_id, amount, RANK() OVER (ORDER BY amount DESC) AS position,
+      COUNT(*) OVER () AS buyer_count FROM totals WHERE amount > 0
+  ), invoice_counts AS (
+    SELECT customer_id, COUNT(*) AS n FROM office_sales_v1 GROUP BY customer_id
+  ), customer_ranks AS (
+    SELECT c.id,c.name,c.phone,c.active,COALESCE(t.amount,0) AS amount,
+      COALESCE(ic.n,0) AS invoice_count,b.position,b.buyer_count
+    FROM customers c LEFT JOIN totals t ON t.customer_id=c.id
+      LEFT JOIN buyers b ON b.customer_id=c.id LEFT JOIN invoice_counts ic ON ic.customer_id=c.id
+  )`;
+  const shapeCustomerRank = (row: Record<string, any>) => ({
+    id: String(row.id), name: String(row.name), phone: String(row.phone || ''), active: !!row.active,
+    purchases: Number(row.amount)/100, invoiceCount: Number(row.invoice_count),
+    rank: row.position === null ? null : Number(row.position),
+    category: row.position === null ? null : ['A','B','C','D'][Math.min(3, Math.floor((Number(row.position)-1)*4/Number(row.buyer_count)))],
+  });
+  router.get('/customer-ranking', (req,res) => {
+    const query = typeof req.query.q === 'string' ? req.query.q.trim().slice(0,120) : '';
+    const offset = Number(req.query.offset ?? 0), limit = 20;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000000) { res.status(400).json({error:'راجع صفحة العملاء.'}); return; }
+    const match = `WHERE (?='' OR instr(lower(name),lower(?))>0 OR instr(phone,?)>0)`;
+    const args = [query,query,query];
+    const count = Number(store.get(`SELECT COUNT(*) AS n FROM customers ${match}`,...args)?.n || 0);
+    const rows = store.all(`${customerRankCte} SELECT * FROM customer_ranks ${match}
+      ORDER BY amount DESC,name COLLATE NOCASE,id LIMIT ? OFFSET ?`,...args,limit,offset);
+    res.setHeader('Cache-Control','private, no-store');
+    res.json({customers:rows.map(shapeCustomerRank),total:count,offset,limit,hasMore:offset+rows.length<count,updatedAt:Date.now()});
+  });
+  router.get('/customer-ranking/:customerId', (req,res) => {
+    const id=String(req.params.customerId), offset=Number(req.query.offset ?? 0), limit=20;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000000) { res.status(400).json({error:'راجع صفحة الفواتير.'}); return; }
+    const customer = store.get(`${customerRankCte} SELECT * FROM customer_ranks WHERE id=?`,id);
+    if (!customer) { res.status(404).json({error:'العميل غير موجود.'}); return; }
+    const invoices = store.all(`SELECT s.id,n.number AS invoiceNumber,s.total_piasters AS original,s.paid_piasters AS paid,s.created_at AS createdAt,
+      s.total_piasters-COALESCE((SELECT SUM(cl.amount_piasters) FROM office_corrections_v1 x
+        JOIN office_correction_lines_v1 cl ON cl.correction_id=x.id WHERE x.sale_id=s.id),0) AS net,
+      EXISTS(SELECT 1 FROM office_corrections_v1 x WHERE x.sale_id=s.id) AS corrected
+      FROM office_sales_v1 s LEFT JOIN office_invoice_numbers_v1 n ON n.sale_id=s.id
+      WHERE s.customer_id=? ORDER BY s.created_at DESC,s.rowid DESC LIMIT ? OFFSET ?`,id,limit+1,offset);
+    const signed=balance(id), opening=!!store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=?',id);
+    res.setHeader('Cache-Control','private, no-store');
+    res.json({customer:shapeCustomerRank(customer),due:Math.max(signed,0)/100,credit:Math.max(-signed,0)/100,hasOpening:opening,
+      invoices:invoices.slice(0,limit).map(i=>({...i,original:Number(i.original)/100,paid:Number(i.paid)/100,net:Number(i.net)/100,corrected:!!i.corrected})),
+      offset,hasMore:invoices.length>limit,updatedAt:Date.now()});
   });
   // A read-only trace lets the office reconcile the numbers without editing historical entries.
   router.get('/statement/:customerId', (req,res) => {
@@ -98,7 +148,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const payments=store.all(`SELECT c.name AS customerName,r.amount_piasters AS amount,r.created_at AS createdAt, EXISTS(SELECT 1 FROM office_corrections_v1 x WHERE x.receipt_id=r.id) AS corrected
       FROM office_receipts_v1 r JOIN customers c ON c.id=r.customer_id ORDER BY r.created_at DESC,r.rowid DESC LIMIT 50`);
     const stock=store.all(`SELECT w.id AS warehouseId,w.name AS warehouseName,p.id AS productId,p.name AS productName,p.unit,p.unit_size AS unitSize,
-      s.milli_qty AS qty FROM warehouses w CROSS JOIN products p LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id AND s.product_id=p.id
+      s.milli_qty AS qty FROM warehouse_stock s JOIN warehouses w ON w.id=s.warehouse_id JOIN products p ON p.id=s.product_id
       WHERE p.active=1 ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE`);
     res.json({ count:Number(totals.count), sales:Number(totals.sales)/100, collected:(paid+receipts-cashCorrections)/100,
       due:debtors.reduce((sum,row)=>sum+row.balance,0)/100,credit:creditors.reduce((sum,row)=>sum-row.balance,0)/100,
@@ -192,8 +242,14 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user;
     const old=duplicate('office_sales_v1',data.id,request,actor.id);
     if (old) {res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    let replay=false;
     try {
       store.transaction(()=>{
+        // Repeat the check under the database write lock: another process may have committed
+        // this exact invoice after the first check but before BEGIN IMMEDIATE completed.
+        const locked=duplicate('office_sales_v1',data.id,request,actor.id);
+        if (locked===1) {replay=true;return;}
+        if (locked===-1) throw Error('REQUEST_CONFLICT');
         const customer=store.get('SELECT id,active,name,phone,governorate,district,village FROM customers WHERE id=?',data.customerId); if (!customer?.active) throw Error('CUSTOMER');
         const warehouse=store.get('SELECT id,name FROM warehouses WHERE id=?',data.warehouseId); if (!warehouse) throw Error('WAREHOUSE');
         if (!exact(data.paid,100)) throw Error('PRECISION');
@@ -202,12 +258,17 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         let saleRep: {id:string;name:string} | null=null;
         if (data.orderId) {
           if(data.repId) throw Error('ORDER');
-          const order=store.get("SELECT o.id,o.status,o.customer_id,o.total,o.user_id,u.name AS rep_name FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.status IN ('sent','priced')",data.orderId);
+          const order=store.get("SELECT o.id,o.status,o.customer_id,o.total,o.user_id,o.recommendation,u.name AS rep_name FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.status IN ('sent','priced')",data.orderId);
           if(!order || order.customer_id!==data.customerId) throw Error('ORDER');
           if(store.get('SELECT id FROM office_sales_v1 WHERE order_id=?',data.orderId)) throw Error('ORDER_SOLD');
           saleRep={id:String(order.user_id),name:String(order.rep_name)};
           const recommended=store.all('SELECT product_id AS productId,qty,price,product_name AS name,unit,unit_size AS unitSize FROM order_lines WHERE order_id=? ORDER BY position',data.orderId);
-          if(order.status==='priced' && !data.lines.length) {
+          if (order.status === 'sent' && String(order.recommendation).trim() && recommended.length === 0) {
+            // Free text is never parsed into a product or a quantity. The office explicitly
+            // chooses real active products, units, quantities and prices for the invoice.
+            if (!data.lines.length || new Set(data.lines.map(line=>line.productId)).size!==data.lines.length) throw Error('ORDER_LINES');
+            lines=data.lines.map(line=>{const product=store.get('SELECT id,name,unit,unit_size AS unitSize,active FROM products WHERE id=?',line.productId);if(!product?.active)throw Error('PRODUCT');return {...line,name:String(product.name),unit:String(product.unit),unitSize:String(product.unitSize)};});
+          } else if(order.status==='priced' && !data.lines.length) {
             // Older office-priced orders remain frozen; never silently overwrite their agreement.
             if(typeof order.total!=='number' || !Number.isFinite(order.total) || Math.abs(order.total*100-Math.round(order.total*100)) >= 0.00001) throw Error('ORDER_TOTAL');
             pricedOrderTotal=cents(order.total);
@@ -243,17 +304,19 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         const now=Date.now();
         store.run('INSERT INTO office_sales_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',data.id,data.orderId??null,data.customerId,data.warehouseId,total,paid,actor.id,actor.name,request,now);
         store.run('INSERT INTO office_invoice_numbers_v1(sale_id) VALUES(?)',data.id);
+        const invoiceNumber=Number(store.get('SELECT number FROM office_invoice_numbers_v1 WHERE sale_id=?',data.id)!.number);
         store.run('INSERT INTO office_sale_rep_v1(sale_id,rep_id,rep_name,source) VALUES(?,?,?,?)',data.id,saleRep?.id??null,saleRep?.name??'',data.orderId?'order':saleRep?'direct':'none');
         store.run('INSERT INTO office_invoice_snapshots_v1 VALUES(?,?,?,?,?,?,?,?)',data.id,customer.name,customer.phone,customer.governorate,customer.district,customer.village,warehouse.name,saleRep?.name??'');
         for (const line of calculated) {
           if (!store.get('SELECT 1 FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',data.warehouseId,line.productId)) throw Error('NO_OPENING');
           if (!store.run('UPDATE warehouse_stock SET milli_qty=milli_qty-? WHERE warehouse_id=? AND product_id=? AND milli_qty>=?',line.qtyMilli,data.warehouseId,line.productId,line.qtyMilli).changes) throw Error('SHORT');
           store.run('INSERT INTO office_sales_lines_v1 VALUES(?,?,?,?,?,?,?,?,?)',randomUUID(),data.id,line.productId,line.name,line.unit,line.unitSize,line.qtyMilli,line.priceCents,line.amount);
-          store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'out',?,?,NULL,?,?,?,?,?)",randomUUID(),line.productId,data.warehouseId,line.qtyMilli,'صرف لبيعة مؤكدة',actor.id,actor.name,now);
+          store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'out',?,?,NULL,?,?,?,?,?)",randomUUID(),line.productId,data.warehouseId,line.qtyMilli,`صرف للفاتورة رقم ${invoiceNumber}`,actor.id,actor.name,now);
         }
         store.audit(actor.id,'sales.confirm',{saleId:data.id,customerId:data.customerId,orderId:data.orderId??null});
       });
-    } catch(e) { const code=(e as Error).message; if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    } catch(e) { const code=(e as Error).message; if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;} if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    if(replay){res.json({ok:true,duplicate:true});return;}
     if(data.orderId){try{onOrderSold(data.orderId);}catch(e){console.error('[sales] order notification failed',e);}}
     res.status(201).json({ok:true,duplicate:false});
   });

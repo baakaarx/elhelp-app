@@ -237,24 +237,19 @@ test('a visit that was closed normally still answers duplicate', async () => {
   assert.equal(row.outcome, 'تمت المتابعة', 'a real result is never overwritten by a retry');
 });
 
-test('a late collection amount still reaches the manager as a collection', async () => {
-  const rep = await makeRep('money');
-  await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
+test('an old automatically closed visit can be finished without recording a field payment', async () => {
+  const rep = await makeRep('money'); await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
   const id = randomUUID();
-  await client.post('/api/visits/check-in').set('Authorization', `Bearer ${rep.token}`)
-    .send({ id, customerId: bookForToken(store, rep.token, 'مزرعة تحصيل'), customerName: 'مزرعة تحصيل', purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  const opened = await client.post('/api/visits/check-in').set('Authorization', `Bearer ${rep.token}`)
+    .send({ id, customerId: bookForToken(store, rep.token, 'مزرعة قديمة'), purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+  assert.equal(opened.status, 201);
+  store.run("UPDATE visits SET purpose='collection' WHERE id=?", id); // existing legacy visit
   await client.post('/api/shifts/stop').set('Authorization', `Bearer ${rep.token}`);
-  const late = await client.post(`/api/visits/${id}/check-out`).set('Authorization', `Bearer ${rep.token}`)
-    .send({ outcome: 'تم التحصيل نقدًا', notes: '', amount: 750, location: null });
-  assert.equal(late.status, 200, JSON.stringify(late.body));
-  const report = store.get("SELECT * FROM reports WHERE id=?", `visit:${id}`)!;
-  assert.ok(report, 'the collection must appear in the reports feed');
-  assert.equal(Number(report.amount), 750);
-  // Repeating the request must not duplicate the financial row.
-  await client.post(`/api/visits/${id}/check-out`).set('Authorization', `Bearer ${rep.token}`)
-    .send({ outcome: 'تم التحصيل نقدًا', notes: '', amount: 750, location: null });
-  const count = store.get("SELECT COUNT(*) AS c FROM reports WHERE id=?", `visit:${id}`)!;
-  assert.equal(Number(count.c), 1);
+  const late = await client.post(`/api/visits/${id}/check-out`).set('Authorization', `Bearer ${rep.token}`).send({ outcome: 'متابعة', amount: 750 });
+  assert.equal(late.status, 403); assert.equal(late.body.code, 'FIELD_COLLECTION_DISABLED');
+  const accepted = await client.post(`/api/visits/${id}/check-out`).set('Authorization', `Bearer ${rep.token}`).send({ outcome: 'متابعة', amount: null });
+  assert.equal(accepted.status, 200); assert.equal(accepted.body.recordedLate, true);
+  assert.equal(store.get('SELECT id FROM reports WHERE id=?', `visit:${id}`), undefined);
 });
 
 test('a visit from yesterday still missing a result stays visible to its engineer', async () => {

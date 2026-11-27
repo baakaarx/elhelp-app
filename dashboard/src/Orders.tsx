@@ -7,7 +7,7 @@ import { formatNumber } from './session';
 interface OrderLine { productId:string;productName:string;unit:string;unitSize:string;qty:number;notes:string }
 interface OrderRow {
   id:string;customerName:string;customerPhone:string;customerActive:boolean;repName:string;repColor:string;
-  status:'draft'|'sent'|'priced';sold:boolean;notes:string;sentAt:number|null;recordedOffline:boolean;lines:OrderLine[];
+  status:'draft'|'sent'|'priced';sold:boolean;notes:string;recommendation:string;sentAt:number|null;recordedOffline:boolean;lines:OrderLine[];
 }
 type Filter='sent'|'all';
 
@@ -36,7 +36,7 @@ export default function Orders({timezone,version}:{timezone?:string;version:numb
         <div className="order-card-head"><div><strong>{order.customerName}</strong>{order.customerPhone&&<small> · {order.customerPhone}</small>}</div><span className={order.sold?'pill ok':'pill warn'}>{order.sold?'اتسجلت لها فاتورة':'مستنية فاتورة'}</span></div>
         {!order.customerActive && !order.sold && <p className="notice">العميل موقوف؛ لا يمكن تسجيل فاتورة للطلبية حتى يعيد المكتب تفعيله.</p>}
         <p className="muted small">المهندس: {order.repName} · {order.sentAt?dateTimeText(order.sentAt,timezone):'—'}{order.recordedOffline?' · اتبعتت بعد رجوع الشبكة':''}</p>
-        <ul>{order.lines.map(line=><li key={line.productId}><strong>{line.productName}</strong> · ترشيح {recommendationQty(line.qty)} {line.unit} {line.unitSize}{line.notes?` · ${line.notes}`:''}</li>)}</ul>
+        {order.recommendation?<p style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}><strong>ترشيح المهندس:</strong> {order.recommendation}</p>:<ul>{order.lines.map(line=><li key={line.productId}><strong>{line.productName}</strong> · ترشيح {recommendationQty(line.qty)} {line.unit} {line.unitSize}{line.notes?` · ${line.notes}`:''}</li>)}</ul>}
         {order.notes&&<p className="muted small">ملاحظة المهندس: {order.notes}</p>}
       </article>)}
     </div>}

@@ -3,6 +3,8 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { deliverOrderSafely, isConfirmedOrderResponse } from '../../mobile/src/orderDelivery.js';
+import type { OrderInput } from '../../mobile/src/types.js';
 
 /**
  * The order workflow, from the press in the field to the stamp at the desk.
@@ -139,6 +141,33 @@ test('a replayed send is the same order, not a second agreement', async () => {
   assert.equal(lines.length, 2, 'the office prices two lines, not four');
   const thief = await createOrder(repB, { id });
   assert.equal(thief.status, 409, 'another owner cannot replay his way into somebody else\'s order');
+});
+
+test('a lost response after commit replays the saved id without a second order or alert', async () => {
+  const input: OrderInput = { id: randomUUID(), customerId: customerA, notes: 'انقطاع بعد الحفظ', send: true, lines: [{ productId: urea, qty: 2 }] };
+  let queued: (OrderInput & { recordedAt: number }) | undefined;
+  const before = Number((store.get("SELECT COUNT(*) AS c FROM audit_log WHERE action='order.notification'") as any).c);
+  const result = await deliverOrderSafely(input, {
+    async save(value) { queued = value; },
+    async send(value) {
+      const first = await client.post('/api/orders').set(repA.auth).send(value);
+      assert.equal(first.status, 201);
+      assert.equal(isConfirmedOrderResponse(value, first.body), true);
+      throw Object.assign(new Error('response lost after commit'), { status: 0 });
+    },
+    async remove() { queued = undefined; },
+  });
+  assert.equal(result.status, 'queued');
+  assert.ok(queued);
+  const replay = await client.post('/api/orders').set(repA.auth).send(queued);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.duplicate, true);
+  assert.equal(isConfirmedOrderResponse(queued, replay.body), true);
+  assert.equal((store.get('SELECT COUNT(*) AS c FROM orders WHERE id=?', input.id) as any).c, 1);
+  assert.equal((store.get('SELECT COUNT(*) AS c FROM order_lines WHERE order_id=?', input.id) as any).c, 1);
+  assert.equal(Number((store.get("SELECT COUNT(*) AS c FROM audit_log WHERE action='order.notification'") as any).c), before + 1);
+  const office = await client.get('/api/orders?status=sent').set(admin);
+  assert.ok(office.body.orders.some((row: any) => row.id === input.id));
 });
 
 test('a draft waits on the phone; a sent order belongs to the office', async () => {
@@ -310,4 +339,48 @@ test('a failed order notification record rolls back the order and can be retried
   assert.equal((await createOrder(repA, { id })).status, 201);
   assert.equal((await createOrder(repA, { id })).body.duplicate, true);
   assert.equal(Number(store.get("SELECT COUNT(*) AS n FROM audit_log WHERE action='order.notification' AND json_extract(metadata,'$.orderId')=?", id)?.n), 1);
+});
+
+test('free-text field recommendation reaches sales unchanged, and only the office selects actual stock', async () => {
+  const orderId = randomUUID();
+  const recommendation = '٢٠ مبيد حشري فرتاك\nالتسليم الأسبوع الجاي';
+  const payload = { id: orderId, customerId: customerA, recommendation, notes: 'اتصل قبل التسليم', lines: [], send: true };
+  const first = await client.post('/api/orders').set(repA.auth).send(payload);
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.equal(first.body.order.recommendation, recommendation);
+  assert.deepEqual(first.body.order.lines, []);
+  assert.equal(isConfirmedOrderResponse(payload, first.body), true);
+  const duplicate = await client.post('/api/orders').set(repA.auth).send({ ...payload, recordedAt: Date.now() });
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(isConfirmedOrderResponse(payload, duplicate.body), true);
+  assert.equal(isConfirmedOrderResponse({ ...payload, recommendation: 'different' }, duplicate.body), false);
+  assert.equal((await client.post('/api/orders').set(repA.auth).send({ ...payload, id: randomUUID(), recommendation: '  ' })).status, 400);
+  assert.equal((await client.post('/api/orders').set(repB.auth).send({ ...payload, id: randomUUID() })).status, 403);
+  const officeOrders = (await client.get('/api/orders?status=sent').set(admin)).body.orders;
+  assert.equal(officeOrders.find((row: any) => row.id === orderId)?.recommendation, recommendation);
+  const options = (await client.get('/api/sales/options').set(admin)).body;
+  assert.equal(options.orders.find((row: any) => row.id === orderId)?.recommendation, recommendation);
+  const warehouse = (await client.post('/api/warehouse/warehouses').set(admin).send({ name: `مخزن تجربة ${randomUUID()}` })).body.warehouse.id;
+  const opening = await client.post('/api/warehouse/movements').set(admin).send({ id: randomUUID(), kind: 'opening', productId: urea, toWarehouseId: warehouse, qty: 10 });
+  assert.equal(opening.status, 201);
+  const sale = { id: randomUUID(), orderId, customerId: customerA, warehouseId: warehouse, paid: 0, lines: [{ productId: urea, qty: 2, price: 5 }] };
+  const sold = await client.post('/api/sales').set(admin).send(sale);
+  assert.equal(sold.status, 201, JSON.stringify(sold.body));
+  assert.equal((await client.post('/api/sales').set(admin).send(sale)).body.duplicate, true);
+  assert.equal((await client.post('/api/sales').set(admin).send({ ...sale, id: randomUUID() })).status, 409);
+  // The office may sell the order before the phone recovers a lost send confirmation.
+  // Replaying the original order after the sale must confirm the same order, not re-notify or sell twice.
+  const lateRetry = await client.post('/api/orders').set(repA.auth).send(payload);
+  assert.equal(lateRetry.status, 200);assert.equal(lateRetry.body.duplicate, true);
+  assert.equal(lateRetry.body.order.sold, true);assert.equal(isConfirmedOrderResponse(payload, lateRetry.body), true);
+  assert.equal(Number(store.get("SELECT COUNT(*) AS n FROM audit_log WHERE action='order.notification' AND json_extract(metadata,'$.orderId')=?",orderId)?.n), 1);
+  const original = (await client.get('/api/orders?limit=100').set(repA.auth)).body.orders.find((row: any) => row.id === orderId);
+  assert.equal(original.recommendation, recommendation);
+  assert.deepEqual(original.lines, []);
+  assert.equal(original.sold, true);
+  const repSale = store.get('SELECT rep_id AS repId FROM office_sale_rep_v1 WHERE sale_id=?', sale.id);
+  assert.equal(repSale?.repId, repA.id);
+  const stock = (await client.get(`/api/warehouse/stock?warehouseId=${warehouse}`).set(admin)).body.stock.find((row: any) => row.id === urea);
+  assert.equal(stock.qty, 8);
 });

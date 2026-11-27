@@ -85,12 +85,13 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
 
       {!data && !error && <p role="status">جارٍ تحميل البيانات للفترة المختارة…</p>}
       {data && <>
+      <p className="notice">المبالغ الميدانية القديمة ليست دفعات مبيعات ولا تخصم من حساب العميل؛ راجع المبيعات قبل تسجيل أي دفعة.</p>
       <div className="stats">
         <div className="card stat"><span className="muted small">إجمالي الزيارات</span><strong>{formatNumber(totals.visits)}</strong><small className="muted">{formatNumber(totals.visitsCompleted)} مكتملة</small></div>
         <div className="card stat"><span className="muted small">التقارير اليومية</span><strong>{formatNumber(totals.dailyReports)}</strong><small className="muted">الورقة الرسمية</small></div>
-        <div className="card stat"><span className="muted small">التقارير الميدانية</span><strong>{formatNumber(totals.reports)}</strong><small className="muted">زيارة / تحصيل</small></div>
+        <div className="card stat"><span className="muted small">التقارير الميدانية</span><strong>{formatNumber(totals.reports)}</strong><small className="muted">تقارير ميدانية</small></div>
         <div className="card stat"><span className="muted small">المسافة المقطوعة</span><strong>{formatNumber(totals.distanceMeters / 1000)} كم</strong><small className="muted">تقديرية</small></div>
-        <div className="card stat"><span className="muted small">إجمالي التحصيل</span><strong>{formatNumber(totals.collected)}</strong><small className="muted">ج.م</small></div>
+        <div className="card stat"><span className="muted small">مبالغ ميدانية قديمة</span><strong>{formatNumber(totals.collected)}</strong><small className="muted">ج.م</small></div>
       </div>
 
       <div className="panel">
@@ -100,7 +101,7 @@ export default function Monthly({ reps, timezone }: { reps: Rep[]; timezone?: st
             <table className="kpi-table">
               <thead>
                 <tr>
-                  <th>المهندس</th><th>المنطقة</th><th>زيارات</th><th>مكتملة</th><th>متوسط الزيارة</th><th>مسافة (كم)</th><th>تقارير ميدانية</th><th>تقارير يومية</th><th>تحصيل (ج.م)</th><th>آخر إشارة</th>
+                  <th>المهندس</th><th>المنطقة</th><th>زيارات</th><th>مكتملة</th><th>متوسط الزيارة</th><th>مسافة (كم)</th><th>تقارير ميدانية</th><th>تقارير يومية</th><th>مبالغ ميدانية قديمة (ج.م)</th><th>آخر إشارة</th>
                 </tr>
               </thead>
               <tbody>
