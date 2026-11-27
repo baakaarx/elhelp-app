@@ -175,6 +175,8 @@ export interface OrderInput {
   visitId?: string;
   notes: string;
   lines: OrderLineInput[];
+  /** ترشيح مكتوب بحرية؛ الطلبيات القديمة قد تحتوي سطور أصناف بدلًا منه. */
+  recommendation?: string;
   /** ضغطة الميدان معناها «ابعت»؛ المسودة للطلبية اللي عايز تكملها بعد شوية. */
   send?: boolean;
   /** بتبعتها الطابور اللي من غير شبكة، زي الزيارة المتأخرة. */
@@ -186,6 +188,7 @@ export interface OrderView {
   sold: boolean;
   status: 'draft' | 'sent' | 'priced';
   notes: string;
+  recommendation?: string;
   customerName: string;
   createdAt: number;
   sentAt: number | null;

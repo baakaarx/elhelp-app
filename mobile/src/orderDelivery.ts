@@ -32,11 +32,11 @@ export async function deliverOrderSafely(
 /** An HTTP 200 without the actual matching order is not confirmation of delivery. */
 export function isConfirmedOrderResponse(input: OrderInput, response: unknown): boolean {
   if (!response || typeof response !== 'object') return false;
-  const payload = response as { order?: { id?: unknown; customerId?: unknown; status?: unknown; notes?: unknown; lines?: unknown }; duplicate?: unknown };
+  const payload = response as { order?: { id?: unknown; customerId?: unknown; status?: unknown; notes?: unknown; recommendation?: unknown; lines?: unknown }; duplicate?: unknown };
   const order = payload.order;
   if (!order || order.id !== input.id || order.customerId !== input.customerId || typeof payload.duplicate !== 'boolean') return false;
   if (input.send !== false && order.status !== 'sent' && order.status !== 'priced') return false;
-  if (order.notes !== input.notes.trim() || !Array.isArray(order.lines) || order.lines.length !== input.lines.length) return false;
+  if (order.notes !== input.notes.trim() || (order.recommendation ?? '') !== (input.recommendation ?? '').trim() || !Array.isArray(order.lines) || order.lines.length !== input.lines.length) return false;
   const savedLines = order.lines as Array<{ productId?: unknown; qty?: unknown; notes?: unknown }>;
   return input.lines.every((line, index) => {
     const saved = savedLines[index];

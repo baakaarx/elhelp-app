@@ -37,7 +37,7 @@ test('طلبية محفوظة على الهاتف تظل محفوظة إذا أ�
  const context=await browser.newContext({viewport:{width:420,height:850}});const phone=await context.newPage();
  await phone.goto('http://127.0.0.1:3100/app/');await phone.getByPlaceholder('rep@company.com').fill(email);await phone.getByPlaceholder('••••••••').fill(password);await phone.getByRole('button',{name:'دخول',exact:true}).click();
  await phone.getByRole('button',{name:'تسجيل طلبية'}).click();await phone.getByText(customer.name,{exact:true}).last().click();await expect(phone.getByRole('button',{name:'اختار واحد تاني'})).toBeVisible();
- await phone.getByPlaceholder('مثال: يوريا أو شيكارة').fill(product.name);await phone.getByRole('button',{name:`ضيف ${product.name}`}).click();
+ await phone.getByPlaceholder('مثال: ٢٠ مبيد حشري فرتاك').fill(`١ ${product.name}`);
  await phone.route('**/api/orders',route=>route.request().method()==='POST'?route.abort('failed'):route.continue());
  await phone.getByRole('button',{name:/ابعت الطلبية للمكتب/}).click();await expect(phone.getByText(/الطلبية محفوظة على الهاتف، ولم نتأكد من وصولها للمكتب بعد/).first()).toBeVisible();
  const saved=await phone.evaluate(()=>JSON.parse(localStorage.getItem('mandoub.outbox')||'[]'));const order=saved.find((x:{kind:string})=>x.kind==='order');expect(order).toBeTruthy();const payload=JSON.parse(order.payload);expect(payload.customerId).toBe(customer.id);

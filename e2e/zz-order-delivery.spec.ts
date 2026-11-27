@@ -20,11 +20,9 @@ test('حفظ الطلب قبل الإرسال واستعادة تأكيد مفق
   await expect(page.getByPlaceholder('مثال: محمود أو 010')).toBeVisible();
   await page.getByRole('button', { name: /مزرعة النور/ }).click();
   await expect(page.getByRole('button', { name: 'اختار واحد تاني' })).toBeVisible();
-  await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('يوريا');
-  await page.getByRole('button', { name: 'ضيف يوريا ٤٦٪' }).click();
-  await page.getByLabel('كمية يوريا ٤٦٪').fill('7');
+  await page.getByPlaceholder('مثال: ٢٠ مبيد حشري فرتاك').fill('٧ يوريا ٤٦٪');
   const note = `تأكيد مفقود ${Date.now()}`;
-  await page.getByPlaceholder('مثال: التسليم السبت الصبح، يترش على طول').fill(note);
+  await page.getByPlaceholder('مثال: التسليم السبت الصبح').fill(note);
 
   let allowReplay = false;
   let firstId = '';

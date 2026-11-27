@@ -104,6 +104,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const productsOwnerRef = useRef<string | null>(null);
   /** Whose list is currently in memory: a second engineer on this phone must never see the first one's. */
   const listOwnerRef = useRef<string | null>(null);
+  const customerRequestRef = useRef(0);
+  const currentUserId = useRef(user?.id ?? null);
+  currentUserId.current = user?.id ?? null;
   const writeCustomers = useCallback((next: Customer[]) => {
     customersRef.current = next;
     setCustomers(next);
@@ -171,7 +174,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
    * not pay for it every quarter-minute.
    */
   const loadCustomers = useCallback(async () => {
+    const request = ++customerRequestRef.current;
     if (!user) { writeCustomers([]); setCustomersNotice(''); listOwnerRef.current = null; return; }
+    const isCurrent = () => mounted.current && customerRequestRef.current === request && currentUserId.current === user.id;
     if (listOwnerRef.current !== user.id) {
       listOwnerRef.current = user.id;
       writeCustomers([]);
@@ -180,11 +185,11 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     setCustomersLoading(true);
     try {
       const res = await myCustomers();
-      if (!mounted.current) return;
-      writeCustomers(Array.isArray(res.customers) ? res.customers : []);
+      if (!isCurrent()) return;
+      writeCustomers(res.customers);
       setCustomersNotice('');
     } catch (e) {
-      if (!mounted.current) return;
+      if (!isCurrent()) return;
       const status = (e as { status?: number }).status ?? 0;
       if (status === 401) { onSessionExpired(); return; }
       // Answering an unreachable server with an empty list would tell the engineer he has no
@@ -193,7 +198,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         ? 'القائمة المعروضة من آخر اتصال — لو المكتب ضاف عميل أو نقل واحد، هتظهر أول ما الشبكة ترجع.'
         : `تعذر تحميل قائمة العملاء. ${(e as Error).message || ''}`.trim());
     } finally {
-      if (mounted.current) setCustomersLoading(false);
+      if (isCurrent()) setCustomersLoading(false);
     }
   }, [onSessionExpired, user, writeCustomers]);
 

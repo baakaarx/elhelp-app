@@ -59,13 +59,8 @@ test('أزرار الترشيح وقائمة الأصناف على واجهة ا
  await page.getByPlaceholder('rep@company.com').fill(E2E_REPS[1].email);await page.getByPlaceholder('••••••••').fill(E2E_REP_PASSWORD);await page.getByRole('button',{name:'دخول',exact:true}).click();
  await page.getByRole('button',{name:'تسجيل طلبية'}).click();
  await page.getByRole('button',{name:'ابعت الطلبية للمكتب'}).click();await expect(page.getByText('اختار العميل من قائمتك الأول', {exact:false})).toBeVisible();
- await page.getByText('مزرعة الدلتا',{exact:true}).last().click();await page.getByRole('button',{name:'ابعت الطلبية للمكتب'}).click();await expect(page.getByText('ضيف صنف واحد على الأقل', {exact:false})).toBeVisible();
- await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('يوريا');await page.getByRole('button',{name:'ضيف يوريا ٤٦٪'}).click();
- const quantity=page.getByLabel('كمية يوريا ٤٦٪');await expect(quantity).toHaveValue('1');
- await page.getByRole('button',{name:'زود يوريا ٤٦٪'}).click();await expect(quantity).toHaveValue('2');
- await page.getByRole('button',{name:'ناقص يوريا ٤٦٪'}).click();await expect(quantity).toHaveValue('1');
- await quantity.fill('٠');await page.getByRole('button',{name:/ابعت الطلبية للمكتب/}).click();await expect(page.getByText('اكتب كمية أكبر من صفر لكل صنف.')).toBeVisible();
- await page.getByRole('button',{name:'احذف يوريا ٤٦٪'}).click();await expect(quantity).toHaveCount(0);
+ await page.getByText('مزرعة الدلتا',{exact:true}).last().click();await page.getByRole('button',{name:'ابعت الطلبية للمكتب'}).click();await expect(page.getByText('اكتب ترشيحك والأصناف والكميات المطلوبة الأول.')).toBeVisible();
+ await page.getByPlaceholder('مثال: ٢٠ مبيد حشري فرتاك').fill('٢٠ مبيد حشري فرتاك');
  await page.getByRole('button',{name:'إغلاق',exact:true}).click();await page.getByRole('tab',{name:'الزيارات'}).click();
  await page.getByRole('button',{name:'قائمة الأصناف اللي بنبيعها'}).click();await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('صنف غير موجود');
  await expect(page.getByText('مفيش صنف بالاسم ده في القائمة')).toBeVisible();await page.getByRole('button',{name:'إغلاق',exact:true}).click();

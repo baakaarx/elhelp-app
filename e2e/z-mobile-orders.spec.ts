@@ -26,11 +26,7 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   await expect(page.getByPlaceholder('مثال: محمود أو 010')).toBeVisible();
   await page.getByRole('button', { name: /مزرعة النور/ }).click();
   await expect(page.getByRole('button', { name: 'اختار واحد تاني' })).toBeVisible();
-  // The phone only shows the first few catalogue entries until the engineer searches.
-  await page.getByPlaceholder('مثال: يوريا أو شيكارة').fill('يوريا');
-  await page.getByRole('button', { name: 'ضيف يوريا ٤٦٪' }).click();
-  await page.getByLabel('كمية يوريا ٤٦٪').fill('3');
-  await expect(page.getByLabel('كمية يوريا ٤٦٪')).toHaveValue('3');
+  await page.getByPlaceholder('مثال: ٢٠ مبيد حشري فرتاك').fill('٣ يوريا ٤٦٪');
   const response = page.waitForResponse(res => res.url().endsWith('/api/orders') && res.request().method() === 'POST', { timeout: 12000 })
     .catch(async () => { throw new Error(`لم يُرسل طلب الطلبية. حالة الشاشة: ${(await page.locator('body').innerText()).slice(-2500)}`); });
   await page.getByRole('button', { name: /ابعت الطلبية للمكتب/ }).click();
@@ -39,8 +35,8 @@ test('المندوب يسجل طلبية من التطبيق من غير تقا�
   const body = await result.json();
   expect(body.order.status).toBe('sent');
   await expect(page.getByText('الطلبية وصلت للمكتب وبقت مستنية المراجعة.')).toBeVisible();
-  expect(body.order.lines[0].qty).toBe(3);
-  expect(body.order.lines[0]).not.toHaveProperty('price');
+  expect(body.order.recommendation).toBe('٣ يوريا ٤٦٪');
+  expect(body.order.lines).toEqual([]);
   expect(body.order).not.toHaveProperty('total');
   await expect(managerTab.locator('em.badge')).toHaveText(new Intl.NumberFormat('ar-EG').format(initialBadge + 1));
   await expect(manager.locator('.order-card').filter({ hasText: 'مزرعة النور' })).toBeVisible();

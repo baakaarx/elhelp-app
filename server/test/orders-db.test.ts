@@ -66,7 +66,7 @@ function addLine(store: Store, orderId: string, productId: string, qty: number, 
 test('a fresh install gets the order, its lines, and the direction each link points', (t) => {
   const { store } = tempStore(t);
   assert.deepEqual(columns(store, 'orders'),
-    ['id', 'user_id', 'customer_id', 'visit_id', 'status', 'notes', 'recorded_offline', 'total',
+    ['id', 'user_id', 'customer_id', 'visit_id', 'status', 'notes', 'recommendation', 'recorded_offline', 'total',
       'created_at', 'updated_at', 'sent_at', 'priced_at', 'priced_by'],
     'the columns the flow needs, and nothing the phone is allowed to fill in — there is no price column on the order');
   assert.deepEqual(columns(store, 'order_lines'),
@@ -212,7 +212,23 @@ test('an install whose `orders` table is someone else starts anyway and says whi
     assert.match(logged, /orders/, 'and the warning names the table');
     assert.match(logged, /older shape|does not have/, '…and says what is missing');
     assert.equal(reopened!.get("SELECT rep_id FROM orders WHERE id='old-1'")!.rep_id, 'rep-x', 'the foreign rows were left exactly as they were');
+    assert.deepEqual(columns(reopened!, 'orders'), ['id', 'rep_id', 'invoice_date', 'amount'], 'an unrelated table is not migrated');
     assert.ok(columns(reopened!, 'order_lines').includes('qty'), 'the tables it can build, it built');
     assert.match(logged, /repair-legacy-catalogue\.mjs/, '…and it names the script that frees the table name');
   } finally { reopened.close(); }
+});
+
+test('adding written recommendations to an old database preserves legacy orders and lines', t => {
+  const { store, file, close } = tempStore(t);
+  seedRep(store, 'legacy-rep'); addCustomer(store, 'legacy-customer', 'legacy-rep'); addProduct(store, 'legacy-product');
+  const id = addOrder(store, { repId: 'legacy-rep', customerId: 'legacy-customer', status: 'sent' });
+  addLine(store, id, 'legacy-product', 3);
+  store.db.exec('ALTER TABLE orders DROP COLUMN recommendation');
+  close();
+  const migrated = new Store(file);
+  try {
+    assert.equal(migrated.get('SELECT recommendation FROM orders WHERE id=?', id)?.recommendation, '');
+    assert.equal(migrated.get('SELECT qty FROM order_lines WHERE order_id=?', id)?.qty, 3);
+    assert.equal(migrated.get('SELECT customer_id AS customerId FROM orders WHERE id=?', id)?.customerId, 'legacy-customer');
+  } finally { migrated.close(); }
 });

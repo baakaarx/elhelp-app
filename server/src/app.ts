@@ -215,13 +215,16 @@ const newOrder = z.object({
   customerId: z.uuid('الطلبية تتسجل على عميل من قائمتك — اختاره من القائمة.'),
   visitId: z.uuid().optional(),
   notes: z.string().trim().max(2000).default(''),
-  lines: z.array(orderLineInput).min(1, 'الطلبية محتاجة صنف واحد على الأقل.').max(100),
+  lines: z.array(orderLineInput).max(100).default([]),
+  recommendation: z.string().trim().max(4000).default(''),
   // A press in the field means «send this»: the draft state exists for a phone that saves its work
   // to keep editing, and the office queue never sees an order that stayed one.
   send: z.boolean().default(true),
   /** The moment the order was actually written, sent by the offline queue like a check-in. */
   recordedAt: z.number().int().nonnegative().optional(),
-}).strict();
+}).strict().refine(data => (data.recommendation.length > 0) !== (data.lines.length > 0), {
+  message: 'اكتب ترشيح الطلبية أو اختار أصنافًا، وليس الاثنين معًا.',
+}).refine(data => !data.recommendation || data.send, { message: 'ترشيح المهندس يُرسل للمكتب مباشرة.' });
 const patchOrder = z.object({
   notes: z.string().trim().max(2000).optional(),
   // A whole replacement, not a diff: the sheet holds the order, and «replace line 3 only» is a client
@@ -2111,7 +2114,7 @@ export function createApp(overrides: Partial<Config> = {}) {
   const ORDER_SELECT = `SELECT o.id, o.customer_id AS customerId, o.visit_id AS visitId, o.user_id AS userId,
       c.name AS customerName, c.phone AS customerPhone, c.active AS customerActive, c.price_tier_id AS customerTierId, t.name AS customerTierName,
       u.name AS repName, u.color AS repColor,
-      o.status, o.notes, o.total, o.recorded_offline AS recordedOffline,
+      o.status, o.notes, o.recommendation, o.total, o.recorded_offline AS recordedOffline,
       EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) AS sold,
       o.created_at AS createdAt, o.updated_at AS updatedAt, o.sent_at AS sentAt,
       o.priced_at AS pricedAt, pb.name AS pricedByName
@@ -2131,6 +2134,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     const withPrices = audience === 'office';
     const shaped: Record<string, any> = {
       id: row.id, customerId: row.customerId, status: row.status, sold:Boolean(row.sold), notes: row.notes,
+      recommendation: row.recommendation,
       customerName: row.customerName, recordedOffline: Boolean(row.recordedOffline),
       createdAt: row.createdAt, sentAt: row.sentAt ?? null,
       lines: orderLineRows(id, false),
@@ -2198,7 +2202,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       const visit = store.get('SELECT id FROM visits WHERE id=? AND user_id=? AND customer_id=?', data.visitId, res.locals.user.id, data.customerId);
       if (!visit) { res.status(400).json({ error: 'الزيارة المرتبطة مش لنفس العميل في سجلّك — اختار زيارته، أو ابعت الطلبية من غير ربط.', code: 'VISIT_NOT_YOURS' }); return; }
     }
-    const lines = resolveOrderLines(data.lines);
+    const lines = data.lines.length ? resolveOrderLines(data.lines) : { resolved: [] };
     if ('error' in lines) { res.status(400).json({ error: lines.error, code: 'ORDER_LINES' }); return; }
     const now = Date.now();
     let sentAt: number | null = null;
@@ -2217,9 +2221,9 @@ export function createApp(overrides: Partial<Config> = {}) {
     let noticeId = 0;
     try {
       store.transaction(() => {
-        store.run(`INSERT INTO orders(id,user_id,customer_id,visit_id,status,notes,recorded_offline,created_at,updated_at,sent_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerId, data.visitId ?? null,
-          data.send ? 'sent' : 'draft', data.notes, offline ? 1 : 0, now, now, sentAt);
+        store.run(`INSERT INTO orders(id,user_id,customer_id,visit_id,status,notes,recommendation,recorded_offline,created_at,updated_at,sent_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerId, data.visitId ?? null,
+          data.send ? 'sent' : 'draft', data.notes, data.recommendation, offline ? 1 : 0, now, now, sentAt);
         lines.resolved.forEach((line, index) => store.run(`INSERT INTO order_lines(id,order_id,position,product_id,product_name,unit,unit_size,qty,notes,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?)`, randomUUID(), data.id, index, line.productId, line.name, line.unit, line.unitSize, line.qty, line.notes, now));
         store.audit(res.locals.user.id, offline ? 'order.create_offline' : 'order.create',

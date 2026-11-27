@@ -138,7 +138,18 @@ export const myVisits = (date?: string) => get<{ visits: Visit[] }>(`/api/visits
  * the customers the office stopped. Read-only on purpose: adding and moving customers is the office's
  * job, on the dashboard.
  */
-export const myCustomers = () => get<{ customers: Customer[] }>('/api/customers');
+export async function myCustomers(): Promise<{ customers: Customer[] }> {
+  const customers: Customer[] = [];
+  const limit = 500;
+  for (let offset = 0; offset <= 1_000_000; offset += limit) {
+    const page = await get<{ customers: Customer[]; hasMore?: boolean }>(`/api/customers?limit=${limit}&offset=${offset}`);
+    if (!Array.isArray(page?.customers)) throw new Error('تعذر قراءة قائمة العملاء كاملة.');
+    customers.push(...page.customers);
+    if (!page.hasMore) return { customers };
+    if (page.customers.length === 0) throw new Error('تعذر إكمال تحميل قائمة العملاء.');
+  }
+  throw new Error('قائمة العملاء أكبر من الحد المتاح للتحميل.');
+}
 /**
  * قائمة الأصناف — للقراءة في الميدان.
  *

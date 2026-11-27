@@ -52,7 +52,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const warehouses=store.all('SELECT id,name FROM warehouses ORDER BY name COLLATE NOCASE,id');
     const reps=store.all("SELECT id,name,region FROM users WHERE role='rep' AND active=1 ORDER BY name COLLATE NOCASE,id");
     const prices=store.all('SELECT product_id AS productId,tier_id AS tierId,price FROM product_prices');
-    const orders=store.all(`SELECT o.id,o.customer_id AS customerId,c.name AS customerName,o.status,o.notes,o.total,o.sent_at AS sentAt,o.priced_at AS pricedAt,u.name AS repName
+    const orders=store.all(`SELECT o.id,o.customer_id AS customerId,c.name AS customerName,o.status,o.notes,o.recommendation,o.total,o.sent_at AS sentAt,o.priced_at AS pricedAt,u.name AS repName
       FROM orders o JOIN customers c ON c.id=o.customer_id JOIN users u ON u.id=o.user_id WHERE o.status IN ('sent','priced') AND c.active=1
       AND NOT EXISTS (SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id) ORDER BY o.sent_at,o.id`);
     const pendingOrders=orders.map(order=>({...order,lines:store.all('SELECT product_id AS productId,product_name AS name,unit,unit_size AS unitSize,qty,price,notes FROM order_lines WHERE order_id=? ORDER BY position',order.id)}));
@@ -252,12 +252,17 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         let saleRep: {id:string;name:string} | null=null;
         if (data.orderId) {
           if(data.repId) throw Error('ORDER');
-          const order=store.get("SELECT o.id,o.status,o.customer_id,o.total,o.user_id,u.name AS rep_name FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.status IN ('sent','priced')",data.orderId);
+          const order=store.get("SELECT o.id,o.status,o.customer_id,o.total,o.user_id,o.recommendation,u.name AS rep_name FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.status IN ('sent','priced')",data.orderId);
           if(!order || order.customer_id!==data.customerId) throw Error('ORDER');
           if(store.get('SELECT id FROM office_sales_v1 WHERE order_id=?',data.orderId)) throw Error('ORDER_SOLD');
           saleRep={id:String(order.user_id),name:String(order.rep_name)};
           const recommended=store.all('SELECT product_id AS productId,qty,price,product_name AS name,unit,unit_size AS unitSize FROM order_lines WHERE order_id=? ORDER BY position',data.orderId);
-          if(order.status==='priced' && !data.lines.length) {
+          if (order.status === 'sent' && String(order.recommendation).trim() && recommended.length === 0) {
+            // Free text is never parsed into a product or a quantity. The office explicitly
+            // chooses real active products, units, quantities and prices for the invoice.
+            if (!data.lines.length || new Set(data.lines.map(line=>line.productId)).size!==data.lines.length) throw Error('ORDER_LINES');
+            lines=data.lines.map(line=>{const product=store.get('SELECT id,name,unit,unit_size AS unitSize,active FROM products WHERE id=?',line.productId);if(!product?.active)throw Error('PRODUCT');return {...line,name:String(product.name),unit:String(product.unit),unitSize:String(product.unitSize)};});
+          } else if(order.status==='priced' && !data.lines.length) {
             // Older office-priced orders remain frozen; never silently overwrite their agreement.
             if(typeof order.total!=='number' || !Number.isFinite(order.total) || Math.abs(order.total*100-Math.round(order.total*100)) >= 0.00001) throw Error('ORDER_TOTAL');
             pricedOrderTotal=cents(order.total);
