@@ -6,7 +6,7 @@ import { visitPurposeLabels, type Rep, type Visit } from './types';
 import ConfirmAction from './ConfirmAction';
 import Orders from './Orders';
 
-export default function Reports({ reps, onReviewed, version = 0, ordersVersion = 0, openOrdersRequest = 0, sentOrders = 0, timezone }: { reps: Rep[]; onReviewed: () => void; version?: number; ordersVersion?: number; openOrdersRequest?: number; sentOrders?: number; timezone?: string }) {
+export default function Reports({ reps, onReviewed, onInvoice, version = 0, ordersVersion = 0, openOrdersRequest = 0, sentOrders = 0, timezone }: { reps: Rep[]; onReviewed: () => void; onInvoice: (orderId:string)=>void; version?: number; ordersVersion?: number; openOrdersRequest?: number; sentOrders?: number; timezone?: string }) {
   const [tab, setTab] = useState<'visits' | 'orders'>(openOrdersRequest ? 'orders' : 'visits');
   useEffect(() => { if (openOrdersRequest) setTab('orders'); }, [openOrdersRequest]);
   const [visits, setVisits] = useState<Visit[]>([]);
@@ -37,7 +37,7 @@ export default function Reports({ reps, onReviewed, version = 0, ordersVersion =
       <button role="tab" aria-selected={tab === 'visits'} className={tab === 'visits' ? 'tab active' : 'tab'} onClick={() => setTab('visits')}>الزيارات ({loaded ? formatNumber(visits.length) : '—'})</button>
       <button role="tab" aria-selected={tab === 'orders'} className={tab === 'orders' ? 'tab active' : 'tab'} onClick={() => setTab('orders')}>الطلبيات{sentOrders > 0 ? ` (${formatNumber(sentOrders)} مستنية)` : ''}</button>
     </div>
-    {tab === 'orders' ? <Orders timezone={timezone} version={ordersVersion} onDone={onReviewed} /> : <>
+    {tab === 'orders' ? <Orders timezone={timezone} version={ordersVersion} onInvoice={onInvoice} /> : <>
       <div className="filters">
         <label className="field inline"><span>الحالة</span><select value={visitStatus} onChange={e => setVisitStatus(e.target.value as typeof visitStatus)}><option value="all">الكل</option><option value="open">مفتوحة</option><option value="closed">منتهية</option></select></label>
         <label className="field inline"><span>المهندس</span><select value={repId} onChange={e => setRepId(e.target.value)}><option value="all">كل الفريق</option>{reps.map(rep => <option key={rep.id} value={rep.id}>{rep.name}</option>)}</select></label>

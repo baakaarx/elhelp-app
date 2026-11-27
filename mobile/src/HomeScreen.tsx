@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { AppState, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, TextInput } from 'react-native';
 import { colors, fonts, radius, space } from './theme';
 import { Body, Button, Card, Empty, Heading, Pill, Row, SectionTitle, Sheet, Stat } from './ui';
 import { CheckInSheet, CheckOutSheet } from './VisitSheets';
@@ -9,7 +9,7 @@ import { visitPurposeLabels, type User, type Visit } from './types';
 import type { FieldBundle } from './useField';
 import { captureOnce, locationIssueMessage } from './location';
 import { getDeviceId } from './device';
-import { reportIdle } from './api';
+import { orderInvoiceNotices, readOrderInvoiceNotice, reportIdle, type OrderInvoiceNotice } from './api';
 
 type Props = {
   user: User;
@@ -26,8 +26,24 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
   const [orderOpen, setOrderOpen] = useState(false);
   const [orderMessage, setOrderMessage] = useState('');
   const [orderVisit, setOrderVisit] = useState<Visit | null>(null);
+  const [invoiceNotices,setInvoiceNotices]=useState<OrderInvoiceNotice[]>([]);
+  const [noticeError,setNoticeError]=useState('');
+  const [noticeBusy,setNoticeBusy]=useState<string|null>(null);
+  const noticeSequence=useRef(0);
 
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
+  useEffect(()=>{
+    let alive=true;setInvoiceNotices([]);setNoticeError('');
+    const load=()=>{const id=++noticeSequence.current;void orderInvoiceNotices().then(result=>{if(alive&&id===noticeSequence.current){setInvoiceNotices(result.notices);setNoticeError('');}}).catch(()=>{if(alive&&id===noticeSequence.current)setNoticeError('تعذر تحديث تنبيهات الطلبيات؛ حاول عند رجوع الاتصال.');});};
+    load();const timer=setInterval(load,30000);const sub=AppState.addEventListener('change',state=>{if(state==='active')load();});
+    return()=>{alive=false;clearInterval(timer);sub.remove();};
+  },[user.id]);
+  async function dismissInvoiceNotice(orderId:string){
+    setNoticeBusy(orderId);++noticeSequence.current;
+    try{await readOrderInvoiceNotice(orderId);++noticeSequence.current;setInvoiceNotices(rows=>rows.filter(row=>row.orderId!==orderId));setNoticeError('');}
+    catch{setNoticeError('تعذر إخفاء التنبيه؛ حاول تاني عند رجوع الاتصال.');}
+    finally{setNoticeBusy(null);}
+  }
 
   const summary = field.summary;
   // Every label on this screen uses the installation's clock, exactly like the manager's copy
@@ -52,6 +68,13 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
             <Image source={require('../assets/elhelb-logo.gif')} style={styles.avatarImage} accessibilityLabel="شعار الهلب جروب" />
           </View>
         </View>
+
+        {invoiceNotices.map(notice=><Card key={notice.orderId} tone="mint">
+          <Text style={styles.visitName}>اتسجلت فاتورة طلبية {notice.customerName}</Text>
+          <Body muted>المكتب أكّد الفاتورة. تقدر تراجع حالة الطلبية من طلبياتك السابقة.</Body>
+          <Button label="تمام، شفت التنبيه" variant="ghost" loading={noticeBusy===notice.orderId} onPress={()=>void dismissInvoiceNotice(notice.orderId)} />
+        </Card>)}
+        {noticeError ? <Text style={styles.error}>{noticeError}</Text> : null}
 
         <Card tone="dark" style={styles.hero}>
           <Row style={{ justifyContent: 'space-between' }}>

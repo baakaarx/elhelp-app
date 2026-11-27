@@ -74,7 +74,7 @@ export function invoicePdf(data:InvoicePdfData,timezone:string,generatedAt:numbe
  const c=data.snapshot??{customerName:r.currentName,phone:r.currentPhone,governorate:r.currentGovernorate,district:r.currentDistrict,village:r.currentVillage,warehouseName:r.currentWarehouse,repName:''};
  const widths=[90,80,70,224]; // PDFMake columns are LTR; the product is on the right.
  const table:Content[][]=[ [hdr(data.events.length?'القيمة قبل التصحيح':'القيمة',widths[0]),hdr('سعر الوحدة',widths[1]),hdr('الكمية',widths[2]),hdr('الصنف والعبوة',widths[3])] ];
- for(const l of data.lines)table.push([numberCell(cash(l.amount)),numberCell(cash(l.price)),numberCell(qty(l.qty)),text([l.name,l.unit,l.unitSize].filter(Boolean).join(' · '),widths[3]-10)]);
+ for(const l of data.lines)table.push([numberCell(cash(l.amount)),numberCell(cash(l.price)),text(`${qty(l.qty)} ${l.unit}`,widths[2]-10,{alignment:'center'}),text([l.name,l.unit,l.unitSize].filter(Boolean).join(' · '),widths[3]-10)]);
  const label=(name:string,value:unknown):Content=>({columns:[{text:wrap(value||'—',340),alignment:'right',width:'*'},{text:wrap(name,120,10,true),alignment:'right',width:130,bold:true,color:'#426351'}],columnGap:8,margin:[0,2,0,2]});
  const section=(title:string):Content=>text(title,480,{fontSize:12,bold:true,color:'#1f5a3d',margin:[0,12,0,5]});
  const content:Content[]=[

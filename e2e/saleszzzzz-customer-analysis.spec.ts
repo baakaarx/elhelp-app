@@ -76,3 +76,19 @@ test('اختيار عميل آخر لا يعرض حساب العميل السا�
   await expect(detail.getByRole('heading', { name: b.name })).toBeVisible();
   await expect(detail.getByRole('heading', { name: a.name })).toHaveCount(0);
 });
+
+test('عميل جديد: عدم تحديد الرصيد السابق لا يعني وجود مديونية قديمة', async ({page})=>{
+  await signInAsManager(page);
+  const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));
+  const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+  const response=await page.request.post('/api/customers',{headers,data:{name:`عميل جديد ${Date.now()}`}});
+  expect(response.status()).toBe(201);const customer=(await response.json()).customer;
+  await page.getByRole('button',{name:'العملاء',exact:true}).click();
+  const chart=page.getByRole('region',{name:'تحليل مشتريات العملاء'});await chart.getByLabel('بحث في الرسم').fill(customer.name);
+  await chart.getByRole('button',{name:new RegExp(`عرض حساب ${customer.name}`)}).click();
+  const detail=page.getByRole('region',{name:'تفاصيل العميل'});
+  await expect(detail.locator('.customer-detail-stats > div').filter({hasText:'المديونية'})).toContainText('٠');
+  await expect(detail).toContainText('ده لا يعني إن العميل عليه فلوس قديمة');await expect(detail.locator('.notice').filter({hasText:'الرصيد قبل'})).toHaveCount(0);
+  const opening=await page.request.post('/api/sales/opening',{headers,data:{id:randomUUID(),customerId:customer.id,amount:0}});expect(opening.status()).toBe(201);
+  await chart.getByRole('button',{name:'تحديث التحليل'}).click();await expect(detail.getByText('ده لا يعني إن العميل عليه فلوس قديمة',{exact:false})).toHaveCount(0,{timeout:10000});
+});

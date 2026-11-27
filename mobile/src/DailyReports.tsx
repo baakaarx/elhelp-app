@@ -85,10 +85,12 @@ export default function DailyReports({ user, onDone, timezone = 'Africa/Cairo' }
         try {
           await enqueueDailyReport(payload, user.id);
           const result = await flushOutbox(user.id).catch(() => null);
-          setMessage(result?.notice || 'تعذّر الإرسال الآن. حفظنا التقرير وسيُرسل تلقائيًا.');
+          setMessage(result?.notice || (result && result.pending === 0
+            ? 'تمت مزامنة التقرير اليومي مع السيرفر.'
+            : 'التقرير اليومي محفوظ على الهاتف، ولم نتأكد من وصوله بعد. سيحاول التطبيق مزامنته أثناء فتحه؛ لا ترسله مرة أخرى.'));
           setConfirmed(false);
         } catch (queueError) {
-          setError(queueError instanceof Error ? queueError.message : 'تعذر حفظ التقرير على الهاتف.');
+          setError(`${queueError instanceof Error ? queueError.message : 'تعذر حفظ التقرير على الهاتف.'} قد يكون التقرير وصل للسيرفر قبل انقطاع الاتصال؛ راجع المكتب قبل إرساله مرة أخرى.`);
         }
       } else setError((e as Error).message);
     } finally { setBusy(false); }

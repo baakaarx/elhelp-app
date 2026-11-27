@@ -295,7 +295,11 @@ export function createApp(overrides: Partial<Config> = {}) {
   const adminOnly = requireAuth(store, 'admin');
   app.use('/api/warehouse', auth, createWarehouseRouter(store));
   app.use('/api/staff', adminOnly, createStaffRouter(store, id => io.in(`user:${id}`).disconnectSockets(true)));
-  app.use('/api/sales', adminOnly, createSalesRouter(store,config.timezone,orderId=>{io.to('admins').emit('order',{id:orderId,sold:true});invalidateKpis();broadcast();}));
+  app.use('/api/sales', adminOnly, createSalesRouter(store,config.timezone,orderId=>{
+    io.to('admins').emit('order',{id:orderId,sold:true});invalidateKpis();broadcast();
+    const order=store.get('SELECT user_id AS userId FROM orders WHERE id=?',orderId);
+    if(order?.userId) notifyUser(String(order.userId),'تم تسجيل فاتورة طلبك','المكتب سجل فاتورة لطلبية من طلبياتك. افتح التطبيق لمراجعة حالتها.',{type:'order_invoiced',orderId});
+  }));
   app.use('/api/sales-insights', adminOnly, createInsightsRouter(store,config.timezone));
   app.get('/api/work-priorities', adminOnly, (_req, res) => {
     const waitingOrders = store.all(`SELECT o.id,c.name AS customerName,u.name AS repName,o.sent_at AS sentAt
@@ -507,12 +511,16 @@ export function createApp(overrides: Partial<Config> = {}) {
     const reps = store.all("SELECT * FROM users WHERE role='rep' ORDER BY created_at, name").map(repSnapshot);
     // The orders tab's badge: what the field sent and the office has not opened yet.
     const sentOrders = (store.get("SELECT COUNT(*) AS c FROM orders o WHERE o.status IN ('sent','priced') AND NOT EXISTS(SELECT 1 FROM office_sales_v1 s WHERE s.order_id=o.id)")?.c as number) || 0;
-    const latestOrderNoticeId = Number(store.get("SELECT COALESCE(MAX(id),0) AS n FROM audit_log WHERE action='order.notification'")?.n || 0);
+    const latestNotice = store.get("SELECT id,metadata FROM audit_log WHERE action='order.notification' ORDER BY id DESC LIMIT 1");
+    const latestOrderNoticeId = Number(latestNotice?.id || 0);
+    let latestOrderNoticeOrderId:string|null=null;
+    try { const value=JSON.parse(String(latestNotice?.metadata || '{}')).orderId; if(typeof value==='string') latestOrderNoticeOrderId=value; } catch { /* old audit records may be malformed */ }
+    const latestOrderNoticeSold=!!(latestOrderNoticeOrderId && store.get('SELECT 1 FROM office_sales_v1 WHERE order_id=?',latestOrderNoticeOrderId));
     const newReports = ((store.get("SELECT COUNT(*) AS c FROM reports WHERE status='new'")?.c as number) || 0)
       + ((store.get("SELECT COUNT(*) AS c FROM daily_reports WHERE status='new'")?.c as number) || 0);
     // The dashboard needs the same staleness threshold the alerts use, otherwise the map and
     // the alert list disagree about who lost their signal.
-    return { reps, serverTime: Date.now(), timezone: config.timezone, retentionDays: config.retentionDays, newReports, sentOrders, latestOrderNoticeId, staleGpsMinutes: config.staleGpsMinutes };
+    return { reps, serverTime: Date.now(), timezone: config.timezone, retentionDays: config.retentionDays, newReports, sentOrders, latestOrderNoticeId, latestOrderNoticeOrderId, latestOrderNoticeSold, staleGpsMinutes: config.staleGpsMinutes };
   }
   function reportRow(id: string) {
     return store.get(`SELECT r.id, r.user_id AS userId, r.shift_id AS shiftId, r.type, r.title, r.body, r.customer, r.amount,
@@ -2318,6 +2326,19 @@ export function createApp(overrides: Partial<Config> = {}) {
     io.to('admins').emit('order', { ...orderRow(order.id, 'office'), noticeId });
     invalidateKpis(); broadcast();
     res.json({ order: orderRow(order.id, 'rep'), duplicate: false });
+  });
+
+  // The in-app inbox survives missed push delivery and is visible only to the order's engineer.
+  app.get('/api/me/order-invoice-notices', repOnly, (_req,res) => {
+    const notices=store.all(`SELECT n.order_id AS orderId,c.name AS customerName,n.created_at AS createdAt
+      FROM order_invoice_notices_v1 n JOIN orders o ON o.id=n.order_id JOIN customers c ON c.id=o.customer_id
+      WHERE n.user_id=? AND n.read_at IS NULL ORDER BY n.created_at,n.order_id LIMIT 100`,res.locals.user.id);
+    res.setHeader('Cache-Control','private, no-store');res.json({notices});
+  });
+  app.post('/api/me/order-invoice-notices/:orderId/read', repOnly, (req,res) => {
+    const changed=store.run('UPDATE order_invoice_notices_v1 SET read_at=COALESCE(read_at,?) WHERE order_id=? AND user_id=?',Date.now(),String(req.params.orderId),res.locals.user.id);
+    if(!changed.changes){res.status(404).json({error:'التنبيه غير موجود.'});return;}
+    res.json({ok:true});
   });
 
   app.get('/api/orders', auth, (req, res) => {

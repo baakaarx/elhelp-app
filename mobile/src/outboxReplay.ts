@@ -31,7 +31,7 @@ export async function replayOutboxActions(
     let payload: unknown;
     try { payload = JSON.parse(item.payload); }
     catch {
-      notice ||= 'تعذر قراءة عنصر محفوظ على الهاتف؛ ما زال محفوظًا ولم يُرسل. ابقَ داخل الحساب واطلب مساعدة قبل حذف البيانات المعلقة.';
+      notice ||= 'تعذر قراءة بيانات محفوظة على الهاتف أو التأكد من وصولها. ابقَ داخل الحساب واطلب مساعدة؛ لا تحذف بيانات التطبيق.';
       continue;
     }
 
