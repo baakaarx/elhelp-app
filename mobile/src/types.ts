@@ -150,7 +150,7 @@ export interface RouteResponse {
   distanceMeters: number;
 }
 export const visitPurposeLabels: Record<VisitPurpose, string> = {
-  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
+  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل ميداني قديم', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
 /** `visit-checkin` / `visit-checkout` are the two halves of a visit typed without a signal. */
 export type OutboxKind = 'location' | 'report' | 'daily-report' | 'visit-checkin' | 'visit-checkout' | 'order';

@@ -327,23 +327,27 @@ test('the KPI analysis task is gone from the assistant', async () => {
   assert.match(res.body.error, /بيانات المهمة غير صحيحة/);
 });
 
-test('collections made while checking out are counted in the KPI report', async () => {
+test('legacy field amounts stay visible as non-accounting history while new amounts are rejected', async () => {
+  const id = crypto.randomUUID();
   const open = await rep.post('/api/visits/check-in').set(auth(repToken)).send({
-    id: crypto.randomUUID(), customerId: bookCustomer(store, repId, 'مزرعة التحصيل'), customerName: 'مزرعة التحصيل', purpose: 'collection',
+    id, customerId: bookCustomer(store, repId, 'مزرعة التحصيل'), purpose: 'visit',
     location: { lat: 31.2, lng: 29.9, accuracy: 8 }, deviceId: 'test-device-001',
   });
   assert.equal(open.status, 201, JSON.stringify(open.body));
-  const closed = await rep.post(`/api/visits/${open.body.visit.id}/check-out`).set(auth(repToken)).send({
-    outcome: 'تم التحصيل', notes: '', amount: 2500, location: { lat: 31.2, lng: 29.9, accuracy: 8 },
-  });
-  assert.equal(closed.status, 200, JSON.stringify(closed.body));
+  const denied = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({ outcome: 'متابعة', amount: 2500 });
+  assert.equal(denied.status, 403); assert.equal(denied.body.code, 'FIELD_COLLECTION_DISABLED');
+  assert.equal(store.get('SELECT status FROM visits WHERE id=?', id)?.status, 'open');
+  assert.equal((await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({outcome:'متابعة',amount:null})).status, 200);
+  const afterClose = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({outcome:'متابعة',amount:2500});
+  assert.equal(afterClose.status, 403, 'a closed visit without an old amount cannot acknowledge a new amount');
+  store.run("INSERT INTO reports(id,user_id,type,title,body,customer,amount,created_at) VALUES (?,?, 'collection', ?, '', ?, ?, ?)", `visit:${id}`, repId, 'سجل ميداني قديم', 'مزرعة التحصيل', 2500, Date.now());
+  const replay = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({outcome:'متابعة',amount:2500});
+  assert.equal(replay.status, 200); assert.equal(replay.body.duplicate, true);
+  assert.equal((await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({outcome:'متابعة',amount:2600})).status, 403);
   const today = localDate('Africa/Cairo');
   const res = await admin.get(`/api/kpis?from=${today}&to=${today}`).set(auth(adminToken));
-  assert.equal(res.status, 200, JSON.stringify(res.body));
-  const rows = res.body.rows as Array<{ repId: string; collected: number }>;
-  const mine = rows.find(row => row.repId === repId);
-  assert.ok(mine, 'the representative must appear in the KPI rows');
-  assert.ok(mine!.collected >= 2500, `expected the collection to be counted, got ${mine!.collected}`);
+  assert.equal(res.status, 200);
+  assert.ok(res.body.rows.find((row: any) => row.repId === repId).collected >= 2500);
 });
 
 test('the representative cannot read another representative\'s route', async () => {
@@ -543,16 +547,15 @@ test('checking out closes the visit with a measured duration', async () => {
   assert.equal(res.body.visit.outLat, 31.22);
 });
 
-test('a collection checkout is mirrored into the manager reports feed', async () => {
+test('new field collection visits are rejected while normal visits still close', async () => {
   const id = crypto.randomUUID();
-  await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerId: bookCustomer(store, repId, 'مؤسسة التحصيل'), customerName: 'مؤسسة التحصيل', purpose: 'collection', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
-  const out = await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({ outcome: 'تحصيل نقدي', amount: 1250 });
-  assert.equal(out.status, 200);
-  const mirrored = store.get('SELECT * FROM reports WHERE id=?', `visit:${id}`);
-  assert.ok(mirrored, 'collection should appear in reports');
-  assert.equal(mirrored!.type, 'collection');
-  assert.equal(mirrored!.amount, 1250);
-  assert.equal(mirrored!.customer, 'مؤسسة التحصيل');
+  const customerId = bookCustomer(store, repId, 'مؤسسة التحصيل');
+  const denied = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerId, purpose: 'collection', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
+  assert.equal(denied.status, 403); assert.equal(denied.body.code, 'FIELD_COLLECTION_DISABLED');
+  const open = await rep.post('/api/visits/check-in').set(auth(repToken)).send({ id, customerId, purpose: 'visit', location: { lat: 31.21, lng: 29.92, accuracy: 7 } });
+  assert.equal(open.status, 201);
+  assert.equal((await rep.post(`/api/visits/${id}/check-out`).set(auth(repToken)).send({ outcome: 'زيارة', amount: null })).status, 200);
+  assert.equal(store.get('SELECT id FROM reports WHERE id=?', `visit:${id}`), undefined);
 });
 
 test('the manager visit feed is scoped by date and representative', async () => {
@@ -639,7 +642,7 @@ test('the KPI Excel export is a real workbook too', async () => {
   assert.equal(res.status, 200, JSON.stringify(res.body));
   assert.match(String(res.headers['content-type']), /spreadsheetml\.sheet/);
   const sheet = xlsxEntries(res.body as Buffer).get('xl/worksheets/sheet1.xml')!;
-  assert.match(sheet, /التحصيل/);
+  assert.match(sheet, /مبالغ ميدانية قديمة غير محاسبية/);
 });
 
 test('the representative stops tracking and their open shift is closed', async () => {

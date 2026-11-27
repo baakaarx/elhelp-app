@@ -64,7 +64,7 @@ test('set the installation up: one manager and two engineers', async () => {
   otherVisitId = visit.body.visit.id;
 
   const report = await client.post('/api/reports').set(as(otherRepToken))
-    .send({ id: crypto.randomUUID(), type: 'collection', title: 'تحصيل', customer: 'عميل', amount: 100, location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
+    .send({ id: crypto.randomUUID(), type: 'note', title: 'ملاحظة', customer: 'عميل', amount: null, location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
   assert.equal(report.status, 201, JSON.stringify(report.body));
   otherReportId = report.body.report.id;
 

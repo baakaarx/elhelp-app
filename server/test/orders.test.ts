@@ -3,6 +3,8 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { deliverOrderSafely, isConfirmedOrderResponse } from '../../mobile/src/orderDelivery.js';
+import type { OrderInput } from '../../mobile/src/types.js';
 
 /**
  * The order workflow, from the press in the field to the stamp at the desk.
@@ -139,6 +141,33 @@ test('a replayed send is the same order, not a second agreement', async () => {
   assert.equal(lines.length, 2, 'the office prices two lines, not four');
   const thief = await createOrder(repB, { id });
   assert.equal(thief.status, 409, 'another owner cannot replay his way into somebody else\'s order');
+});
+
+test('a lost response after commit replays the saved id without a second order or alert', async () => {
+  const input: OrderInput = { id: randomUUID(), customerId: customerA, notes: 'انقطاع بعد الحفظ', send: true, lines: [{ productId: urea, qty: 2 }] };
+  let queued: (OrderInput & { recordedAt: number }) | undefined;
+  const before = Number((store.get("SELECT COUNT(*) AS c FROM audit_log WHERE action='order.notification'") as any).c);
+  const result = await deliverOrderSafely(input, {
+    async save(value) { queued = value; },
+    async send(value) {
+      const first = await client.post('/api/orders').set(repA.auth).send(value);
+      assert.equal(first.status, 201);
+      assert.equal(isConfirmedOrderResponse(value, first.body), true);
+      throw Object.assign(new Error('response lost after commit'), { status: 0 });
+    },
+    async remove() { queued = undefined; },
+  });
+  assert.equal(result.status, 'queued');
+  assert.ok(queued);
+  const replay = await client.post('/api/orders').set(repA.auth).send(queued);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.duplicate, true);
+  assert.equal(isConfirmedOrderResponse(queued, replay.body), true);
+  assert.equal((store.get('SELECT COUNT(*) AS c FROM orders WHERE id=?', input.id) as any).c, 1);
+  assert.equal((store.get('SELECT COUNT(*) AS c FROM order_lines WHERE order_id=?', input.id) as any).c, 1);
+  assert.equal(Number((store.get("SELECT COUNT(*) AS c FROM audit_log WHERE action='order.notification'") as any).c), before + 1);
+  const office = await client.get('/api/orders?status=sent').set(admin);
+  assert.ok(office.body.orders.some((row: any) => row.id === input.id));
 });
 
 test('a draft waits on the phone; a sent order belongs to the office', async () => {

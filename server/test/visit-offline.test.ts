@@ -81,23 +81,18 @@ test('a visit recorded with no signal is accepted with the time the phone kept',
   assert.ok(audit, 'the replay is in the audit trail');
 });
 
-test('the whole visit survives: check-in and check-out replayed together', async () => {
-  const rep = await makeRep('roundtrip');
-  await openShiftSince(rep, 3 * HOUR);
-  const id = randomUUID();
-  const inAt = Date.now() - 2 * HOUR;
-  const outAt = inAt + 75 * 60000;
+test('an old queued visit survives without treating its amount as a receipt', async () => {
+  const rep = await makeRep('roundtrip'); await openShiftSince(rep, 3 * HOUR);
+  const id = randomUUID(), inAt = Date.now() - 2 * HOUR, outAt = inAt + 75 * 60000;
   assert.equal((await checkIn(rep.token, { id, customerName: 'مزرعة الجولة', purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 }, recordedAt: inAt })).status, 201);
-  const closed = await visit(rep.token, id, { outcome: 'اتحصّل ٩٠٠ ج.م', notes: '', amount: 900, location: { lat: 31.2, lng: 29.9, accuracy: 8 }, recordedAt: outAt });
-  assert.equal(closed.status, 200, JSON.stringify(closed.body));
-  assert.equal(closed.body.visit.checkedOutAt, outAt);
-  assert.equal(closed.body.visit.durationSeconds, 75 * 60, 'the duration is measured from the two real moments');
-  assert.equal(closed.body.visit.recordedOffline, true);
-
-  // The collection belongs to the hour it was collected, not to the hour the phone got signal.
-  const report = store.get('SELECT * FROM reports WHERE id=?', `visit:${id}`)!;
-  assert.equal(Number(report.created_at), outAt);
-  assert.equal(Number(report.amount), 900);
+  const body = { outcome: 'متابعة', notes: '', amount: 900, location: null, recordedAt: outAt };
+  const denied = await visit(rep.token, id, body);
+  assert.equal(denied.status, 403); assert.equal(denied.body.code, 'FIELD_COLLECTION_DISABLED');
+  assert.equal(store.get('SELECT status FROM visits WHERE id=?', id)?.status, 'open');
+  assert.equal(store.get('SELECT id FROM reports WHERE id=?', `visit:${id}`), undefined);
+  const closed = await visit(rep.token, id, { ...body, amount: null });
+  assert.equal(closed.status, 200); assert.equal(closed.body.visit.checkedOutAt, outAt);
+  assert.equal(closed.body.visit.durationSeconds, 75 * 60); assert.equal(closed.body.visit.recordedOffline, true);
 });
 
 test('a replayed visit is refused outside the shift it claims', async () => {
@@ -175,28 +170,20 @@ test('a live visit still works exactly as before', async () => {
   assert.equal(closed.body.visit.recordedOffline, false);
 });
 
-test('a failed collection write rolls back both normal and automatically closed visit results, allowing a safe retry', async () => {
-  const rep = await makeRep('collection-atomic');
-  await openShiftSince(rep, HOUR);
+test('a failed audit rolls back normal and automatically closed visit results, allowing a safe retry', async () => {
+  const rep = await makeRep('visit-atomic'); await openShiftSince(rep, HOUR);
   for (const automatic of [false, true]) {
     const id = randomUUID();
-    const start = await checkIn(rep.token, { id, customerName: `عميل تحصيل ${automatic}`, purpose: 'collection', location: { lat: 31.2, lng: 29.9, accuracy: 8 } });
-    assert.equal(start.status, 201, JSON.stringify(start.body));
+    assert.equal((await checkIn(rep.token, { id, customerName: `عميل ${automatic}`, purpose: 'visit', location: { lat: 31.2, lng: 29.9, accuracy: 8 } })).status, 201);
     if (automatic) store.run("UPDATE visits SET status='closed', auto_closed=1, outcome=? WHERE id=?", AUTO_CLOSED_OUTCOME, id);
     const before = store.get('SELECT status, outcome, checked_out_at FROM visits WHERE id=?', id);
-    store.db.exec("CREATE TRIGGER fail_collection_for_test BEFORE INSERT ON reports BEGIN SELECT RAISE(ABORT, 'simulated failure'); END");
-    const body = { outcome: 'تحصيل', notes: '', amount: 125.5, location: null };
+    store.db.exec("CREATE TRIGGER fail_visit_audit_for_test BEFORE INSERT ON audit_log BEGIN SELECT RAISE(ABORT, 'simulated failure'); END");
+    const body = { outcome: 'متابعة', notes: '', amount: null, location: null };
     try {
-      const failure = await visit(rep.token, id, body);
-      assert.equal(failure.status, 500);
+      assert.equal((await visit(rep.token, id, body)).status, 500);
       assert.deepEqual(store.get('SELECT status, outcome, checked_out_at FROM visits WHERE id=?', id), before);
-      assert.equal(store.get('SELECT id FROM reports WHERE id=?', `visit:${id}`), undefined);
-    } finally { store.db.exec('DROP TRIGGER fail_collection_for_test'); }
-    const retry = await visit(rep.token, id, body);
-    assert.equal(retry.status, 200, JSON.stringify(retry.body));
-    assert.equal(Number(store.get('SELECT amount FROM reports WHERE id=?', `visit:${id}`)?.amount), 125.5);
-    const again = await visit(rep.token, id, body);
-    assert.equal(again.body.duplicate, true);
-    assert.equal(Number(store.get('SELECT COUNT(*) AS n FROM reports WHERE id=?', `visit:${id}`)?.n), 1);
+    } finally { store.db.exec('DROP TRIGGER fail_visit_audit_for_test'); }
+    assert.equal((await visit(rep.token, id, body)).status, 200);
+    assert.equal((await visit(rep.token, id, body)).body.duplicate, true);
   }
 });

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit, createOrder } from './api';
-import { enqueueOrder, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
+import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
+import { sendOrderWithOutbox, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
+import { shouldQueue } from './retry';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
 import type { Customer, OrderInput, Product, RepSummary, User, Visit, VisitInput } from './types';
@@ -396,7 +397,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       try {
         await checkInVisit(input);
       } catch (e) {
-        if ((e as { status?: number }).status !== 0) throw e;
+        if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckIn({ ...input, recordedAt: Date.now() }, user?.id);
         setOfflineNotice('الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
         const result = await flushOutbox(user?.id).catch(() => null);
@@ -421,22 +422,22 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const submitOrder = useCallback(async (input: OrderInput) => {
     setBusy(true); setError('');
     try {
-      try {
-        await createOrder(input);
-      } catch (e) {
-        if ((e as { status?: number }).status !== 0) throw e;
-        await enqueueOrder({ ...input, recordedAt: Date.now() }, user?.id);
+      const result = await sendOrderWithOutbox(input, user?.id);
+      if (result.status === 'queued') {
         setPending(value => value + 1);
-        setOfflineNotice('الطلبية اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
-        // The regular sync loop retries it. Return only after the durable write succeeds so the
-        // confirmation never says it was saved when the device storage was full.
+        setOfflineNotice(result.reason === 'session'
+          ? 'الطلبية محفوظة على الهاتف لكن الجلسة انتهت؛ سجّل بنفس الحساب لمزامنتها.'
+          : result.reason === 'storage' || result.reason === 'confirmation'
+            ? 'الطلبية محفوظة لكن تعذر التأكد من تأكيدها أو تحديث المزامنة؛ راجع المكتب ولا تكررها.'
+            : 'الطلبية محفوظة على الهاتف؛ لم نتأكد من وصولها بعد، وسيُعاد إرسالها بنفس المعرّف.');
+        if (result.reason === 'session') onSessionExpired();
         return 'queued' as const;
       }
       await refresh();
       return 'sent' as const;
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, user?.id]);
+  }, [refresh, user?.id, onSessionExpired]);
 
   const checkOut = useCallback(async (id: string, input: CheckOutInput) => {
     setBusy(true); setError('');
@@ -444,7 +445,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       try {
         await checkOutVisit(id, input);
       } catch (e) {
-        if ((e as { status?: number }).status !== 0) throw e;
+        if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckOut(id, { ...input, recordedAt: Date.now() }, user?.id);
         setOfflineNotice('نتيجة الزيارة اتحفظت على الموبايل — هتتبعت لوحدها أول ما الشبكة ترجع.');
         const result = await flushOutbox(user?.id).catch(() => null);

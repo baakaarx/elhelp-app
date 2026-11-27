@@ -39,7 +39,7 @@ test('طلبية محفوظة على الهاتف تظل محفوظة إذا أ�
  await phone.getByRole('button',{name:'تسجيل طلبية'}).click();await phone.getByText(customer.name,{exact:true}).last().click();await expect(phone.getByRole('button',{name:'اختار واحد تاني'})).toBeVisible();
  await phone.getByPlaceholder('مثال: يوريا أو شيكارة').fill(product.name);await phone.getByRole('button',{name:`ضيف ${product.name}`}).click();
  await phone.route('**/api/orders',route=>route.request().method()==='POST'?route.abort('failed'):route.continue());
- await phone.getByRole('button',{name:/ابعت الطلبية للمكتب/}).click();await expect(phone.getByText(/الطلبية اتحفظت على الموبايل/).first()).toBeVisible();
+ await phone.getByRole('button',{name:/ابعت الطلبية للمكتب/}).click();await expect(phone.getByText(/الطلبية محفوظة على الهاتف، ولم نتأكد من وصولها للمكتب بعد/).first()).toBeVisible();
  const saved=await phone.evaluate(()=>JSON.parse(localStorage.getItem('mandoub.outbox')||'[]'));const order=saved.find((x:{kind:string})=>x.kind==='order');expect(order).toBeTruthy();const payload=JSON.parse(order.payload);expect(payload.customerId).toBe(customer.id);
  const stop=await page.request.patch(`/api/customers/${customer.id}`,{headers:admin,data:{active:false}});expect(stop.ok(),await stop.text()).toBeTruthy();
  await phone.unroute('**/api/orders');await phone.getByRole('tab',{name:'حسابي'}).click();

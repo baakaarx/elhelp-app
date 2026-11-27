@@ -234,3 +234,43 @@ test('an order linked to an offline visit waits until that visit is accepted', a
   assert.deepEqual(calls, ['visit', 'visit', 'order']);
   assert.equal(pending.size, 0);
 });
+
+test('legacy field money rejected by the server stays on the phone, with a persistent warning', async () => {
+  const old = { ...checkout, body: { ...checkout.body, amount: 42 } };
+  const saved = item('legacy-checkout', 'visit-checkout', old);
+  const pending = new Map([[saved.key, saved]]);
+  const queue: Pick<Outbox, 'remove' | 'bump' | 'reject' | 'unreject'> = {
+    async remove(key) { pending.delete(key); },
+    async bump(key) { const row = pending.get(key); if (row) pending.set(key, { ...row, attempts: row.attempts + 1 }); },
+    async reject(key) { const row = pending.get(key); if (row) pending.set(key, { ...row, rejected: true }); },
+    async unreject(key) { const row = pending.get(key); if (row) pending.set(key, { ...row, rejected: false }); },
+  };
+  const send = {
+    async checkIn() {}, async checkOut() { throw Object.assign(new Error('التحصيل لفريق المبيعات فقط'), { status: 403 }); },
+    async report() {}, async dailyReport() {}, async createOrder() {},
+  };
+  const result = await replayOutboxActions([saved], queue, send);
+  assert.equal(result.sent, 0); assert.match(result.notice!, /المبيعات/);
+  assert.equal(pending.get(saved.key)?.payload, saved.payload); assert.equal(pending.get(saved.key)?.rejected, true);
+  const again = await replayOutboxActions([...pending.values()], queue, send);
+  assert.match(again.notice!, /لم تُخصم/); assert.equal(pending.get(saved.key)?.payload, saved.payload);
+});
+
+test('a timeout or unverifiable order confirmation keeps the order for retry and warns on mismatch', async () => {
+  for (const failure of [Object.assign(new Error('timeout'), { status: 408 }), Object.assign(new Error('unconfirmed'), { status: 503, code: 'ORDER_CONFIRMATION_UNCERTAIN' })]) {
+    const entry = item('safe-order', 'order', { id: 'safe-order', customerId: 'c', notes: '', lines: [{ productId: 'p', qty: 1 }], recordedAt: 123 });
+    const pending = new Map([[entry.key, entry]]);
+    const queue: Pick<Outbox, 'remove' | 'bump' | 'reject' | 'unreject'> = {
+      async remove(key) { pending.delete(key); }, async bump() {},
+      async reject(key) { const row = pending.get(key); if (row) row.rejected = true; }, async unreject() {},
+    };
+    const result = await replayOutboxActions([entry], queue, {
+      async checkIn() {}, async checkOut() {}, async report() {}, async dailyReport() {},
+      async createOrder() { throw failure; },
+    });
+    assert.equal(result.sent, 0);
+    assert.equal(pending.get(entry.key)?.rejected, false);
+    assert.equal(pending.get(entry.key)?.payload, entry.payload);
+    if (failure.status === 503) assert.match(result.notice ?? '', /راجع المكتب/);
+  }
+});

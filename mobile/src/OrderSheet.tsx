@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { colors, fonts, radius, space } from './theme';
@@ -37,6 +37,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const submitting = useRef(false);
   const [history, setHistory] = useState<OrderView[]>([]);
   const [historyError, setHistoryError] = useState('');
 
@@ -82,10 +83,12 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
   };
 
   async function submit() {
+    if (submitting.current) return;
     if (!selected) { setError('اختار العميل من قائمتك الأول — الطلبية بتتسجل على عميل من قائمة الشركة.'); return; }
     if (lines.length === 0) { setError('ضيف صنف واحد على الأقل — دوس + جنب اسمه.'); return; }
     if (lines.some(line => line.qty <= 0)) { setError('اكتب كمية أكبر من صفر لكل صنف.'); return; }
     if (lines.some(line => !byProduct.has(line.productId))) { setError('في صنف مش موجود دلوقتي في القائمة — احذفه من الطلبية أو كلّم المكتب.'); return; }
+    submitting.current = true;
     setSaving(true); setError('');
     try {
       const result = await field.submitOrder({
@@ -98,7 +101,7 @@ export default function OrderSheet({ visible, onClose, field, visit, onSubmitted
       onSubmitted(result);
       onClose();
     } catch (e) { setError((e as Error).message); }
-    finally { setSaving(false); }
+    finally { submitting.current = false; setSaving(false); }
   }
 
   return (

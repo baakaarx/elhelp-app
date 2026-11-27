@@ -3,7 +3,6 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { get, sendReport } from './api';
 import { captureOnce, locationIssueMessage, type Fix } from './location';
-import { parseMoneyText } from './format';
 import { enqueueReport, flushOutbox } from './reports';
 import { shouldQueue } from './retry';
 import { randomUUID } from './tracking';
@@ -15,7 +14,6 @@ import type { ReportInput, ReportType } from './types';
 const types: { id: ReportType; label: string; icon: string }[] = [
   { id: 'visit', label: 'زيارة', icon: '◉' },
   { id: 'order', label: 'طلبية', icon: '▣' },
-  { id: 'collection', label: 'تحصيل', icon: '﷼' },
   { id: 'note', label: 'ملاحظة', icon: '✎' },
   { id: 'issue', label: 'مشكلة', icon: '!' },
   { id: 'other', label: 'أخرى', icon: '…' },
@@ -27,7 +25,6 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [customer, setCustomer] = useState('');
-  const [amount, setAmount] = useState('');
   const [withLocation, setWithLocation] = useState(true);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -45,10 +42,6 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
   async function submit() {
     if (title.trim().length < 2) { setError('اكتب عنوانًا قصيرًا للتقرير.'); return; }
     setBusy(true); setError(''); setMessage('');
-    const parsedAmount = parseMoneyText(amount);
-    if (amount.trim() !== '' && parsedAmount === null) {
-      setError('المبلغ غير صحيح — اكتب الجنيه والقرش بعلامة عشرية مثل ١٫٥٠، والفواصل للآلاف فقط.'); setBusy(false); return;
-    }
     let fix: Fix | null = null;
     if (withLocation) {
       try { fix = await captureOnce(); }
@@ -58,14 +51,14 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
     }
     const payload: ReportInput = {
       id: randomUUID(), type, title: title.trim(), body: body.trim(), customer: customer.trim(),
-      amount: parsedAmount,
+      amount: null,
       location: fix ? { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy } : null,
     };
     try {
       await sendReport(payload);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
       setMessage('تم إرسال التقرير للمدير.');
-      setTitle(''); setBody(''); setCustomer(''); setAmount('');
+      setTitle(''); setBody(''); setCustomer('');
       await loadRecent();
     } catch (e) {
       if (shouldQueue(e)) {
@@ -74,7 +67,7 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
           const result = await flushOutbox(ownerId).catch(() => null);
           onPending?.(result?.pending ?? 0);
           setMessage(result?.notice || 'تعذّر الإرسال الآن. حفظناه وسيُرسل تلقائيًا.');
-          setTitle(''); setBody(''); setCustomer(''); setAmount('');
+          setTitle(''); setBody(''); setCustomer('');
         } catch (queueError) {
           setError(queueError instanceof Error ? queueError.message : 'تعذر حفظ التقرير على الهاتف.');
         }
@@ -86,7 +79,7 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
       <View>
         <Text style={styles.title}>تقرير سريع</Text>
-        <Text style={styles.sub}>يوصل للمدير فورًا: زيارة، طلبية، تحصيل أو ملاحظة سوق.</Text>
+        <Text style={styles.sub}>يوصل للمدير فورًا: زيارة، طلبية أو ملاحظة سوق.</Text>
       </View>
 
       <Card>
@@ -102,7 +95,6 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
         <Field label="التفاصيل" value={body} onChangeText={setBody} multiline placeholder="ما تم في الزيارة والخطوة التالية" style={{ minHeight: 84 }} />
         <Row style={{ gap: space.sm }}>
           <View style={{ flex: 1 }}><Field label="العميل" value={customer} onChangeText={setCustomer} placeholder="اسم العميل/المزرعة" /></View>
-          <View style={{ flex: 1 }}><Field label="المبلغ (ج.م)" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" style={{ textAlign: 'left' }} /></View>
         </Row>
         <Pressable onPress={() => setWithLocation(!withLocation)} style={styles.toggle} accessibilityRole="checkbox" accessibilityState={{ checked: withLocation }}>
           <View style={[styles.checkbox, withLocation && styles.checkboxOn]}><Text style={styles.checkText}>{withLocation ? '✓' : ''}</Text></View>
@@ -119,7 +111,7 @@ export default function ReportScreen({ ownerId, onPending, refreshKey = 0 }: { o
           <View key={item.id} style={styles.recentRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.recentTitle}>{item.title}</Text>
-              <Text style={styles.recentMeta}>{agoText(item.createdAt)} · {types.find(t => t.id === item.type)?.label ?? item.type}</Text>
+              <Text style={styles.recentMeta}>{agoText(item.createdAt)} · {types.find(t => t.id === item.type)?.label ?? (item.type === 'collection' ? 'تحصيل ميداني قديم' : item.type)}</Text>
             </View>
             <Pill label={item.status === 'new' ? 'جديد' : 'تمت المراجعة'} tone={item.status === 'new' ? 'warn' : 'mint'} />
           </View>

@@ -4,6 +4,7 @@ import { ApiError, api, del, patch, post } from './api';
 import { ago, formatNumber } from './session';
 import ConfirmAction from './ConfirmAction';
 import { customerStageLabels } from './types';
+import CustomerAnalytics from './CustomerAnalytics';
 import type { AreaBook, Customer, CustomerStage, PriceTier } from './types';
 
 const POOL = '';
@@ -14,7 +15,9 @@ const EMPTY_FORM = {
 const STAGES = Object.keys(customerStageLabels) as CustomerStage[];
 const messageOf = (error: unknown, fallback: string) => (error instanceof ApiError && error.message ? error.message : fallback);
 
-export default function Customers(_props: { timezone?: string }) {
+export default function Customers({ timezone }: { timezone?: string }) {
+  const analysisPanel = useReveal<HTMLDivElement>();
+  const [requestedCustomer, setRequestedCustomer] = useState<{ id: string; nonce: number } | null>(null);
   const [book, setBook] = useState<AreaBook | null>(null);
   const [result, setResult] = useState<{query:string; customers:Customer[]; hasMore:boolean} | null>(null);
   // The price list's headings: which column of it each customer buys at. Read here, edited in the
@@ -288,6 +291,7 @@ export default function Customers(_props: { timezone?: string }) {
                     </td>
                     <td>
                       <span className="row-actions">
+                        <button className="btn ghost sm" onClick={() => { setRequestedCustomer(prev => ({ id: customer.id, nonce: (prev?.nonce ?? 0) + 1 })); analysisPanel.reveal(); }}>المشتريات والفواتير</button>
                         <button className="btn ghost sm" onClick={() => openEdit(customer)}>تعديل</button>
                         <button className="btn ghost sm" disabled={busyRow === customer.id} onClick={() => void setActive(customer, !customer.active)}>{customer.active ? 'وقف' : 'رجّع للشغل'}</button>
                         <ConfirmAction
@@ -313,6 +317,9 @@ export default function Customers(_props: { timezone?: string }) {
         </div>}
         </fieldset>
       </div>}
+      <div ref={analysisPanel.ref} className="reveal-target" tabIndex={-1}>
+        <CustomerAnalytics requestedCustomer={requestedCustomer} timezone={timezone} />
+      </div>
     </section>
   );
 }

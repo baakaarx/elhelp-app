@@ -66,7 +66,7 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
       <header className="page-head">
         <div>
           <h2>الأداء والمؤشرات</h2>
-          <p className="muted">زيارات ومسافات وتحصيل لكل مهندس خلال الفترة — للمتابعة لا للحوافز.</p>
+          <p className="muted">زيارات ومسافات الفريق خلال الفترة — للمتابعة لا للحوافز.</p>
         </div>
         <div className="row">
           <button className="btn ghost sm" onClick={() => applyPreset(1)} disabled={!timezone}>اليوم</button>
@@ -87,7 +87,7 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
         <div className="card stat"><span className="muted small">إجمالي الزيارات</span><strong>{formatNumber(totals.visits)}</strong><small className="muted">{formatNumber(totals.dailyReports)} تقرير يومي</small></div>
         <div className="card stat"><span className="muted small">المسافة المقطوعة</span><strong>{formatNumber(totals.distanceMeters / 1000)} كم</strong><small className="muted">تقديرية</small></div>
         <div className="card stat"><span className="muted small">تقارير الميدان</span><strong>{formatNumber(totals.reports)}</strong><small className="muted">ميداني</small></div>
-        <div className="card stat"><span className="muted small">إجمالي التحصيل</span><strong>{formatNumber(totals.collected)}</strong><small className="muted">ج.م</small></div>
+        <div className="card stat"><span className="muted small">مبالغ ميدانية قديمة</span><strong>{formatNumber(totals.collected)}</strong><small className="muted">ج.م</small></div>
       </div>
       <div className="panel">
         <h3 className="panel-title">مقارنة الفريق · {from} ← {to}</h3>
@@ -97,7 +97,7 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
               <thead>
                 <tr>
                   <th>المهندس</th><th>المنطقة المسجلة / الموقع</th><th>أيام نشاط</th><th>زيارات</th><th>متوسط الزيارة</th>
-                  <th>مسافة (كم)</th><th>تقارير</th><th>تحصيل (ج.م)</th><th>تقارير يومية</th><th>آخر إشارة</th>
+                  <th>مسافة (كم)</th><th>تقارير</th><th>مبالغ ميدانية قديمة (ج.م)</th><th>تقارير يومية</th><th>آخر إشارة</th>
                 </tr>
               </thead>
               <tbody>
@@ -114,7 +114,7 @@ export default function Performance({ reps, staleGpsMinutes = 10, timezone }: { 
           </div>
         )}
         <p className="muted small" style={{ marginTop: 10 }}>
-          {formatNumber(reps.length)} مهندس على الحساب · التحصيل يُحسب من الزيارات المسجلة كـ«تحصيل» ومن تقارير التحصيل.
+          {formatNumber(reps.length)} مهندس على الحساب · المبالغ الميدانية القديمة ليست دفعات مبيعات ولا تخصم من حساب العميل؛ راجع المبيعات قبل تسجيل أي دفعة.
           المسافة تُستبعد منها النقاط الضعيفة الدقة، وهي تقديرية.
         </p>
       </div>

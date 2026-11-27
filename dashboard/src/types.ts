@@ -228,7 +228,7 @@ export interface RouteResponse {
   distanceMeters: number;
 }
 export const reportTypeLabels: Record<ReportType, string> = {
-  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
+  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل ميداني قديم', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
 
 export type VisitPurpose = 'visit' | 'order' | 'collection' | 'note' | 'issue' | 'other';
@@ -305,7 +305,7 @@ export interface RepSummary {
   dailyReport: { id: string; status: 'new' | 'reviewed'; createdAt: number } | null;
 }
 export const visitPurposeLabels: Record<VisitPurpose, string> = {
-  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
+  visit: 'زيارة', order: 'طلبية', collection: 'تحصيل ميداني قديم', note: 'ملاحظة', issue: 'مشكلة', other: 'أخرى',
 };
 
 /**

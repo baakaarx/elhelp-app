@@ -59,6 +59,56 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const tiers=store.all('SELECT id,name,active FROM price_tiers ORDER BY position,name COLLATE NOCASE');
     res.json({customers,statementCustomers,products,warehouses,reps,prices,tiers,orders:pendingOrders});
   });
+  // Ranking is computed across the full company book before search/pagination. Ties share a
+  // class, zero-value customers remain unclassified, and all arithmetic stays in piasters.
+  const customerRankCte = `WITH totals AS (
+    SELECT customer_id, SUM(total_piasters) AS amount FROM office_sales_net_v1 GROUP BY customer_id
+  ), buyers AS (
+    SELECT customer_id, amount, RANK() OVER (ORDER BY amount DESC) AS position,
+      COUNT(*) OVER () AS buyer_count FROM totals WHERE amount > 0
+  ), invoice_counts AS (
+    SELECT customer_id, COUNT(*) AS n FROM office_sales_v1 GROUP BY customer_id
+  ), customer_ranks AS (
+    SELECT c.id,c.name,c.phone,c.active,COALESCE(t.amount,0) AS amount,
+      COALESCE(ic.n,0) AS invoice_count,b.position,b.buyer_count
+    FROM customers c LEFT JOIN totals t ON t.customer_id=c.id
+      LEFT JOIN buyers b ON b.customer_id=c.id LEFT JOIN invoice_counts ic ON ic.customer_id=c.id
+  )`;
+  const shapeCustomerRank = (row: Record<string, any>) => ({
+    id: String(row.id), name: String(row.name), phone: String(row.phone || ''), active: !!row.active,
+    purchases: Number(row.amount)/100, invoiceCount: Number(row.invoice_count),
+    rank: row.position === null ? null : Number(row.position),
+    category: row.position === null ? null : ['A','B','C','D'][Math.min(3, Math.floor((Number(row.position)-1)*4/Number(row.buyer_count)))],
+  });
+  router.get('/customer-ranking', (req,res) => {
+    const query = typeof req.query.q === 'string' ? req.query.q.trim().slice(0,120) : '';
+    const offset = Number(req.query.offset ?? 0), limit = 20;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000000) { res.status(400).json({error:'راجع صفحة العملاء.'}); return; }
+    const match = `WHERE (?='' OR instr(lower(name),lower(?))>0 OR instr(phone,?)>0)`;
+    const args = [query,query,query];
+    const count = Number(store.get(`SELECT COUNT(*) AS n FROM customers ${match}`,...args)?.n || 0);
+    const rows = store.all(`${customerRankCte} SELECT * FROM customer_ranks ${match}
+      ORDER BY amount DESC,name COLLATE NOCASE,id LIMIT ? OFFSET ?`,...args,limit,offset);
+    res.setHeader('Cache-Control','private, no-store');
+    res.json({customers:rows.map(shapeCustomerRank),total:count,offset,limit,hasMore:offset+rows.length<count,updatedAt:Date.now()});
+  });
+  router.get('/customer-ranking/:customerId', (req,res) => {
+    const id=String(req.params.customerId), offset=Number(req.query.offset ?? 0), limit=20;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000000) { res.status(400).json({error:'راجع صفحة الفواتير.'}); return; }
+    const customer = store.get(`${customerRankCte} SELECT * FROM customer_ranks WHERE id=?`,id);
+    if (!customer) { res.status(404).json({error:'العميل غير موجود.'}); return; }
+    const invoices = store.all(`SELECT s.id,n.number AS invoiceNumber,s.total_piasters AS original,s.paid_piasters AS paid,s.created_at AS createdAt,
+      s.total_piasters-COALESCE((SELECT SUM(cl.amount_piasters) FROM office_corrections_v1 x
+        JOIN office_correction_lines_v1 cl ON cl.correction_id=x.id WHERE x.sale_id=s.id),0) AS net,
+      EXISTS(SELECT 1 FROM office_corrections_v1 x WHERE x.sale_id=s.id) AS corrected
+      FROM office_sales_v1 s LEFT JOIN office_invoice_numbers_v1 n ON n.sale_id=s.id
+      WHERE s.customer_id=? ORDER BY s.created_at DESC,s.rowid DESC LIMIT ? OFFSET ?`,id,limit+1,offset);
+    const signed=balance(id), opening=!!store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=?',id);
+    res.setHeader('Cache-Control','private, no-store');
+    res.json({customer:shapeCustomerRank(customer),due:Math.max(signed,0)/100,credit:Math.max(-signed,0)/100,hasOpening:opening,
+      invoices:invoices.slice(0,limit).map(i=>({...i,original:Number(i.original)/100,paid:Number(i.paid)/100,net:Number(i.net)/100,corrected:!!i.corrected})),
+      offset,hasMore:invoices.length>limit,updatedAt:Date.now()});
+  });
   // A read-only trace lets the office reconcile the numbers without editing historical entries.
   router.get('/statement/:customerId', (req,res) => {
     const so=Number(req.query.salesOffset??0),ro=Number(req.query.receiptsOffset??0);

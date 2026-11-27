@@ -87,11 +87,11 @@ export default async function globalSetup() {
   });
   if (!visit.ok()) throw new Error(`e2e: check-in failed (${visit.status()}) ${await visit.text()}`);
   await api.post(`/api/visits/${(await visit.json()).visit.id}/check-out`, {
-    data: { outcome: 'تم الاتفاق على طلبية', notes: '', amount: 2500, location: { lat: 31.21, lng: 29.93, accuracy: 9 } },
+    data: { outcome: 'تم الاتفاق على طلبية', notes: '', amount: null, location: { lat: 31.21, lng: 29.93, accuracy: 9 } },
     headers: firstAuth,
   });
   const report = await api.post('/api/reports', {
-    data: { id: randomUUID(), type: 'order', title: 'طلبية سماد', body: '٢٠ شيكارة يوريا', customer: 'مزرعة النور', amount: 2500 },
+    data: { id: randomUUID(), type: 'order', title: 'طلبية سماد', body: '٢٠ شيكارة يوريا', customer: 'مزرعة النور', amount: null },
     headers: firstAuth,
   });
   if (!report.ok()) throw new Error(`e2e: field report failed (${report.status()}) ${await report.text()}`);

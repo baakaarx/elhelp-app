@@ -11,7 +11,7 @@ import { shouldQueue } from '../../mobile/src/retry.js';
 const err = (status: number) => Object.assign(new Error('x'), { status });
 
 test('no connection and a server that is down are queued', () => {
-  for (const status of [0, 500, 502, 503, 504, 429]) {
+  for (const status of [0, 408, 500, 502, 503, 504, 429]) {
     assert.equal(shouldQueue(err(status)), true, `status ${status} should be queued`);
   }
 });

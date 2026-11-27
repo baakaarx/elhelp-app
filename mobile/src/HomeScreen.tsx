@@ -67,8 +67,6 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
             <Stat tone="dark" label="كم اليوم" value={(Number(summary?.distanceMeters ?? 0) / 1000).toFixed(1)} />
             <View style={styles.heroDivider} />
             <Stat tone="dark" label="زيارات" value={String(summary?.visitsTotal ?? 0)} />
-            <View style={styles.heroDivider} />
-            <Stat tone="dark" label="تحصيل (ج.م)" value={(summary?.collectionAmount ?? 0).toLocaleString('ar-EG')} />
           </View>
           {shift && !field.trackingActive ? <Button label="استئناف تسجيل الموقع" onPress={() => setResumeOpen(true)} loading={field.busy} /> : null}
           {shift ? (
@@ -159,7 +157,7 @@ export default function HomeScreen({ user, field, onOpenVisits }: Props) {
       />
       <CheckInSheet visible={checkInOpen} onClose={() => setCheckInOpen(false)} field={field} user={user} />
       <OrderSheet visible={orderOpen} onClose={() => setOrderOpen(false)} field={field} visit={orderVisit}
-        onSubmitted={result => setOrderMessage(result === 'queued' ? 'الطلبية اتحفظت على الموبايل وهتتزامن لما الشبكة ترجع.' : 'الطلبية وصلت للمكتب وبقت مستنية المراجعة.')} />
+        onSubmitted={result => setOrderMessage(result === 'queued' ? 'الطلبية محفوظة على الهاتف، ولم نتأكد من وصولها للمكتب بعد. راجع المزامنة ولا تكرر الطلبية.' : 'الطلبية وصلت للمكتب وبقت مستنية المراجعة.')} />
       <CheckOutSheet visit={checkOutVisit} onClose={() => setCheckOutVisit(null)} field={field} />
     </>
   );

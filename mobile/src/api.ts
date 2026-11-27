@@ -1,6 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
+import { isConfirmedOrderResponse } from './orderDelivery';
 import type { Customer, DailyReportInput, GeoPoint, OrderInput, OrderView, Product, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
 export class ApiError extends Error {
@@ -75,8 +76,13 @@ export const deleteMyAccount = (email: string) =>
  * الطلبية بتتبعت من غير GPS ومن غير وردية: هي وعد بالكميات مش بحركة — والضغط نفسه معناه «ابعت»،
  * فالطابور هنا بيستقبل نفس الجسم لو الشبكة قطعت، والسيرفر بيقبل إعادة الإرسال من غير ما يضاعف.
  */
-export const createOrder = (order: OrderInput) =>
-  post<{ order: OrderView; duplicate: boolean }>('/api/orders', order, { queued: true });
+export async function createOrder(order: OrderInput) {
+  const result = await post<{ order: OrderView; duplicate: boolean }>('/api/orders', order, { queued: true });
+  if (!isConfirmedOrderResponse(order, result)) {
+    throw new ApiError('تعذر التأكد من بيانات الطلبية المحفوظة عند المكتب. الطلب محفوظ على الهاتف؛ راجع المكتب قبل إعادة إرساله.', 503, 'ORDER_CONFIRMATION_UNCERTAIN');
+  }
+  return result;
+}
 export const myOrders = () => get<{ orders: OrderView[] }>('/api/orders?limit=50');
 
 export async function login(email: string, password: string) {

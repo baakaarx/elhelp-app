@@ -10,5 +10,5 @@
  */
 export function shouldQueue(error: unknown): boolean {
   const status = (error as { status?: number } | null | undefined)?.status ?? 0;
-  return status === 0 || status === 429 || status >= 500;
+  return status === 0 || status === 408 || status === 429 || status >= 500;
 }
