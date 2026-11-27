@@ -190,9 +190,9 @@ function Root() {
         {shift ? <LiveBanner since={shift.started_at} pending={field.pending} trackingActive={field.trackingActive} /> : null}
         {/* The sync warning is app-wide (a phone clock the server refuses), so it lives in the
             top bar where every tab shows it — not inside one screen's card. */}
-        {field.syncNotice || field.offlineNotice || field.backgroundNotice ? (
+        {field.syncNotice || field.gpsSaveNotice || field.offlineNotice || field.backgroundNotice ? (
           <View style={[styles.errorBar, styles.noticeBar]}>
-            <Text style={styles.noticeText}>⚠ {[field.syncNotice, field.offlineNotice, field.backgroundNotice].filter(Boolean).join(' ')}</Text>
+            <Text style={styles.noticeText}>⚠ {[field.syncNotice, field.gpsSaveNotice, field.offlineNotice, field.backgroundNotice].filter(Boolean).join(' ')}</Text>
           </View>
         ) : null}
         {field.error && <View style={styles.errorBar}><Text style={styles.errorText}>{field.error}</Text></View>}

@@ -5,14 +5,14 @@ import { dateTimeText } from './dates';
 export type Detail={type:'sale'|'receipt';record:{id:string;invoiceNumber?:number;customerId:string;total?:number;paid:number;createdAt:number;actorName:string;currentName:string;currentPhone?:string;currentGovernorate?:string;currentDistrict?:string;currentVillage?:string;currentWarehouse?:string};
  snapshot:{customerName:string;phone:string;governorate:string;district:string;village:string;warehouseName:string;repName:string}|null;
  lines:{id:string;name:string;unit:string;unitSize:string;qty:number;price:number;amount:number;corrected:number;returned:number;correctedAmount:number}[];
- events:{id:string;reason:string;cashKind:'error'|'refund'|null;cash:number;actorName:string;createdAt:number;lines:{name:string;unit:string;unitSize:string;corrected:number;returned:number;amount:number;stockKind:'returned'|'error'|null}[]}[];
+ events:{id:string;reason:string;cashKind:'error'|'refund'|null;cash:number;actorName:string;createdAt:number;lines:{name:string;unit:string;unitSize:string;corrected:number;returned:number;damaged?:number;damagedWarehouseName?:string|null;amount:number;stockKind:'returned'|'error'|null}[]}[];
  revision:number;version:string;balancePiasters:number;cashRemaining:number};
 export const cashP=(p:number)=>`${(p/100).toLocaleString('ar-EG',{maximumFractionDigits:2})} ج.م`;
 export const qtyM=(m:number)=>(m/1000).toLocaleString('ar-EG',{maximumFractionDigits:3});
 export function CorrectionHistory({detail,timezone}:{detail:Detail;timezone?:string}) {
  return <>{detail.events.length>0&&<div><h4>سجل التصحيحات</h4>{detail.events.map(e=><div key={e.id} className="invoice-event"><p><strong>{dateTimeText(e.createdAt,timezone)} · {e.actorName}</strong> · {e.reason}</p>
   <p className="small">مرجع التصحيح: <span dir="ltr">{e.id}</span></p>
-  {e.lines.map((l,i)=><p key={i}>{l.name}: كمية مصححة {qtyM(l.corrected)} {l.unit} {l.unitSize}، قيمة مصححة {cashP(l.amount)} {l.stockKind&&` · ${l.stockKind==='error'?'لم تخرج والخصم كان خطأ':'رجعت للمخزن'}: ${qtyM(l.returned)}`}</p>)}
+  {e.lines.map((l,i)=><p key={i}>{l.name}: كمية مصححة {qtyM(l.corrected)} {l.unit} {l.unitSize}، قيمة مصححة {cashP(l.amount)} {l.stockKind&&l.returned-(l.damaged??0)>0&&` · ${l.stockKind==='error'?'لم تخرج والخصم كان خطأ':'رجعت لمخزن الفاتورة'}: ${qtyM(l.returned-(l.damaged??0))}`}{(l.damaged??0)>0&&` · تالف إلى ${l.damagedWarehouseName || 'مخزن التالف'}: ${qtyM(l.damaged??0)}`}</p>)}
   {e.cashKind&&<p>{e.cashKind==='error'?'مبلغ سُجل خطأ ولم يُستلم':'مبلغ أُعيد للعميل'}: {cashP(e.cash)}</p>}
  </div>)}</div>}</>;
 }

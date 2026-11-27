@@ -6,7 +6,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
 import { z } from 'zod';
 import { AUTO_CLOSED_OUTCOME, runCleanup, Store } from './db.js';
@@ -312,11 +312,11 @@ export function createApp(overrides: Partial<Config> = {}) {
     const openVisitCount = Number(store.get("SELECT COUNT(*) AS c FROM visits WHERE status='open'")?.c || 0);
     const emptyStock = store.all(`SELECT w.name AS warehouseName,p.name AS productName,p.unit,p.unit_size AS unitSize
       FROM warehouse_stock s JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id
-      WHERE p.active=1 AND s.milli_qty=0 ORDER BY w.name,p.name LIMIT 20`);
-    const emptyStockCount = Number(store.get('SELECT COUNT(*) AS c FROM warehouse_stock s JOIN products p ON p.id=s.product_id WHERE p.active=1 AND s.milli_qty=0')?.c || 0);
-    const warehouses = Number(store.get('SELECT COUNT(*) AS c FROM warehouses')?.c || 0);
+      WHERE p.active=1 AND s.milli_qty=0 AND w.id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1) ORDER BY w.name,p.name LIMIT 20`);
+    const emptyStockCount = Number(store.get('SELECT COUNT(*) AS c FROM warehouse_stock s JOIN products p ON p.id=s.product_id WHERE p.active=1 AND s.milli_qty=0 AND s.warehouse_id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1)')?.c || 0);
+    const warehouses = Number(store.get('SELECT COUNT(*) AS c FROM warehouses WHERE id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1)')?.c || 0);
     const uninitialized = Number(store.get(`SELECT COUNT(*) AS c FROM warehouses w CROSS JOIN products p
-      LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id AND s.product_id=p.id WHERE p.active=1 AND s.product_id IS NULL`)?.c || 0);
+      LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id AND s.product_id=p.id WHERE p.active=1 AND s.product_id IS NULL AND w.id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1)`)?.c || 0);
     res.setHeader('Cache-Control', 'private, no-store');
     res.json({ waitingOrders,orderCount,unassignedCustomers,openVisits,openVisitCount,emptyStock,emptyStockCount,warehouses,uninitialized });
   });
@@ -2197,21 +2197,21 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = newOrder.safeParse(req.body ?? {});
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات الطلبية غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const data = parsed.data;
-    // The phone generates the id and the offline queue replays the same body — so a replay answers
-    // with the row that already exists, it does not double an agreement the office has already priced.
-    const existing = store.get('SELECT id, user_id AS userId FROM orders WHERE id=?', data.id) as { id: string; userId: string } | undefined;
+    // The phone's first send omits recordedAt but its durable offline replay adds it.
+    // Compare the normalized business payload; legacy orders have no original fingerprint.
+    const { recordedAt: _recordedAt, ...identity } = data;
+    const requestHash = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+    const duplicateOrder = () => {
+      const old = store.get(`SELECT o.user_id AS userId,r.request_hash AS requestHash FROM orders o
+        LEFT JOIN order_create_requests_v1 r ON r.order_id=o.id WHERE o.id=?`, data.id);
+      if (!old) return 0;
+      return old.userId === res.locals.user.id && (!old.requestHash || old.requestHash === requestHash) ? 1 : -1;
+    };
+    const existing = duplicateOrder();
     if (existing) {
-      if (existing.userId !== res.locals.user.id) { res.status(409).json({ error: 'معرّف الطلبية مستخدم بالفعل.' }); return; }
+      if (existing < 0) { res.status(409).json({ error: 'معرّف الطلبية مستخدم لبيانات مختلفة.', code: 'ORDER_REQUEST_CONFLICT' }); return; }
       res.status(200).json({ order: orderRow(data.id, 'rep'), duplicate: true }); return;
     }
-    const gate = orderCustomerGate(res.locals.user.id, data.customerId);
-    if ('error' in gate) { res.status(gate.status ?? 400).json({ error: gate.error, code: gate.code }); return; }
-    if (data.visitId !== undefined) {
-      const visit = store.get('SELECT id FROM visits WHERE id=? AND user_id=? AND customer_id=?', data.visitId, res.locals.user.id, data.customerId);
-      if (!visit) { res.status(400).json({ error: 'الزيارة المرتبطة مش لنفس العميل في سجلّك — اختار زيارته، أو ابعت الطلبية من غير ربط.', code: 'VISIT_NOT_YOURS' }); return; }
-    }
-    const lines = data.lines.length ? resolveOrderLines(data.lines) : { resolved: [] };
-    if ('error' in lines) { res.status(400).json({ error: lines.error, code: 'ORDER_LINES' }); return; }
     const now = Date.now();
     let sentAt: number | null = null;
     let offline = false;
@@ -2226,12 +2226,22 @@ export function createApp(overrides: Partial<Config> = {}) {
         sentAt = at; offline = true;
       } else sentAt = now;
     }
-    let noticeId = 0;
+    let noticeId = 0, replay = false;
     try {
       store.transaction(() => {
+        const locked = duplicateOrder();
+        if (locked === 1) { replay = true; return; }
+        if (locked === -1) throw Object.assign(new Error('معرّف الطلبية مستخدم لبيانات مختلفة.'), { statusCode: 409, code: 'ORDER_REQUEST_CONFLICT', orderGate: true });
+        const gate = orderCustomerGate(res.locals.user.id, data.customerId);
+        if ('error' in gate) throw Object.assign(new Error(gate.error), { statusCode: gate.status ?? 400, code: gate.code, orderGate: true });
+        if (data.visitId !== undefined && !store.get('SELECT id FROM visits WHERE id=? AND user_id=? AND customer_id=?', data.visitId, res.locals.user.id, data.customerId))
+          throw Object.assign(new Error('الزيارة المرتبطة مش لنفس العميل في سجلّك — اختار زيارته، أو ابعت الطلبية من غير ربط.'), { statusCode: 400, code: 'VISIT_NOT_YOURS', orderGate: true });
+        const lines = data.lines.length ? resolveOrderLines(data.lines) : { resolved: [] };
+        if ('error' in lines) throw Object.assign(new Error(lines.error), { statusCode: 400, code: 'ORDER_LINES', orderGate: true });
         store.run(`INSERT INTO orders(id,user_id,customer_id,visit_id,status,notes,recommendation,recorded_offline,created_at,updated_at,sent_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, data.customerId, data.visitId ?? null,
           data.send ? 'sent' : 'draft', data.notes, data.recommendation, offline ? 1 : 0, now, now, sentAt);
+        store.run('INSERT INTO order_create_requests_v1(order_id,request_hash) VALUES(?,?)',data.id,requestHash);
         lines.resolved.forEach((line, index) => store.run(`INSERT INTO order_lines(id,order_id,position,product_id,product_name,unit,unit_size,qty,notes,created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?)`, randomUUID(), data.id, index, line.productId, line.name, line.unit, line.unitSize, line.qty, line.notes, now));
         store.audit(res.locals.user.id, offline ? 'order.create_offline' : 'order.create',
@@ -2242,16 +2252,10 @@ export function createApp(overrides: Partial<Config> = {}) {
         }
       });
     } catch (error) {
-      // The unique indexes have the last word (one line per item, one id per order); a race against
-      // itself arrives as a duplicate the office can price, not as a crash.
-      if (String((error as Error).message).includes('UNIQUE')) {
-        const saved = store.get('SELECT user_id AS userId FROM orders WHERE id=?', data.id) as { userId: string } | undefined;
-        if (saved?.userId === res.locals.user.id) {
-          res.status(200).json({ order: orderRow(data.id, 'rep'), duplicate: true }); return;
-        }
-      }
+      if ((error as any)?.orderGate) { res.status((error as any).statusCode).json({ error: (error as Error).message, code: (error as any).code }); return; }
       throw error;
     }
+    if (replay) { res.status(200).json({ order: orderRow(data.id, 'rep'), duplicate: true }); return; }
     if (data.send) io.to('admins').emit('order', { ...orderRow(data.id, 'office'), noticeId });
     invalidateKpis(); broadcast();
     res.status(201).json({ order: orderRow(data.id, 'rep'), duplicate: false, ...(offline ? { recordedOffline: true } : {}) });
@@ -2269,6 +2273,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     const now = Date.now();
     try {
       store.transaction(() => {
+        // Recheck under the write lock: another server can send the draft after the earlier read.
+        const locked = store.get('SELECT user_id AS userId,status FROM orders WHERE id=?', order.id);
+        if (!locked || locked.userId !== res.locals.user.id) throw Object.assign(new Error('الطلبية غير موجودة.'), { statusCode: 404, orderGate: true });
+        if (locked.status !== 'draft') throw Object.assign(new Error('الطلبية اتبعتت بالفعل — اللي اتبعت ما بيتعدلش. لو فيها غلط اكتب طلبية جديدة، وبلّغ المكتب.'), { statusCode: 409, code: 'ORDER_SENT', orderGate: true });
         if (parsed.data.notes !== undefined) store.run('UPDATE orders SET notes=?, updated_at=? WHERE id=?', parsed.data.notes, now, order.id);
         else store.run('UPDATE orders SET updated_at=? WHERE id=?', now, order.id);
         if (parsed.data.lines !== undefined) {
@@ -2278,12 +2286,13 @@ export function createApp(overrides: Partial<Config> = {}) {
           lines.resolved.forEach((line, index) => store.run(`INSERT INTO order_lines(id,order_id,position,product_id,product_name,unit,unit_size,qty,notes,created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?)`, randomUUID(), order.id, index, line.productId, line.name, line.unit, line.unitSize, line.qty, line.notes, now));
         }
+        store.audit(res.locals.user.id, 'order.edit', { orderId: order.id, fields: Object.keys(parsed.data) });
       });
     } catch (error) {
+      if ((error as any)?.orderGate) { res.status((error as any).statusCode).json({ error: (error as Error).message, code: (error as any).code }); return; }
       if ((error as any)?.orderLines) { res.status(400).json({ error: (error as Error).message, code: 'ORDER_LINES' }); return; }
       throw error;
     }
-    store.audit(res.locals.user.id, 'order.edit', { orderId: order.id, fields: Object.keys(parsed.data) });
     res.json({ order: orderRow(order.id, 'rep') });
   });
 
@@ -2294,14 +2303,6 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!order || order.userId !== res.locals.user.id) { res.status(404).json({ error: 'الطلبية غير موجودة.' }); return; }
     // A replayed send of an order that is already in the queue did its job the first time.
     if (order.status !== 'draft') { res.json({ order: orderRow(order.id, 'rep'), duplicate: true }); return; }
-    // A draft may have waited while the office moved its customer or stopped an item.
-    // Apply the same rules as a new sent order before it becomes the office's work.
-    const draft = store.get('SELECT customer_id AS customerId FROM orders WHERE id=?', order.id) as { customerId: string };
-    const gate = orderCustomerGate(res.locals.user.id, draft.customerId);
-    if ('error' in gate) { res.status(gate.status ?? 400).json({ error: gate.error, code: gate.code }); return; }
-    const draftLines = orderLineRows(order.id, false) as Array<{ productId: string; qty: number; notes: string }>;
-    const validLines = resolveOrderLines(draftLines);
-    if ('error' in validLines) { res.status(400).json({ error: validLines.error, code: 'ORDER_LINES' }); return; }
     const now = Date.now();
     let sentAt = now;
     let offline = false;
@@ -2314,14 +2315,27 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     // The status rides in the WHERE: two devices pressing send at once produce one queue entry, not two.
     let moved = false, noticeId = 0;
-    store.transaction(() => {
+    try { store.transaction(() => {
+      // Validate the current draft, its customer and items under the same lock as sending it.
+      // Otherwise a concurrent edit or reassignment can invalidate the earlier checks.
+      const locked = store.get('SELECT user_id AS userId,status,customer_id AS customerId FROM orders WHERE id=?', order.id);
+      if (!locked || locked.userId !== res.locals.user.id) throw Object.assign(new Error('الطلبية غير موجودة.'), { statusCode: 404, orderGate: true });
+      if (locked.status !== 'draft') return;
+      const gate = orderCustomerGate(res.locals.user.id, String(locked.customerId));
+      if ('error' in gate) throw Object.assign(new Error(gate.error), { statusCode: gate.status ?? 400, code: gate.code, orderGate: true });
+      const draftLines = orderLineRows(order.id, false) as Array<{ productId: string; qty: number; notes: string }>;
+      const validLines = resolveOrderLines(draftLines);
+      if ('error' in validLines) throw Object.assign(new Error(validLines.error), { statusCode: 400, code: 'ORDER_LINES', orderGate: true });
       moved = Number(store.run(`UPDATE orders SET status='sent', sent_at=?, recorded_offline=MAX(recorded_offline, ?), updated_at=? WHERE id=? AND status='draft'`,
         sentAt, offline ? 1 : 0, now, order.id).changes) > 0;
       if (!moved) return;
       store.audit(res.locals.user.id, offline ? 'order.send_offline' : 'order.send', { orderId: order.id });
       store.audit(res.locals.user.id, 'order.notification', { orderId: order.id });
       noticeId = Number(store.get('SELECT last_insert_rowid() AS id')!.id);
-    });
+    }); } catch (error) {
+      if ((error as any)?.orderGate) { res.status((error as any).statusCode).json({ error: (error as Error).message, code: (error as any).code }); return; }
+      throw error;
+    }
     if (!moved) { res.json({ order: orderRow(order.id, 'rep'), duplicate: true }); return; }
     io.to('admins').emit('order', { ...orderRow(order.id, 'office'), noticeId });
     invalidateKpis(); broadcast();

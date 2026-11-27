@@ -16,12 +16,26 @@ const bodySale = z.object({ id, customerId:entityId, warehouseId:entityId, order
   lines:z.array(z.object({productId:entityId,qty:quantity,price:money}).strict()).max(100).default([]) }).strict();
 const bodyEntry = z.object({id,customerId:entityId,amount:money}).strict();
 const correctionBody=z.object({id,reason:z.string().trim().min(5).max(500),balancePiasters:z.number().int().safe(),revision:z.number().int().nonnegative(),
-  lines:z.array(z.object({lineId:entityId,correctedMilli:z.number().int().nonnegative().max(100_000_000),returnedMilli:z.number().int().nonnegative().max(100_000_000),stockKind:z.enum(['returned','error']).nullable()}).strict()).max(100),
+  lines:z.array(z.object({lineId:entityId,correctedMilli:z.number().int().nonnegative().max(100_000_000),returnedMilli:z.number().int().nonnegative().max(100_000_000),damagedMilli:z.number().int().nonnegative().max(100_000_000).optional(),stockKind:z.enum(['returned','error']).nullable()}).strict()).max(100),
   cash:z.object({kind:z.enum(['error','refund']),amountPiasters:z.number().int().positive().max(100_000_000_000)}).strict().nullable()}).strict();
 
 /** Office-only confirmed sales; a priced order is not itself a sale or a payment. */
 export function createSalesRouter(store: Store, timezone:string, onOrderSold:(orderId:string)=>void = ()=>{}) {
   const router = Router();
+  const warehouseHasUpdatedAt = store.all('PRAGMA table_info(warehouses)').some(column => column.name === 'updated_at');
+  // Called only within the correction transaction; never reclassify an existing real warehouse.
+  const damagedWarehouse = (now: number): string => {
+    const existing = store.get('SELECT warehouse_id FROM damaged_warehouse_v1 WHERE singleton=1');
+    if (existing) return String(existing.warehouse_id);
+    const warehouseId = randomUUID();
+    const base = 'مخزن المرتجعات التالفة';
+    let warehouseName = base, suffix = 2;
+    while (store.get('SELECT 1 FROM warehouses WHERE name=? COLLATE NOCASE', warehouseName)) warehouseName = `${base} (${suffix++})`;
+    if (warehouseHasUpdatedAt) store.run('INSERT INTO warehouses(id,name,created_at,updated_at) VALUES(?,?,?,?)',warehouseId,warehouseName,now,now);
+    else store.run('INSERT INTO warehouses(id,name,created_at) VALUES(?,?,?)',warehouseId,warehouseName,now);
+    store.run('INSERT INTO damaged_warehouse_v1(singleton,warehouse_id) VALUES(1,?)',warehouseId);
+    return warehouseId;
+  };
   const balance = (customerId: string): number => Number(store.get(`SELECT
     COALESCE((SELECT SUM(amount_piasters) FROM office_debts_v1 WHERE customer_id=?),0)
     + COALESCE((SELECT SUM(total_piasters-paid_piasters) FROM office_sales_v1 WHERE customer_id=?),0)
@@ -49,7 +63,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const customers=store.all("SELECT c.id,c.name,c.phone,c.price_tier_id AS priceTierId,EXISTS(SELECT 1 FROM office_debts_v1 d WHERE d.customer_id=c.id) AS hasOpening FROM customers c WHERE c.active=1 ORDER BY c.name COLLATE NOCASE,c.id");
     const statementCustomers=store.all('SELECT id,name,phone,active FROM customers ORDER BY name COLLATE NOCASE,id');
     const products=store.all("SELECT id,name,unit,unit_size AS unitSize FROM products WHERE active=1 ORDER BY name COLLATE NOCASE,id");
-    const warehouses=store.all('SELECT id,name FROM warehouses ORDER BY name COLLATE NOCASE,id');
+    const warehouses=store.all('SELECT id,name FROM warehouses WHERE id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1) ORDER BY name COLLATE NOCASE,id');
     const reps=store.all("SELECT id,name,region FROM users WHERE role='rep' AND active=1 ORDER BY name COLLATE NOCASE,id");
     const prices=store.all('SELECT product_id AS productId,tier_id AS tierId,price FROM product_prices');
     const orders=store.all(`SELECT o.id,o.customer_id AS customerId,c.name AS customerName,o.status,o.notes,o.recommendation,o.total,o.sent_at AS sentAt,o.priced_at AS pricedAt,u.name AS repName
@@ -149,7 +163,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
       FROM office_receipts_v1 r JOIN customers c ON c.id=r.customer_id ORDER BY r.created_at DESC,r.rowid DESC LIMIT 50`);
     const stock=store.all(`SELECT w.id AS warehouseId,w.name AS warehouseName,p.id AS productId,p.name AS productName,p.unit,p.unit_size AS unitSize,
       s.milli_qty AS qty FROM warehouse_stock s JOIN warehouses w ON w.id=s.warehouse_id JOIN products p ON p.id=s.product_id
-      WHERE p.active=1 ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE`);
+      WHERE p.active=1 AND w.id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1) ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE`);
     res.json({ count:Number(totals.count), sales:Number(totals.sales)/100, collected:(paid+receipts-cashCorrections)/100,
       due:debtors.reduce((sum,row)=>sum+row.balance,0)/100,credit:creditors.reduce((sum,row)=>sum-row.balance,0)/100,
       debtors:debtors.map(x=>({...x,due:x.balance/100})),creditors:creditors.map(x=>({...x,credit:-x.balance/100})), latest:latest.map(x=>({...x,total:Number(x.total)/100,paid:Number(x.paid)/100})),
@@ -171,8 +185,11 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     if(!record)return null;
     const key=sale?'sale_id':'receipt_id';
     const events=store.all(`SELECT id,reason,cash_kind AS cashKind,cash_piasters AS cash,actor_name AS actorName,created_at AS createdAt FROM office_corrections_v1 WHERE ${key}=? ORDER BY created_at,rowid`,targetId)
-      .map(e=>({...e,lines:store.all(`SELECT l.product_name AS name,l.unit,l.unit_size AS unitSize,cl.corrected_milli AS corrected,cl.returned_milli AS returned,cl.amount_piasters AS amount,cl.stock_kind AS stockKind
-         FROM office_correction_lines_v1 cl JOIN office_sales_lines_v1 l ON l.id=cl.line_id WHERE cl.correction_id=? ORDER BY l.rowid`,e.id)}));
+      .map(e=>({...e,lines:store.all(`SELECT l.product_name AS name,l.unit,l.unit_size AS unitSize,cl.corrected_milli AS corrected,cl.returned_milli AS returned,cl.amount_piasters AS amount,cl.stock_kind AS stockKind,
+         COALESCE(d.milli_qty,0) AS damaged, w.name AS damagedWarehouseName
+         FROM office_correction_lines_v1 cl JOIN office_sales_lines_v1 l ON l.id=cl.line_id
+         LEFT JOIN damaged_return_lines_v1 d ON d.correction_id=cl.correction_id AND d.line_id=cl.line_id
+         LEFT JOIN warehouses w ON w.id=d.warehouse_id WHERE cl.correction_id=? ORDER BY l.rowid`,e.id)}));
     const lines=sale?store.all(`SELECT l.id,l.product_name AS name,l.unit,l.unit_size AS unitSize,l.milli_qty AS qty,l.price_piasters AS price,l.line_piasters AS amount,
       COALESCE((SELECT SUM(corrected_milli) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS corrected,
       COALESCE((SELECT SUM(returned_milli) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS returned,
@@ -216,6 +233,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
       if(data.cash && data.cash.amountPiasters>current.cashRemaining)throw Error('CASH');
       const calculated=data.lines.map(x=>{
         const line=current.lines.find(l=>l.id===x.lineId);if(!line || (!x.correctedMilli&&!x.returnedMilli) || (!!x.returnedMilli !== !!x.stockKind))throw Error('LINES');
+        if ((x.damagedMilli ?? 0) > x.returnedMilli || ((x.damagedMilli ?? 0)>0 && x.stockKind!=='returned')) throw Error('LINES');
         const corrected=Number(line.corrected)+x.correctedMilli, returned=Number(line.returned)+x.returnedMilli;
         if(corrected>Number(line.qty)||returned>corrected)throw Error('QUANTITY');
         // Cumulative rounding means splitting a correction cannot create or lose piasters.
@@ -225,15 +243,27 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         return {...x,line,amount};
       });
       const now=Date.now();
+      const invoiceReference=current.record.invoiceNumber == null ? `البيعة ${targetId}` : `الفاتورة رقم ${current.record.invoiceNumber}`;
       store.run('INSERT INTO office_corrections_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',data.id,type==='sale'?targetId:null,type==='receipt'?targetId:null,data.reason,data.cash?.kind??null,data.cash?.amountPiasters??0,actor.id,actor.name,request,now);
       for(const x of calculated){
         store.run('INSERT INTO office_correction_lines_v1 VALUES(?,?,?,?,?,?)',data.id,x.lineId,x.correctedMilli,x.returnedMilli,x.amount,x.stockKind);
         if(x.returnedMilli){
-          const stock=store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=(SELECT product_id FROM office_sales_lines_v1 WHERE id=?)',current.record.warehouseId,x.lineId);
-          if(!stock || Number(stock.milli_qty)>Number.MAX_SAFE_INTEGER-x.returnedMilli)throw Error('STOCK');
+          const damaged=x.damagedMilli ?? 0, good=x.returnedMilli-damaged;
           const product=store.get('SELECT product_id FROM office_sales_lines_v1 WHERE id=?',x.lineId)!;
-          store.run('UPDATE warehouse_stock SET milli_qty=milli_qty+? WHERE warehouse_id=? AND product_id=?',x.returnedMilli,current.record.warehouseId,product.product_id);
-          store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'in',?,NULL,?,?,?,?,?,?)",randomUUID(),product.product_id,current.record.warehouseId,x.returnedMilli,`${x.stockKind==='error'?'تصحيح خصم مخزون بالخطأ':'إرجاع بضاعة'} للبيعة ${targetId} - تصحيح ${data.id}`,actor.id,actor.name,now);
+          if(good){
+            const stock=store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',current.record.warehouseId,product.product_id);
+            if(!stock || Number(stock.milli_qty)>Number.MAX_SAFE_INTEGER-good)throw Error('STOCK');
+            store.run('UPDATE warehouse_stock SET milli_qty=milli_qty+? WHERE warehouse_id=? AND product_id=?',good,current.record.warehouseId,product.product_id);
+            store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'in',?,NULL,?,?,?,?,?,?)",randomUUID(),product.product_id,current.record.warehouseId,good,`${x.stockKind==='error'?'تصحيح خصم مخزون بالخطأ':'إرجاع بضاعة سليمة'} لـ${invoiceReference} - مرجع التصحيح ${data.id}`,actor.id,actor.name,now);
+          }
+          if(damaged){
+            const damagedId=damagedWarehouse(now);
+            const stock=store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',damagedId,product.product_id);
+            if(stock && Number(stock.milli_qty)>Number.MAX_SAFE_INTEGER-damaged)throw Error('STOCK');
+            store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES(?,?,?) ON CONFLICT(warehouse_id,product_id) DO UPDATE SET milli_qty=milli_qty+excluded.milli_qty',damagedId,product.product_id,damaged);
+            store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'in',?,NULL,?,?,?,?,?,?)",randomUUID(),product.product_id,damagedId,damaged,`مرتجع تالف لـ${invoiceReference} - مرجع التصحيح ${data.id}`,actor.id,actor.name,now);
+            store.run('INSERT INTO damaged_return_lines_v1(correction_id,line_id,warehouse_id,milli_qty) VALUES(?,?,?,?)',data.id,x.lineId,damagedId,damaged);
+          }
         }
       }
       store.audit(actor.id,'sales.correction',{correctionId:data.id,type,targetId});
@@ -255,7 +285,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         if (locked===1) {replay=true;return;}
         if (locked===-1) throw Error('REQUEST_CONFLICT');
         const customer=store.get('SELECT id,active,name,phone,governorate,district,village FROM customers WHERE id=?',data.customerId); if (!customer?.active) throw Error('CUSTOMER');
-        const warehouse=store.get('SELECT id,name FROM warehouses WHERE id=?',data.warehouseId); if (!warehouse) throw Error('WAREHOUSE');
+        const warehouse=store.get('SELECT id,name FROM warehouses WHERE id=? AND id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1)',data.warehouseId); if (!warehouse) throw Error('WAREHOUSE');
         if (!exact(data.paid,100)) throw Error('PRECISION');
         let lines: {productId:string;qty:number;price:number;name:string;unit:string;unitSize:string}[]=[];
         let pricedOrderTotal: number | undefined;

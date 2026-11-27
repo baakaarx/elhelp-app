@@ -311,6 +311,9 @@ nav { display: grid; gap: 4px; }
   backdrop-filter: blur(6px);
 }
 .map-tool:hover { background: rgba(7, 23, 38, 0.92); }
+.map-route-toggle { width: auto; min-width: max-content; padding: 0 10px; border-radius: 999px; font-size: .74rem; }
+.map-badge { max-width: 45%; border-radius: 12px; }
+.map-tools { max-width: 52%; flex-wrap: wrap; justify-content: flex-end; }
 /* Leaflet markers */
 .pin span { display: block; }
 .pin-rep span {

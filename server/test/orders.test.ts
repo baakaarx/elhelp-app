@@ -384,3 +384,53 @@ test('free-text field recommendation reaches sales unchanged, and only the offic
   const stock = (await client.get(`/api/warehouse/stock?warehouseId=${warehouse}`).set(admin)).body.stock.find((row: any) => row.id === urea);
   assert.equal(stock.qty, 8);
 });
+
+test('new order id retries match the original payload even after a draft edit, and reject conflicting reuse', async () => {
+  const id = randomUUID();
+  const original = { id, customerId: customerA, send: false, notes: 'المسودة الأصلية', lines: [{ productId: urea, qty: 2 }] };
+  assert.equal((await client.post('/api/orders').set(repA.auth).send(original)).status, 201);
+  assert.equal((await client.patch(`/api/orders/${id}`).set(repA.auth).send({ notes: 'المسودة المعدلة' })).status, 200);
+  const same = await client.post('/api/orders').set(repA.auth).send({ ...original, recordedAt: Date.now() });
+  assert.equal(same.status, 200); assert.equal(same.body.duplicate, true);
+  const conflict = await client.post('/api/orders').set(repA.auth).send({ ...original, lines: [{ productId: urea, qty: 3 }] });
+  assert.equal(conflict.status, 409); assert.equal(conflict.body.code, 'ORDER_REQUEST_CONFLICT');
+  assert.equal(Number(store.get('SELECT qty FROM order_lines WHERE order_id=?', id)?.qty), 2);
+  // Historical orders cannot reconstruct their original payload after edits.
+  store.run('DELETE FROM order_create_requests_v1 WHERE order_id=?', id);
+  assert.equal((await client.post('/api/orders').set(repA.auth).send(original)).status, 200);
+});
+
+test('order edit cannot overwrite a draft sent between preflight and write lock', async () => {
+ const made = await createOrder(repA, { send: false, notes: 'قبل الإرسال' }); assert.equal(made.status,201);
+ const id = made.body.order.id; const transaction = store.transaction.bind(store);
+ store.transaction = fn => { store.run("UPDATE orders SET status='sent',sent_at=? WHERE id=?", Date.now(), id); transaction(fn); };
+ let result; try { result = await client.patch(`/api/orders/${id}`).set(repA.auth).send({notes:'تعديل متأخر',lines:[{productId:dap,qty:2}]}); } finally {store.transaction=transaction;}
+ assert.equal(result.status,409); assert.equal(result.body.code,'ORDER_SENT');
+ assert.equal(store.get('SELECT notes FROM orders WHERE id=?',id)?.notes,'قبل الإرسال');
+ assert.equal(store.get('SELECT product_id FROM order_lines WHERE order_id=?',id)?.product_id,urea);
+});
+
+test('sending or creating an order rechecks customer and product under the write lock', async () => {
+ const c = await bookCustomer(repA.id, 'عميل سباق الطلب');
+ const made = await createOrder(repA, {send:false,customerId:c}); assert.equal(made.status,201);
+ const id = made.body.order.id, transaction=store.transaction.bind(store);
+ store.transaction=fn=>{store.run('UPDATE customers SET active=0 WHERE id=?',c);transaction(fn);};
+ let result; try {result=await client.post(`/api/orders/${id}/send`).set(repA.auth).send({});} finally {store.transaction=transaction;}
+ assert.equal(result.status,409); assert.equal(result.body.code,'CUSTOMER_INACTIVE');
+ assert.equal(store.get('SELECT status FROM orders WHERE id=?',id)?.status,'draft');
+ store.run('UPDATE customers SET active=1 WHERE id=?',c);
+ const p=await makeProduct('صنف سباق الطلب', 'وحدة', null), newId=randomUUID();
+ store.transaction=fn=>{store.run('UPDATE products SET active=0 WHERE id=?',p);transaction(fn);};
+ try {result=await createOrder(repA, {id:newId,customerId:c,lines:[{productId:p,qty:1}]});} finally {store.transaction=transaction;}
+ assert.equal(result.status,400); assert.equal(result.body.code,'ORDER_LINES');
+ assert.equal(store.get('SELECT id FROM orders WHERE id=?',newId),undefined);
+});
+
+test('a failed edit audit rolls back the changed draft', async () => {
+ const made=await createOrder(repA,{send:false,notes:'الملاحظات الأصلية'});const id=made.body.order.id;
+ store.run("CREATE TRIGGER fail_order_edit BEFORE INSERT ON audit_log WHEN NEW.action='order.edit' BEGIN SELECT RAISE(ABORT,'edit audit failed'); END");
+ try {
+  const result=await client.patch(`/api/orders/${id}`).set(repA.auth).send({notes:'لا ينبغي حفظها'});
+  assert.equal(result.status,500); assert.equal(store.get('SELECT notes FROM orders WHERE id=?',id)?.notes,'الملاحظات الأصلية');
+ } finally {store.run('DROP TRIGGER fail_order_edit');}
+});

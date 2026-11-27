@@ -41,10 +41,8 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK)) {
       const accuracy = position.coords.accuracy ?? null;
       const { latitude, longitude } = position.coords;
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) continue;
-      // Same gate as the foreground watcher: network guesses (accuracy above the shared limit) are kept
-      // off the route, the standing-still jitter is dropped, and a stillness heartbeat every 30 s
-      // still goes out — from the last usable position when the only readings are too weak, which
-      // is what happens in a shop during a visit.
+      // Same gate as the foreground watcher: network guesses above the shared limit are not
+      // turned into fabricated fresh coordinates. A stillness heartbeat needs an actual usable fix.
       const fix = queueableFix(latitude, longitude, accuracy);
       if (!fix) continue;
       const point: GeoPoint = {
@@ -55,7 +53,10 @@ if (!TaskManager.isTaskDefined(BACKGROUND_TASK)) {
         heading: position.coords.heading != null && position.coords.heading >= 0 && position.coords.heading < 360 ? position.coords.heading : null, battery: batteryLevel,
         recordedAt: position.timestamp || Date.now(),
       };
-      await enqueueLocation(point);
+      // If storage is full, enqueueLocation records a warning. Still attempt to flush the
+      // already-saved backlog below: otherwise the background task cannot free any space until
+      // the engineer opens the app. Do not claim this or the rest of the batch was saved.
+      try { await enqueueLocation(point); } catch { break; }
     }
     await flushOutbox();
     return;

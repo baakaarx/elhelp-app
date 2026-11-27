@@ -28,23 +28,24 @@ test('a fast-clock rejection keeps every fix instead of deleting them', async ()
   const removed: string[] = [];
   const send = async () => { throw Object.assign(new Error('ساعة الهاتف متقدمة'), { status: 422, code: 'CLOCK_SKEW' }); };
   await assert.rejects(
-    () => sendLocationChunks(points, send, async id => { removed.push(id); }),
+    () => sendLocationChunks(points, send, async id => { removed.push(id); }, async () => { throw Error('clock skew must not reject points'); }),
     (error: { code?: string }) => error.code === 'CLOCK_SKEW',
     'the clock message must reach the caller',
   );
   assert.deepEqual(removed, [], 'nothing may be deleted while the clock is wrong');
 });
 
-test('a corrupt fix is still isolated and removed', async () => {
+test('a corrupt fix is isolated and retained for review', async () => {
   const points = ['good-1', 'bad', 'good-2'].map(id => ({ id } as GeoPoint));
-  const sent: string[] = [], removed: string[] = [];
+  const sent: string[] = [], removed: string[] = [], rejected: string[] = [];
   const count = await sendLocationChunks(points, async chunk => {
     // No `code`: this is a genuinely invalid point, not a clock problem.
     if (chunk.some(point => point.id === 'bad')) throw { status: 422 };
     sent.push(...chunk.map(point => point.id));
-  }, async id => { removed.push(id); });
+  }, async id => { removed.push(id); }, async id => { rejected.push(id); });
   assert.deepEqual(sent, ['good-1', 'good-2']);
-  assert.deepEqual(removed, ['good-1', 'bad', 'good-2']);
+  assert.deepEqual(removed, ['good-1', 'good-2']);
+  assert.deepEqual(rejected, ['bad']);
   assert.equal(count, 2);
 });
 

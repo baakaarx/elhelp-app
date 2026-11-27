@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { DEFAULT_TIMEZONE, timeText } from './dates';
 import type { Rep, RouteResponse } from './types';
+import { displayRoute, routeSegments } from './routeDisplay';
 
 // Keyless basemaps: no API key, so no token can expire or leak in the client bundle.
 //
@@ -35,13 +36,6 @@ const LABELS: Record<BasemapKey, string | null> = {
 // The pilot runs inside Egypt only, so the map is bounded instead of drifting into empty sea.
 const EGYPT_BOUNDS = L.latLngBounds([21.9, 24.5], [31.75, 37.0]);
 const EGYPT_CENTER: [number, number] = [26.9, 30.4];
-const MAX_DRAWN_POINTS = 900;
-
-function sample<T>(items: T[], max: number): T[] {
-  if (items.length <= max) return items;
-  return Array.from({ length: max }, (_, i) => items[Math.round(i * (items.length - 1) / (max - 1))]);
-}
-
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('');
 
 function SyncAge({ at, live }: { at: number | null; live: boolean }) {
@@ -63,12 +57,13 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   const [progress, setProgress] = useState(1);
   const [speed, setSpeed] = useState(120);
   const [expanded, setExpanded] = useState(false);
+  const [rawRoute, setRawRoute] = useState(false);
   const fitKey = useRef('');
 
   const selected = useMemo(() => reps.find(r => r.id === selectedId) ?? null, [reps, selectedId]);
   const recordTimezone = route?.timezone || timezone;
-  const points = useMemo(() => (route?.points ?? []).map(p => ({ lat: p.lat, lng: p.lng, at: p.recordedAt })), [route]);
-  const path = useMemo(() => sample(points, MAX_DRAWN_POINTS), [points]);
+  const points = useMemo(() => route?.points ?? [], [route]);
+  const path = useMemo(() => displayRoute(route?.points ?? [], rawRoute), [route, rawRoute]);
   // The first point identifies the loaded route without changing on every live poll. The key
   // therefore changes for a new engineer/day, but a growing same-day route never steals the map.
   const routeViewKey = `${selectedId ?? 'all'}|${route?.date ?? ''}|${route?.points[0]?.id ?? ''}`;
@@ -146,39 +141,45 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
     if (!instance || !group) return;
     group.clearLayers();
     const bounds: L.LatLngExpression[] = [];
-    if (path.length > 1) {
+    if (route && points.length) {
       const cutoff = Math.max(1, Math.round(path.length * progress));
       const traveled = path.slice(0, cutoff);
-      const remaining = path.slice(cutoff - 1);
+      const remaining = path.slice(Math.max(0, cutoff - 1));
       const color = selected?.color || '#2fa8dc';
       const coords = (list: typeof path) => list.map(p => [p.lat, p.lng] as [number, number]);
-      if (remaining.length > 1) {
-        L.polyline(coords(remaining), { color, weight: 3, opacity: 0.5, dashArray: '2 8', lineCap: 'round' }).addTo(group);
+      for (const segment of routeSegments(remaining)) if (segment.length > 1) {
+        L.polyline(coords(segment), { color, weight: 3, opacity: 0.5, dashArray: '2 8', lineCap: 'round' }).addTo(group);
       }
-      if (traveled.length > 1) {
-        // Soft halo under the trail: reads well on satellite imagery without hiding the road.
-        L.polyline(coords(traveled), { color, weight: 13, opacity: 0.18, lineCap: 'round' }).addTo(group);
-        L.polyline(coords(traveled), { color, weight: 4.5, opacity: 0.95, lineCap: 'round' }).addTo(group);
+      for (const segment of routeSegments(traveled)) if (segment.length > 1) {
+        L.polyline(coords(segment), { color, weight: 13, opacity: 0.18, lineCap: 'round' }).addTo(group);
+        L.polyline(coords(segment), { className: 'route-line', color, weight: 4.5, opacity: 0.95, lineCap: 'round' }).addTo(group);
       }
-      const start = traveled[0], head = traveled[traveled.length - 1];
-      L.marker([start.lat, start.lng], {
+      const start = path[0];
+      if (start) L.marker([start.lat, start.lng], {
         icon: L.divIcon({ className: 'pin pin-start', html: '<span></span>', iconSize: [16, 16], iconAnchor: [8, 8] }),
-      }).addTo(group).bindTooltip('بداية اليوم', { direction: 'top', offset: [0, -10] });
+      }).addTo(group).bindTooltip('أول نقطة معروضة', { direction: 'top', offset: [0, -10] });
+      // The last actual reading is never replaced by the filtered anchor. Show its uncertainty
+      // even when the selected engineer's usual marker is hidden during replay.
+      const head = progress >= 1 || !traveled.length ? points[points.length - 1] : traveled[traveled.length - 1];
+      if (typeof head.accuracy === 'number' && head.accuracy > 0) L.circle([head.lat, head.lng], {
+        radius: head.accuracy, color, weight: 1, opacity: 0.5, fillColor: color, fillOpacity: 0.1,
+      }).addTo(group);
       const headIcon = L.divIcon({
         className: 'pin pin-head', html: `<span style="--pin:${color}"></span>`,
         iconSize: [34, 34], iconAnchor: [17, 17],
       });
-      const headMarker = L.marker([head.lat, head.lng], { icon: headIcon }).addTo(group);
+      const headMarker = L.marker([head.lat, head.lng], { icon: headIcon, zIndexOffset: 1000 }).addTo(group);
+      const accuracyText = head.accuracy == null ? 'الدقة غير متاحة' : `دقة الإشارة ±${Math.round(head.accuracy)} م`;
       headMarker.bindTooltip(
-        `<b>${escapeHtml(selected?.name || 'المهندس')}</b><br/>${progress >= 1 ? 'آخر نقطة' : 'أثناء المسار'} · ${timeText(head.at, recordTimezone)}`,
+        `<b>${escapeHtml(selected?.name || 'المهندس')}</b><br/>${progress >= 1 ? 'آخر قراءة مسجلة' : 'أثناء المسار'} · ${timeText(head.recordedAt, recordTimezone)}<br/>${accuracyText}`,
         { direction: 'top', offset: [0, -16] },
       );
-      bounds.push(...path.map(p => [p.lat, p.lng] as [number, number]));
+      bounds.push(...points.map(p => [p.lat, p.lng] as [number, number]));
     }
     for (const rep of reps.filter(r => r.location)) {
       const { lat, lng } = rep.location!;
       const isSelected = rep.id === selectedId;
-      if (path.length > 1 && isSelected) continue;
+      if (route && points.length && isSelected) continue;
       const icon = L.divIcon({
         className: `pin pin-rep${rep.online ? ' is-online' : ''}${isSelected ? ' is-selected' : ''}`,
         html: `<span style="--pin:${rep.color}">${escapeHtml(initials(rep.name))}</span>`,
@@ -233,7 +234,7 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
   }
 
   const noFixYet = !reps.some(r => r.location);
-  const headTime = path.length ? timeText(path[Math.min(path.length - 1, Math.max(0, Math.round(path.length * progress) - 1))].at, recordTimezone) : null;
+  const headTime = path.length ? timeText((progress >= 1 && points.length ? points[points.length - 1] : path[Math.min(path.length - 1, Math.max(0, Math.round(path.length * progress) - 1))]).recordedAt, recordTimezone) : null;
   return (
     <div className="map-shell">
       <div ref={host} className="map" role="application" aria-label="خريطة مواقع المهندسين" />
@@ -245,12 +246,15 @@ export default function MapView({ reps, selectedId, route, live = false, syncedA
             </button>
           ))}
         </div>
+        {route && <button type="button" className="map-tool map-route-toggle" onClick={() => setRawRoute(value => !value)} aria-pressed={rawRoute} title="تبديل طريقة عرض قراءات الموقع">
+          {rawRoute ? 'عرض تقريبي' : 'عرض القراءات الخام'}
+        </button>}
         <button type="button" className="map-tool" onClick={toggleFullscreen} aria-label="ملء الشاشة" title="ملء الشاشة">
           {expanded ? '⤡' : '⤢'}
         </button>
       </div>
       {noFixYet && <div className="map-empty">لا توجد إحداثيات بعد. سيظهر المهندس على الخريطة فور استلام أول نقطة موقع من التطبيق.</div>}
-      <div className="map-badge"><span className="map-badge-dot" /> <SyncAge at={syncedAt} live={live} /> · {route?.truncated ? 'المسار مقطوع عند ٢٠٠٠٠ نقطة' : 'المسار الكامل'}</div>
+      <div className="map-badge"><span className="map-badge-dot" /> <SyncAge at={syncedAt} live={live} /> · {route?.truncated ? 'القراءات مقطوعة عند ٢٠٠٠٠ نقطة · ' : route?.sampled ? 'عينة من القراءات · ' : ''}{rawRoute ? 'قراءات خام؛ ليست دليلًا على الحركة' : 'مسار تقريبي؛ الحركة الصغيرة قد لا تظهر'}</div>
       {path.length > 1 && (
         <div className="replay" role="group" aria-label="إعادة تشغيل المسار">
           <button className="replay-play" onClick={() => { if (progress >= 1) setProgress(0); setPlaying(value => !value); }} aria-label={playing ? 'إيقاف مؤقت' : 'تشغيل المسار'}>

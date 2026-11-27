@@ -6,6 +6,7 @@ const CONSENT_KEY = 'mandoub_consent_at';
 const SHIFT_KEY = 'mandoub_active_shift';
 const OUTBOX_OWNER_KEY = 'mandoub_outbox_owner';
 const ACTIVE_USER_KEY = 'mandoub_active_user';
+const GPS_SAVE_WARNING_KEY = 'mandoub_gps_save_warning';
 
 // SecureStore has no web implementation; the packaged web build uses localStorage.
 const web = Platform.OS === 'web' && typeof localStorage !== 'undefined';
@@ -55,6 +56,9 @@ export const setOutboxOwner = (userId: string | null) => setPrivateString(OUTBOX
 /** Current authenticated account, also read by a headless background location task. */
 export const getActiveUserId = () => getPrivateString(ACTIVE_USER_KEY);
 export const setActiveUserId = (userId: string | null) => setPrivateString(ACTIVE_USER_KEY, userId);
+/** A save failure means some fixes may be missing; keep the warning until the user acknowledges it. */
+export const getGpsSaveWarning = () => getPrivateString(GPS_SAVE_WARNING_KEY);
+export const setGpsSaveWarning = (value: string | null) => setPrivateString(GPS_SAVE_WARNING_KEY, value);
 
 /**
  * Removes everything this device keeps about the signed-in engineer: token, consent stamp and
