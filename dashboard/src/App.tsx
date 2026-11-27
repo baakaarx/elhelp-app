@@ -476,10 +476,10 @@ export default function App() {
         {tab === 'monthly' && <Monthly reps={reps} timezone={overview?.timezone} />}
         {tab === 'reports' && <Reports reps={reps} onReviewed={refresh} version={reportsVersion} ordersVersion={ordersVersion} openOrdersRequest={openOrdersRequest} sentOrders={overview?.sentOrders ?? 0} timezone={overview?.timezone} />}
         {tab === 'customers' && <Customers timezone={overview?.timezone} />}
-        {tab === 'products' && <Sales timezone={overview?.timezone} userId={user.id} ordersVersion={ordersVersion} />}
+        {tab === 'products' && (typeof globalThis.crypto?.randomUUID === 'function' ? <Sales timezone={overview?.timezone} userId={user.id} ordersVersion={ordersVersion} /> : <section className="page"><h2>المبيعات</h2><p className="error" role="alert">المتصفح لا يوفر حماية معرّفات العمليات على هذا الرابط. افتح اللوحة على نفس جهاز السيرفر عبر localhost، أو استخدم رابط HTTPS آمنًا ومتصفحًا حديثًا.</p></section>)}
         {tab === 'warehouses' && <Warehouses userId={user.id} />}
         {tab === 'staff' && <Staff />}
-  {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} />}
+  {tab === 'team' && <Team reps={reps} onChange={refresh} timezone={overview?.timezone} onAddWarehouseStaff={()=>navigate('staff')} />}
         {tab === 'agent' && <AgentPanel alerts={alerts} onNavigate={navigate} timezone={overview?.timezone} />}
         {tab === 'account' && <Account user={user} overview={overview} onDeleted={clearSession} />}
       </main>
@@ -581,7 +581,7 @@ function impactText(impact: RepImpact): string {
   return `هيُحذف نهائيًا: ${rows.length ? rows.join(' · ') : 'مفيش سجلات'}.${impact.trackingNow ? ' فيه وردية مفتوحة هتتقفل.' : ''}`;
 }
 
-function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void | Promise<void>; timezone?: string }) {
+function Team({ reps, onChange, timezone, onAddWarehouseStaff }: { reps: Rep[]; onChange: () => void | Promise<void>; timezone?: string; onAddWarehouseStaff: () => void }) {
   const [error, setError] = useState('');
   const [newRep, setNewRep] = useState({ name: '', email: '', password: '', phone: '', region: '' });
   const [createdReps, setCreatedReps] = useState<Rep[]>([]);
@@ -714,6 +714,7 @@ function Team({ reps, onChange, timezone }: { reps: Rep[]; onChange: () => void 
       <div className="panel">
         <h3 className="panel-title">إنشاء حساب مهندس</h3>
         <p className="muted small">أنشئ الحساب من هنا، ثم أرسل للمهندس بريده وكلمة المرور التي اخترتها عبر قناة آمنة. كلمة المرور ١٠ أحرف على الأقل.</p>
+        <button type="button" className="btn ghost sm" onClick={onAddWarehouseStaff}>إضافة حساب مسؤول مخازن</button>
         <form className="stack" onSubmit={event => void createRep(event)}>
           <div className="two-col">
             <label className="field">

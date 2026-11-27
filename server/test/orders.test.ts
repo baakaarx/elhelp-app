@@ -369,6 +369,12 @@ test('free-text field recommendation reaches sales unchanged, and only the offic
   assert.equal(sold.status, 201, JSON.stringify(sold.body));
   assert.equal((await client.post('/api/sales').set(admin).send(sale)).body.duplicate, true);
   assert.equal((await client.post('/api/sales').set(admin).send({ ...sale, id: randomUUID() })).status, 409);
+  // The office may sell the order before the phone recovers a lost send confirmation.
+  // Replaying the original order after the sale must confirm the same order, not re-notify or sell twice.
+  const lateRetry = await client.post('/api/orders').set(repA.auth).send(payload);
+  assert.equal(lateRetry.status, 200);assert.equal(lateRetry.body.duplicate, true);
+  assert.equal(lateRetry.body.order.sold, true);assert.equal(isConfirmedOrderResponse(payload, lateRetry.body), true);
+  assert.equal(Number(store.get("SELECT COUNT(*) AS n FROM audit_log WHERE action='order.notification' AND json_extract(metadata,'$.orderId')=?",orderId)?.n), 1);
   const original = (await client.get('/api/orders?limit=100').set(repA.auth)).body.orders.find((row: any) => row.id === orderId);
   assert.equal(original.recommendation, recommendation);
   assert.deepEqual(original.lines, []);

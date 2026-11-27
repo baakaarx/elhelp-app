@@ -148,7 +148,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const payments=store.all(`SELECT c.name AS customerName,r.amount_piasters AS amount,r.created_at AS createdAt, EXISTS(SELECT 1 FROM office_corrections_v1 x WHERE x.receipt_id=r.id) AS corrected
       FROM office_receipts_v1 r JOIN customers c ON c.id=r.customer_id ORDER BY r.created_at DESC,r.rowid DESC LIMIT 50`);
     const stock=store.all(`SELECT w.id AS warehouseId,w.name AS warehouseName,p.id AS productId,p.name AS productName,p.unit,p.unit_size AS unitSize,
-      s.milli_qty AS qty FROM warehouses w CROSS JOIN products p LEFT JOIN warehouse_stock s ON s.warehouse_id=w.id AND s.product_id=p.id
+      s.milli_qty AS qty FROM warehouse_stock s JOIN warehouses w ON w.id=s.warehouse_id JOIN products p ON p.id=s.product_id
       WHERE p.active=1 ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE`);
     res.json({ count:Number(totals.count), sales:Number(totals.sales)/100, collected:(paid+receipts-cashCorrections)/100,
       due:debtors.reduce((sum,row)=>sum+row.balance,0)/100,credit:creditors.reduce((sum,row)=>sum-row.balance,0)/100,
@@ -242,8 +242,14 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user;
     const old=duplicate('office_sales_v1',data.id,request,actor.id);
     if (old) {res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    let replay=false;
     try {
       store.transaction(()=>{
+        // Repeat the check under the database write lock: another process may have committed
+        // this exact invoice after the first check but before BEGIN IMMEDIATE completed.
+        const locked=duplicate('office_sales_v1',data.id,request,actor.id);
+        if (locked===1) {replay=true;return;}
+        if (locked===-1) throw Error('REQUEST_CONFLICT');
         const customer=store.get('SELECT id,active,name,phone,governorate,district,village FROM customers WHERE id=?',data.customerId); if (!customer?.active) throw Error('CUSTOMER');
         const warehouse=store.get('SELECT id,name FROM warehouses WHERE id=?',data.warehouseId); if (!warehouse) throw Error('WAREHOUSE');
         if (!exact(data.paid,100)) throw Error('PRECISION');
@@ -298,17 +304,19 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         const now=Date.now();
         store.run('INSERT INTO office_sales_v1 VALUES(?,?,?,?,?,?,?,?,?,?)',data.id,data.orderId??null,data.customerId,data.warehouseId,total,paid,actor.id,actor.name,request,now);
         store.run('INSERT INTO office_invoice_numbers_v1(sale_id) VALUES(?)',data.id);
+        const invoiceNumber=Number(store.get('SELECT number FROM office_invoice_numbers_v1 WHERE sale_id=?',data.id)!.number);
         store.run('INSERT INTO office_sale_rep_v1(sale_id,rep_id,rep_name,source) VALUES(?,?,?,?)',data.id,saleRep?.id??null,saleRep?.name??'',data.orderId?'order':saleRep?'direct':'none');
         store.run('INSERT INTO office_invoice_snapshots_v1 VALUES(?,?,?,?,?,?,?,?)',data.id,customer.name,customer.phone,customer.governorate,customer.district,customer.village,warehouse.name,saleRep?.name??'');
         for (const line of calculated) {
           if (!store.get('SELECT 1 FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',data.warehouseId,line.productId)) throw Error('NO_OPENING');
           if (!store.run('UPDATE warehouse_stock SET milli_qty=milli_qty-? WHERE warehouse_id=? AND product_id=? AND milli_qty>=?',line.qtyMilli,data.warehouseId,line.productId,line.qtyMilli).changes) throw Error('SHORT');
           store.run('INSERT INTO office_sales_lines_v1 VALUES(?,?,?,?,?,?,?,?,?)',randomUUID(),data.id,line.productId,line.name,line.unit,line.unitSize,line.qtyMilli,line.priceCents,line.amount);
-          store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'out',?,?,NULL,?,?,?,?,?)",randomUUID(),line.productId,data.warehouseId,line.qtyMilli,'صرف لبيعة مؤكدة',actor.id,actor.name,now);
+          store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'out',?,?,NULL,?,?,?,?,?)",randomUUID(),line.productId,data.warehouseId,line.qtyMilli,`صرف للفاتورة رقم ${invoiceNumber}`,actor.id,actor.name,now);
         }
         store.audit(actor.id,'sales.confirm',{saleId:data.id,customerId:data.customerId,orderId:data.orderId??null});
       });
-    } catch(e) { const code=(e as Error).message; if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    } catch(e) { const code=(e as Error).message; if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;} if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    if(replay){res.json({ok:true,duplicate:true});return;}
     if(data.orderId){try{onOrderSold(data.orderId);}catch(e){console.error('[sales] order notification failed',e);}}
     res.status(201).json({ok:true,duplicate:false});
   });

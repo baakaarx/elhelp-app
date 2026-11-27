@@ -51,6 +51,47 @@ export function createWarehouseRouter(store: Store) {
     store.audit(res.locals.user.id, 'warehouse.product.update', { productId: current.id });
     res.json({ product: product(String(current.id)) });
   });
+  // Create a catalogue item and its first balance together, in the explicitly chosen warehouse.
+  // A persisted request ID makes a retry after a lost response safe.
+  router.post('/stock-items', (req, res) => {
+    const schema = z.object({ id:z.uuid(), warehouseId:id, product:productFields, qty:z.number().nonnegative().max(1_000_000_000) }).strict();
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success || !hasDecimalPrecision(parsed.success ? parsed.data.qty : 0, 3)) { res.status(400).json({ error:'راجع بيانات الصنف والرصيد؛ الكمية تقبل ٣ أرقام عشرية.' }); return; }
+    const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user;
+    const p=data.product, productId=randomUUID(), now=Date.now(), milli=Math.round(data.qty*1000);
+    let previousProductId: string | null = null;
+    try {
+      store.transaction(()=>{
+        // Check only after acquiring the write lock: another server process may have committed
+        // the same request while this one was waiting for BEGIN IMMEDIATE.
+        const old=store.get('SELECT actor_id,request_json,product_id FROM warehouse_item_requests_v1 WHERE id=?',data.id);
+        if (old) {
+          if (old.actor_id!==actor.id || old.request_json!==request) throw Error('REQUEST_CONFLICT');
+          previousProductId=String(old.product_id);return;
+        }
+        if(!store.get('SELECT id FROM warehouses WHERE id=?',data.warehouseId)) throw Error('WAREHOUSE');
+        if(store.get("SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?)",p.name,p.unit,p.unitSize,p.unitSize)) throw Error('PRODUCT_PACK_CONFLICT');
+        store.run('INSERT INTO products(id,name,category,unit,unit_size,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',productId,p.name,p.category,p.unit,p.unitSize,now,now);
+        store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES(?,?,?)',data.warehouseId,productId,milli);
+        store.run("INSERT INTO inventory_movements(id,kind,product_id,from_warehouse_id,to_warehouse_id,milli_qty,note,actor_id,actor_name,created_at) VALUES(?,'opening',?,NULL,?,?, '',?,?,?)",data.id,productId,data.warehouseId,milli,actor.id,actor.name,now);
+        store.run('INSERT INTO warehouse_item_requests_v1(id,actor_id,request_json,product_id) VALUES(?,?,?,?)',data.id,actor.id,request,productId);
+        store.audit(actor.id,'warehouse.product.create',{productId,warehouseId:data.warehouseId});
+      });
+    } catch(e) {
+      if ((e as Error).message==='WAREHOUSE') {res.status(400).json({error:'اختار مخزن موجود.'});return;}
+      if ((e as Error).message==='REQUEST_CONFLICT') {res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+      if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس العبوة موجود بالفعل. اختاره لتسجيل رصيده في المخزن ده.'});return;}
+      throw e;
+    }
+    res.status(previousProductId ? 200 : 201).json({ok:true,duplicate:!!previousProductId,productId:previousProductId ?? productId});
+  });
+  router.get('/low-stock', (_req, res) => {
+    res.setHeader('Cache-Control', 'private, no-store');
+    const rows=store.all(`SELECT w.id AS warehouseId,w.name AS warehouseName,p.id AS productId,p.name AS productName,p.unit,p.unit_size AS unitSize,s.milli_qty AS qty
+      FROM warehouse_stock s JOIN warehouses w ON w.id=s.warehouse_id JOIN products p ON p.id=s.product_id
+      WHERE p.active=1 AND s.milli_qty<100000 ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE,p.id`);
+    res.json({items:rows.map(row=>({...row,qty:Number(row.qty)/1000}))});
+  });
   router.get('/warehouses', (_req, res) => {
     res.json({ warehouses: store.all('SELECT id,name,created_at AS createdAt FROM warehouses ORDER BY name COLLATE NOCASE'), legacyHistory });
   });

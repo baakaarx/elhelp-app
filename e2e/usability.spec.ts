@@ -72,9 +72,11 @@ test('تعذر الاتصال ما يكررش حركة مخزون اتحفظت �
   await expect(page.getByRole('alert').filter({hasText:'تعذر الاتصال بالسيرفر'})).toBeVisible();
   await expect(page.getByText('في حركة مخزون لم نتأكد من نتيجتها.')).toBeVisible();
   await expect(second.getByText('في حركة مخزون لم نتأكد من نتيجتها.')).toBeVisible();
+  await second.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(wh.warehouse.id);
   await expect(second.getByRole('button', {name:'حفظ الحركة'})).toBeDisabled();
   await page.reload();
   await page.getByRole('button', {name:'المخازن',exact:true}).click();
+  await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(wh.warehouse.id);
   await expect(page.getByRole('button', {name:'حفظ الحركة'})).toBeDisabled();
   await page.getByRole('button', {name:'التأكد من الحركة المعلقة'}).click();
   await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
@@ -153,6 +155,7 @@ test('أزرار التعديل وكلمة المرور تفتح النماذج 
   const customer=(await send('/api/customers',{name:`عميل فتح نموذج ${Date.now()}`})).customer;
   const warehouse=(await send('/api/warehouse/warehouses',{name:`مخزن فتح نموذج ${Date.now()}`})).warehouse;
   const product=(await send('/api/warehouse/products',{name:`صنف فتح نموذج ${Date.now()}`,category:'other',unit:'عبوة'})).product;
+  await send('/api/warehouse/movements',{id:crypto.randomUUID(),kind:'opening',productId:product.id,toWarehouseId:warehouse.id,qty:10});
   const staff=(await send('/api/staff',{name:'حساب فتح نموذج',email:`staff-open-${Date.now()}@test.example`,password:'WarehousePassword123!',accessScope:'warehouse'})).user;
 
   await page.getByRole('button',{name:'العملاء',exact:true}).click();
@@ -219,11 +222,11 @@ test('نجاح إضافة المخزن أو الصنف يظل واضحًا لو 
   await page.reload();await page.getByRole('button',{name:'المخازن',exact:true}).click();
   await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(warehouse.id);
   const productName=`صنف قائمة ${Date.now()}`;
-  await page.getByLabel('اسم الصنف').fill(productName);await page.getByLabel('الوحدة',{exact:true}).fill('عبوة');
+  await page.getByLabel('اسم الصنف').fill(productName);await page.getByLabel('الوحدة',{exact:true}).fill('عبوة');await page.getByLabel('الرصيد الافتتاحي للمخزن المحدد').fill('10');
   await page.route('**/api/warehouse/stock?*',route=>route.abort('failed'));
   await page.getByRole('button',{name:'إضافة صنف'}).click();
   await expect(page.locator('.ok-text[role=status]')).toContainText('الصنف اتضاف');
-  await expect(page.getByRole('alert')).toContainText('الصنف اتضاف، لكن القائمة ما اتحدّثتش');
+  await expect(page.getByRole('alert')).toContainText('الحركة اتحفظت، لكن الأرصدة ما اتحدّثتش');
   await page.unroute('**/api/warehouse/stock?*');
   const products=await (await page.request.get('/api/warehouse/products',{headers})).json();
   expect(products.products.filter((p:{name:string})=>p.name===productName)).toHaveLength(1);

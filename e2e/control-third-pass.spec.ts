@@ -27,7 +27,7 @@ test('فشل تحميل المخزن لا يدعي عدم وجود أصناف و
  await page.unroute('**/api/warehouse/stock?*');await page.getByRole('button',{name:'إعادة تحميل الأرصدة'}).click();await expect(page.getByRole('button',{name:'حفظ الحركة'})).toBeEnabled();
 });
 
-test('رد قديم للمخزن لا يخفي صنفًا أُضيف أثناء تحميل الأرصدة',async({page})=>{
+test('إضافة الصنف تنتظر تحميل رصيد المخزن المحدد' ,async({page})=>{
  await signInAsManager(page);const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));
  const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
  const wh=await page.request.post('/api/warehouse/warehouses',{headers,data:{name:`مخزن سباق ${Date.now()}`}});expect(wh.ok()).toBeTruthy();const id=(await wh.json()).warehouse.id;
@@ -38,7 +38,8 @@ test('رد قديم للمخزن لا يخفي صنفًا أُضيف أثناء 
  await page.route('**/api/warehouse/stock?*',async route=>{if(first&&new URL(route.request().url()).searchParams.get('warehouseId')===id){first=false;const response=await route.fetch();started();await gate;await route.fulfill({response});}else await route.continue();});
  await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(id);await waiting;
  const name=`صنف سباق ${Date.now()}`;const form=page.locator('form').filter({has:page.getByRole('button',{name:'إضافة صنف'})});
- await form.getByLabel('اسم الصنف').fill(name);await form.getByLabel('الوحدة').fill('عبوة');await form.getByRole('button',{name:'إضافة صنف'}).click();
- await expect(page.getByRole('status').filter({hasText:'الصنف اتضاف'})).toBeVisible();await expect(page.locator('tr').filter({hasText:name})).toBeVisible();
- release();await page.waitForTimeout(300);await expect(page.locator('tr').filter({hasText:name})).toBeVisible();
+ await form.getByLabel('اسم الصنف').fill(name);await form.getByLabel('الوحدة').fill('عبوة');await form.getByLabel('الرصيد الافتتاحي للمخزن المحدد').fill('5');
+ await expect(form.getByRole('button',{name:'إضافة صنف'})).toBeDisabled();release();
+ await expect(form.getByRole('button',{name:'إضافة صنف'})).toBeEnabled();await form.getByRole('button',{name:'إضافة صنف'}).click();
+ await expect(page.getByRole('status').filter({hasText:'الصنف اتضاف'})).toBeVisible();await expect(page.locator('tr').filter({hasText:name}).first()).toBeVisible();
 });

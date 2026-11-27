@@ -17,12 +17,12 @@ test('خانات وحركات المخزن تعمل من الواجهة وتحا
  await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption(product.id);
  await page.getByLabel('الكمية').fill('٠');await page.getByRole('button',{name:'حفظ الحركة'}).click();
  await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
- await page.getByLabel('نوع الحركة').selectOption('in');await page.getByLabel('الكمية').fill('٥٫١٢٥');
+ await page.getByLabel('نوع الحركة').selectOption('in');await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption(product.id);await page.getByLabel('الكمية').fill('٥٫١٢٥');
  await page.getByLabel('ملاحظة').fill('إضافة اختبار');await page.getByRole('button',{name:'حفظ الحركة'}).click();
  await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
- await page.getByLabel('نوع الحركة').selectOption('out');await page.getByLabel('الكمية').fill('١٫١٢٥');
+ await page.getByLabel('نوع الحركة').selectOption('out');await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption(product.id);await page.getByLabel('الكمية').fill('١٫١٢٥');
  await page.getByRole('button',{name:'حفظ الحركة'}).click();await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
- await page.getByLabel('نوع الحركة').selectOption('transfer');await page.getByLabel('إلى مخزن').selectOption(two.id);
+ await page.getByLabel('نوع الحركة').selectOption('transfer');await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption(product.id);await page.getByLabel('إلى مخزن').selectOption(two.id);
  await page.getByLabel('الكمية').fill('١');await page.getByRole('button',{name:'حفظ الحركة'}).click();
  await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
  const balance=async(id:string)=>(await (await page.request.get(`/api/warehouse/stock?warehouseId=${id}`,{headers})).json()).stock.find((p:{id:string})=>p.id===product.id).qty;
@@ -32,8 +32,8 @@ test('خانات وحركات المخزن تعمل من الواجهة وتحا
  await form.getByLabel('اسم الصنف').fill(`${product.name} معدل`);await form.getByRole('button',{name:'حفظ التعديل'}).click();
  await expect(page.locator('.ok-text[role=status]')).toContainText('الصنف اتعدل');
  const updated=page.locator('tr').filter({hasText:`${product.name} معدل`}).first();
- await updated.getByRole('button',{name:'وقف',exact:true}).click();await expect(updated).toContainText('موقوف');
- await updated.getByRole('button',{name:'تفعيل',exact:true}).click();await expect(updated).toContainText('شغال');
+ await updated.getByRole('button',{name:'وقف',exact:true}).click();await expect(updated).toContainText('كل المخازن والمبيعات');await updated.getByRole('button',{name:'تأكيد الإيقاف'}).click();await expect(updated).toContainText('موقوف');
+ await updated.getByRole('button',{name:'تفعيل',exact:true}).click();await updated.getByRole('button',{name:'تأكيد التفعيل'}).click();await expect(updated).toContainText('شغال');
 });
 
 test('تغيير كلمة مرور حساب المخازن وإيقافه وإعادة تفعيله من الواجهة',async({page})=>{

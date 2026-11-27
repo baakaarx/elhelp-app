@@ -176,6 +176,9 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS inventory_movements_time ON inventory_movements(created_at DESC);
       CREATE TABLE IF NOT EXISTS inventory_migrations (name TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS warehouse_item_requests_v1 (
+        id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, request_json TEXT NOT NULL, product_id TEXT NOT NULL
+      );
       -- Confirmed sales and customer balances are independent of priced orders and old collection reports.
       CREATE TABLE IF NOT EXISTS office_sales_v1 (
         id TEXT PRIMARY KEY, order_id TEXT UNIQUE, customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,

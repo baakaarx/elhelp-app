@@ -27,6 +27,8 @@ test('confirmed sale records partial payment, stock and customer balance exactly
  assert.equal(report.soldItems[0].qty,2.5);assert.equal(report.soldItems[0].amount,25.63);
  const movements=(await client.get(`/api/warehouse/movements?warehouseId=${wh}`).set(auth)).body.movements;
  assert.equal(movements.length,2);assert.equal(movements[0].kind,'out');assert.ok(!JSON.stringify(movements).includes('10.25'));
+ const invoice=app.store.get('SELECT number FROM office_invoice_numbers_v1 WHERE sale_id=?',input.id);
+ assert.equal(movements[0].note,`صرف للفاتورة رقم ${invoice?.number}`);
 });
 
 test('rejecting bad sales never partially changes stock or balances',async()=>{
@@ -225,4 +227,54 @@ test('a retry of a previously accepted near-zero entry remains idempotent after 
  app.store.run('INSERT INTO office_receipts_v1 VALUES(?,?,?,?,?,?,?)',receiptId,cust,100,adminLogin.body.user.id,adminLogin.body.user.name,JSON.stringify(receipt),Date.now());
  const retry=await client.post('/api/sales/receipts').set(auth).send(receipt);
  assert.equal(retry.status,200);assert.equal(retry.body.duplicate,true);
+});
+
+test('warehouse-specific creation and confirmed sale update only the chosen stock and the below-100 alert',async()=>{
+ const first=(await client.post('/api/warehouse/warehouses').set(auth).send({name:`طنطا ${randomUUID()}`})).body.warehouse.id;
+ const second=(await client.post('/api/warehouse/warehouses').set(auth).send({name:`القاهرة ${randomUUID()}`})).body.warehouse.id;
+ const item={id:randomUUID(),warehouseId:first,product:{name:`عبوة تنبيه ${randomUUID()}`,category:'other',unit:'عبوة',unitSize:'١ لتر'},qty:100};
+ const created=await client.post('/api/warehouse/stock-items').set(auth).send(item);assert.equal(created.status,201,JSON.stringify(created.body));
+ const productId=created.body.productId;
+ assert.equal((await client.post('/api/warehouse/stock-items').set(auth).send(item)).body.duplicate,true);
+ assert.equal((await client.post('/api/warehouse/stock-items').set(auth).send({...item,qty:99})).status,409);
+ const low=async()=>(await client.get('/api/warehouse/low-stock').set(auth)).body.items.filter((i:any)=>i.productId===productId);
+ assert.equal((await low()).length,0);
+ assert.equal((await overview()).stock.some((x:any)=>x.warehouseId===second&&x.productId===productId),false);
+ const sale={id:randomUUID(),customerId:customer,warehouseId:first,paid:0,lines:[{productId,qty:1,price:1}]};
+ assert.equal((await client.post('/api/sales').set(auth).send(sale)).status,201);
+ assert.equal((await client.post('/api/sales').set(auth).send(sale)).body.duplicate,true);
+ assert.deepEqual((await low()).map((x:any)=>[x.warehouseId,x.qty]),[[first,99]]);
+ assert.equal((await client.post('/api/sales').set(auth).send({...sale,id:randomUUID(),warehouseId:second})).status,409);
+ assert.deepEqual((await low()).map((x:any)=>[x.warehouseId,x.qty]),[[first,99]]);
+ assert.equal((await client.post('/api/warehouse/movements').set(auth).send({id:randomUUID(),kind:'in',productId,toWarehouseId:first,qty:1})).status,201);
+ assert.equal((await low()).length,0);
+ const token=(await client.post('/api/auth/login').send({email:'wh@sales.test',password:'Warehouse12345!'})).body.token;
+ assert.equal((await client.get('/api/warehouse/low-stock').set('Authorization',`Bearer ${token}`)).status,200);
+});
+
+test('a retry detected after the invoice write lock does not deduct or notify twice',async()=>{
+ const wh2=(await client.post('/api/warehouse/warehouses').set(auth).send({name:`مخزن تزامن ${randomUUID()}`})).body.warehouse.id;
+ const item=(await client.post('/api/warehouse/stock-items').set(auth).send({id:randomUUID(),warehouseId:wh2,product:{name:`صنف تزامن ${randomUUID()}`,category:'other',unit:'عبوة',unitSize:''},qty:3})).body.productId;
+ const sale={id:randomUUID(),customerId:customer,warehouseId:wh2,paid:0,lines:[{productId:item,qty:1,price:5}]};
+ assert.equal((await client.post('/api/sales').set(auth).send(sale)).status,201);
+ const realGet=app.store.get.bind(app.store);let masked=false;
+ app.store.get=(sql:string,...params:any[])=>{
+  if(!masked && sql.startsWith('SELECT actor_id,request_json FROM office_sales_v1')) {masked=true;return undefined;}
+  return realGet(sql,...params);
+ };
+ try {
+  const retry=await client.post('/api/sales').set(auth).send(sale);
+  assert.equal(retry.status,200,JSON.stringify(retry.body));assert.equal(retry.body.duplicate,true);assert.equal(masked,true);
+ } finally {app.store.get=realGet;}
+ assert.equal(app.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',wh2,item)?.milli_qty,2000);
+ assert.equal(app.store.get("SELECT COUNT(*) AS n FROM inventory_movements WHERE product_id=? AND kind='out'",item)?.n,1);
+});
+
+test('competing invoices cannot sell the same last unit twice',async()=>{
+ const w=(await client.post('/api/warehouse/warehouses').set(auth).send({name:`مخزن آخر عبوة ${randomUUID()}`})).body.warehouse.id;
+ const p=(await client.post('/api/warehouse/stock-items').set(auth).send({id:randomUUID(),warehouseId:w,product:{name:`آخر عبوة ${randomUUID()}`,category:'other',unit:'عبوة',unitSize:''},qty:1})).body.productId;
+ const sales=await Promise.all([1,2].map(()=>client.post('/api/sales').set(auth).send({id:randomUUID(),customerId:customer,warehouseId:w,paid:0,lines:[{productId:p,qty:1,price:2}]})));
+ assert.deepEqual(sales.map(r=>r.status).sort(),[201,409]);
+ assert.equal(app.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p)?.milli_qty,0);
+ assert.equal(app.store.get("SELECT COUNT(*) AS n FROM inventory_movements WHERE product_id=? AND kind='out'",p)?.n,1);
 });
