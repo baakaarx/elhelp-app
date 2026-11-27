@@ -4,6 +4,7 @@ import * as Location from 'expo-location';
 import { enqueueLocation, flushOutbox } from './reports';
 import { setActiveShift } from './storage';
 import { MAX_ACCURACY_M, metersBetween } from './location';
+import { queueableAccuracy } from './trackingAccuracy';
 import { discardCachedFixForMockLocation } from './locationCache';
 import { announceMockLocation, isMockedLocation } from './locationIntegrity';
 import { getDeviceId } from './device';
@@ -13,9 +14,7 @@ import type { GeoPoint } from './types';
 export const BACKGROUND_TASK = 'mandoub-background-location';
 export const CONSENT_VERSION = '1.0';
 const CHUNK_MS = 1000;
-// A fix this loose is a cell-tower guess; queueing it teleports the map and inflates distance.
-// It is still reported as a stillness heartbeat, so the phone never looks switched off — see
-// `queueableFix` for the exact rule.
+// A fix this loose is a cell-tower guess; do not invent a fresh position for it.
 const MAX_POINT_ACCURACY_M = MAX_ACCURACY_M;
 // While standing still the GPS jitters by a few meters, so we do not queue every fix — but a
 // heartbeat still has to arrive well inside the server's staleness window (`STALE_GPS_MINUTES`,
@@ -46,27 +45,12 @@ export function shouldQueueFix(lat: number, lng: number, now: number = Date.now(
   return true;
 }
 
-/**
- * The one gate both location paths pass through — the foreground watcher and the background task —
- * so the two can never disagree about what is worth uploading. Returns the point to queue, or
- * `null` to drop the fix.
- *
- * Dropping a weak reading used to be unconditional, and that is what made a normal visit look like
- * an outage: inside a shop or a first floor the GPS stays looser than the gate for tens of minutes,
- * so the phone went silent while running perfectly. A heartbeat is therefore kept alive by
- * repeating the last usable position, stamped with the real (poor) accuracy — it proves the phone
- * is alive, the accuracy circle tells the truth about where, and the server's distance math already
- * ignores points this loose (`MAX_USABLE_ACCURACY_M` in server/src/geo.ts).
- */
+/** The foreground and background use the same acceptance rule. Weak fixes are not replaced
+ * with the last coordinates: that would report an old place as a fresh location, and accuracy
+ * above 120m is rejected by the API. Presence polling is separate from GPS availability. */
 export function queueableFix(lat: number, lng: number, accuracy: number | null | undefined, now: number = Date.now()): { lat: number; lng: number; accuracy: number | null } | null {
-  if (accuracy == null) return shouldQueueFix(lat, lng, now) ? { lat, lng, accuracy: null } : null;
-  if (!Number.isFinite(accuracy) || accuracy <= 0) return null;
-  if (accuracy <= MAX_POINT_ACCURACY_M) return shouldQueueFix(lat, lng, now) ? { lat, lng, accuracy } : null;
-  if (!lastQueued || now - lastQueued.at < STANDSTILL_MS) return null;
-  const held = { lat: lastQueued.lat, lng: lastQueued.lng, accuracy: Math.round(accuracy) };
-  // Advance the heartbeat clock, or every later weak fix would also look "overdue" and be queued.
-  lastQueued = { lat: held.lat, lng: held.lng, at: now };
-  return held;
+  if (!queueableAccuracy(accuracy, MAX_POINT_ACCURACY_M)) return null;
+  return shouldQueueFix(lat, lng, now) ? { lat, lng, accuracy: accuracy ?? null } : null;
 }
 
 function makeId(): string {
@@ -172,7 +156,7 @@ export async function startTracking(id: string, opts: { background: boolean; sta
         if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return;
         const now = Date.now();
         // Jitter filter + accuracy gate + stillness heartbeat, in one place shared with the
-        // background task: a parked engineer must keep a live signal either way.
+        // background task. A heartbeat requires a usable actual fix.
         const fix = queueableFix(latitude, longitude, accuracy, now);
         if (!fix) return;
         const point: GeoPoint = {

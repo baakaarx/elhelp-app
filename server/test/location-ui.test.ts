@@ -19,21 +19,28 @@ test('movement does not report a stale, weak or unavailable fix as moving or sto
 
 test('a bad GPS fix does not discard valid neighbours in the same batch', async () => {
   const points = ['good-1', 'bad', 'good-2'].map(id => ({ id } as GeoPoint));
-  const sent: string[] = [], removed: string[] = [];
+  const sent: string[] = [], removed: string[] = [], rejected: string[] = [];
   const count = await sendLocationChunks(points, async chunk => {
     if (chunk.some(point => point.id === 'bad')) throw { status: 422 };
     sent.push(...chunk.map(point => point.id));
-  }, async id => { removed.push(id); });
+  }, async id => { removed.push(id); }, async id => { rejected.push(id); });
   assert.deepEqual(sent, ['good-1', 'good-2']);
-  assert.deepEqual(removed, ['good-1', 'bad', 'good-2']);
+  assert.deepEqual(removed, ['good-1', 'good-2']);
+  assert.deepEqual(rejected, ['bad']);
   assert.equal(count, 2);
 });
 
 test('GPS queue retains points for authentication, rate-limit and server errors', async () => {
   for (const status of [0, 401, 429, 500]) {
     const removed: string[] = [];
-    const count = await sendLocationChunks([{ id: 'point' } as GeoPoint], async () => { throw { status }; }, async id => { removed.push(id); });
+    const count = await sendLocationChunks([{ id: 'point' } as GeoPoint], async () => { throw { status }; }, async id => { removed.push(id); }, async () => { throw Error('transient error must not reject'); });
     assert.equal(count, 0);
     assert.deepEqual(removed, []);
   }
+});
+
+test('a local deletion failure is not mistaken for a server rejection',async()=>{
+ const removed:string[]=[],rejected:string[]=[];
+ await assert.rejects(sendLocationChunks([{id:'one'} as GeoPoint,{id:'two'} as GeoPoint],async()=>{},async id=>{removed.push(id);throw {status:422};},async id=>{rejected.push(id); }));
+ assert.deepEqual(removed,['one']);assert.deepEqual(rejected,[]);
 });

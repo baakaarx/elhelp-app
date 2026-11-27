@@ -1,29 +1,16 @@
 import * as SQLite from 'expo-sqlite';
 import { assertSameQueuedAction, outboxKey } from './outboxKey';
 import { OUTBOX_ORDER_BY_SQL } from './queueOrder';
+import { initializeNativeOutbox, nativeLocationReplaySql } from './nativeOutboxSchema';
 import type { Outbox } from './queue';
 import type { OutboxItem, OutboxKind } from './types';
 
 // A durable outbox: GPS fixes and reports survive app restarts and offline periods.
 const db = SQLite.openDatabaseSync('mandoub-outbox.db');
-db.execSync(`CREATE TABLE IF NOT EXISTS outbox (
-  key TEXT PRIMARY KEY NOT NULL,
-  kind TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  rejected INTEGER NOT NULL DEFAULT 0
-);`);
-try { db.execSync('ALTER TABLE outbox ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0'); }
-catch { /* already present on a newer install */ }
+initializeNativeOutbox(db);
 
-/*
- * One fix per second is ~86k rows a day. An engineer who stays offline for a week used to come
- * back to a database big enough to make every flush crawl; fixes older than three days can no
- * longer belong to a shift, so they are dropped at startup. Reports are never pruned here —
- * they are the engineer's work, and the report queue is small.
- */
-db.runSync("DELETE FROM outbox WHERE kind='location' AND created_at < ?", Date.now() - 3 * 86400000);
+// Never discard unsent fixes by age. The server verifies shift and retention boundaries;
+// fixes it cannot accept stay on the phone for review instead of silently disappearing.
 
 export async function createQueue(): Promise<Outbox> {
   return {
@@ -46,16 +33,17 @@ export async function createQueue(): Promise<Outbox> {
          ORDER BY ${OUTBOX_ORDER_BY_SQL} LIMIT ?`, limit);
       return rows.map(row => ({ key: row.key, kind: row.kind as OutboxKind, payload: row.payload, createdAt: row.created_at, attempts: row.attempts, rejected: row.rejected === 1 }));
     },
-    async listForReplay(locationLimit = 200) {
+    async listForReplay(locationLimit = 200, includeRejectedLocations = false) {
       // Keep rejected check-ins in the same ordered action stream as their dependent check-outs
       // and orders. A fixed overall limit lets rejected rows block all later work forever.
       const query = (where: string, ...params: number[]) => db.getAllSync<{ key: string; kind: string; payload: string; created_at: number; attempts: number; rejected: number }>(
         `SELECT key,kind,payload,created_at,attempts,rejected FROM outbox WHERE ${where} ORDER BY created_at, rowid`, ...params);
       const actions = query("kind<>'location'");
       const points = db.getAllSync<{ key: string; kind: string; payload: string; created_at: number; attempts: number; rejected: number }>(
-        "SELECT key,kind,payload,created_at,attempts,rejected FROM outbox WHERE kind='location' ORDER BY created_at, rowid LIMIT ?", locationLimit);
+        nativeLocationReplaySql(includeRejectedLocations), locationLimit);
       return [...actions, ...points].map(row => ({ key: row.key, kind: row.kind as OutboxKind, payload: row.payload, createdAt: row.created_at, attempts: row.attempts, rejected: row.rejected === 1 }));
     },
+    async countRejectedLocations() { return db.getFirstSync<{ c: number }>("SELECT COUNT(*) AS c FROM outbox WHERE kind='location' AND rejected=1")?.c ?? 0; },
     async remove(key: string) { db.runSync('DELETE FROM outbox WHERE key=?', key); },
     async bump(key: string) { db.runSync('UPDATE outbox SET attempts=attempts+1 WHERE key=?', key); },
     async reject(key: string) { db.runSync('UPDATE outbox SET rejected=1 WHERE key=?', key); },

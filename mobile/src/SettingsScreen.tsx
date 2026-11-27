@@ -150,6 +150,7 @@ export default function SettingsScreen({ user, field, onLogout, onDeleted }: { u
             ? 'فيه بيانات محفوظة على جهازك لم نتأكد من وصولها للسيرفر. التطبيق يحاول مزامنتها أثناء فتحه؛ لو السيرفر رفض بيانات، هتظهر رسالة بالمشكلة.'
             : 'لا توجد بيانات في قائمة المزامنة على الجهاز. التطبيق يفحص المزامنة كل ١٥ ثانية أثناء فتحه.'}
         </Body>
+        {field.gpsSaveNotice ? <><Text accessibilityRole="alert">{field.gpsSaveNotice}</Text><Button variant="ghost" label="فهمت أن المسار قد يكون ناقصًا" onPress={() => void field.acknowledgeGpsNotice()} /></> : null}
         <Row style={{ gap: space.sm }}>
           <Button style={{ flex: 1 }} variant="soft" label={syncing ? 'جارٍ المزامنة…' : 'مزامنة الآن'} loading={syncing} onPress={async () => {
             setSyncing(true); setSyncResult('');

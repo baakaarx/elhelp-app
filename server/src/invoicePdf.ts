@@ -105,7 +105,8 @@ export function invoicePdf(data:InvoicePdfData,timezone:string,generatedAt:numbe
    for(const l of e.lines){
     content.push(text(l.name,480,{bold:true,margin:[0,4,0,2]}),
       label('الكمية المصححة',qty(l.corrected)),label('قيمة التخفيض',cash(l.amount)));
-    if(l.stockKind) content.push(label(l.stockKind==='error'?'لم تخرج والخصم خطأ':'رجعت للمخزن',`${qty(l.returned)} ${String(l.unit||'')}`));
+    if(l.stockKind && Number(l.returned)-Number(l.damaged||0)>0) content.push(label(l.stockKind==='error'?'لم تخرج والخصم خطأ':'مرتجع لمخزن الفاتورة',`${qty(Number(l.returned)-Number(l.damaged||0))} ${String(l.unit||'')}`));
+    if(Number(l.damaged||0)>0) content.push(label(`مرتجع تالف إلى ${String(l.damagedWarehouseName||'مخزن التالف')}`,`${qty(l.damaged)} ${String(l.unit||'')}`));
    }
    if(e.cashKind) content.push(label(e.cashKind==='error'?'لم يُستلم وسُجّل خطأ':'رُدّ للعميل',cash(e.cash)));
   }

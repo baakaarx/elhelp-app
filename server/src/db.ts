@@ -250,6 +250,18 @@ export class Store {
         CHECK((returned_milli=0 AND stock_kind IS NULL) OR (returned_milli>0 AND stock_kind IS NOT NULL))
       );
       CREATE INDEX IF NOT EXISTS office_correction_lines_line ON office_correction_lines_v1(line_id);
+      -- A dedicated, non-sellable warehouse and an append-only split of returned quantities.
+      CREATE TABLE IF NOT EXISTS damaged_warehouse_v1 (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        warehouse_id TEXT NOT NULL UNIQUE REFERENCES warehouses(id) ON DELETE RESTRICT
+      );
+      CREATE TABLE IF NOT EXISTS damaged_return_lines_v1 (
+        correction_id TEXT NOT NULL, line_id TEXT NOT NULL,
+        warehouse_id TEXT NOT NULL REFERENCES warehouses(id) ON DELETE RESTRICT,
+        milli_qty INTEGER NOT NULL CHECK(milli_qty>0),
+        PRIMARY KEY(correction_id,line_id),
+        FOREIGN KEY(correction_id,line_id) REFERENCES office_correction_lines_v1(correction_id,line_id) ON DELETE RESTRICT
+      );
       CREATE VIEW IF NOT EXISTS office_sales_lines_net_v1 AS
         SELECT l.id,l.sale_id,l.product_id,l.product_name,l.unit,l.unit_size,l.price_piasters,
           l.milli_qty-COALESCE((SELECT SUM(corrected_milli) FROM office_correction_lines_v1 cl WHERE cl.line_id=l.id),0) AS milli_qty,
@@ -388,6 +400,12 @@ export class Store {
         sent_at INTEGER, priced_at INTEGER,
         -- Which account closed it. A number written into the company's book carries a name with it.
         priced_by TEXT REFERENCES users(id) ON DELETE SET NULL
+      );
+      -- The original request fingerprint survives edits to a draft, for safe create retries.
+      -- Older orders have no fingerprint and retain their historical replay behavior.
+      CREATE TABLE IF NOT EXISTS order_create_requests_v1 (
+        order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+        request_hash TEXT NOT NULL
       );
       -- Durable inbox: created with the invoice transaction and scoped to its engineer.
       CREATE TABLE IF NOT EXISTS order_invoice_notices_v1 (

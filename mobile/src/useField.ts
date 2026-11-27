@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
-import { sendOrderWithOutbox, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
+import { sendOrderWithOutbox, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus, hasGpsSaveFailure, acknowledgeGpsSaveFailure } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { confirmShiftState } from './shiftReconciliation';
@@ -26,6 +26,8 @@ export interface FieldBundle {
   trackingActive: boolean;
   /** An actionable message from the sync loop (e.g. the phone clock is ahead of the server). */
   syncNotice: string;
+  gpsSaveNotice: string;
+  acknowledgeGpsNotice: () => Promise<void>;
   /**
    * A visit was kept on the phone because there was no signal. It is not an error — nothing was
    * lost — but the engineer must know the manager cannot see it yet.
@@ -88,6 +90,12 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const [trackingActive, setTrackingActive] = useState(false);
   const [error, setError] = useState('');
   const [syncNotice, setSyncNotice] = useState('');
+  const [gpsSaveNotice, setGpsSaveNotice] = useState('');
+  const checkGpsSaveNotice = useCallback(async () => {
+    const failed = await hasGpsSaveFailure();
+    if (mounted.current) setGpsSaveNotice(failed ? 'تعذر حفظ بعض نقاط الموقع على الهاتف؛ قد يكون المسار ناقصًا. تأكد من مساحة الهاتف واتصل بالمكتب، ولا تمسح بيانات التطبيق. يمكن إقرار الرسالة من حسابي.' : '');
+  }, []);
+  const acknowledgeGpsNotice = useCallback(async () => { await acknowledgeGpsSaveFailure(); await checkGpsSaveNotice(); }, [checkGpsSaveNotice]);
   const [offlineNotice, setOfflineNotice] = useState('');
   const [backgroundNotice, setBackgroundNotice] = useState('');
   const trackingActiveRef = useRef(false);
@@ -230,17 +238,22 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
 
   useEffect(() => {
     if (!user) {
-      setTrackingActive(false); setSummary(null); setVisits([]); setError('');
+      setTrackingActive(false); setSummary(null); setVisits([]); setError(''); setGpsSaveNotice('');
       writeCustomers([]); listOwnerRef.current = null;
       writeProducts([]); productsOwnerRef.current = null;
       return;
     }
     void refresh();
+    void checkGpsSaveNotice();
     const timer = setInterval(() => {
       if (syncing.current) return;
       syncing.current = true;
       void (async () => {
-        const result = await flushOutbox(user.id).catch(() => null);
+        await checkGpsSaveNotice();
+        const result = await flushOutbox(user.id).catch(() => {
+          if (mounted.current) setSyncNotice('تعذر قراءة أو مزامنة البيانات المحفوظة على الهاتف. حالة المزامنة غير مؤكدة؛ لا تمسح بيانات التطبيق واطلب المساعدة.');
+          return null;
+        });
         if (result && mounted.current) {
           setPending(result.pending);
           // Cleared as soon as the server accepts the fixes again, so a fixed clock does not
@@ -263,9 +276,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
         setSyncNotice(result.notice ?? '');
         setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
       }
-    }).catch(() => undefined);
+    }).catch(() => { if (mounted.current) setSyncNotice('تعذر قراءة أو مزامنة البيانات المحفوظة على الهاتف. حالة المزامنة غير مؤكدة؛ لا تمسح بيانات التطبيق واطلب المساعدة.'); });
     return () => clearInterval(timer);
-  }, [user, refresh]);
+  }, [user, refresh, checkGpsSaveNotice]);
 
   /**
    * Restart the position watcher for a shift that is already open.
@@ -464,7 +477,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   }, [refresh, user?.id]);
 
   return {
-    summary, visits, pending, loading, busy, trackingActive, syncNotice, offlineNotice, backgroundNotice, error,
+    summary, visits, pending, loading, busy, trackingActive, syncNotice, gpsSaveNotice, acknowledgeGpsNotice, offlineNotice, backgroundNotice, error,
     customers, customersLoading, customersNotice, loadCustomers,
     products, productsLoading, productsNotice, loadProducts,
     clearError: () => setError(''),

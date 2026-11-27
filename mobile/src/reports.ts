@@ -1,15 +1,12 @@
 import { checkInVisit, checkOutVisit, createOrder, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
 import { createQueue, type Outbox } from './queue';
-import { sendLocationChunks } from './locationQueue';
+import { replayLocationOutbox } from './locationQueue';
 import { replayOutboxActions } from './outboxReplay';
 import { outboxOwnership } from './outboxOwnership';
 import { createOutboxRunner } from './outboxRunner';
 import { deliverOrderSafely, type OrderDelivery } from './orderDelivery';
-import { getActiveUserId, getOutboxOwner, setActiveUserId, setOutboxOwner } from './storage';
+import { getActiveUserId, getOutboxOwner, getGpsSaveWarning, setGpsSaveWarning, setActiveUserId, setOutboxOwner } from './storage';
 import type { DailyReportInput, GeoPoint, OutboxItem, ReportInput, VisitInput } from './types';
-
-/** Matches the server's window: nothing older than this can still belong to a shift. */
-const STALE_FIX_MS = 24 * 3600000;
 
 let queuePromise: Promise<Outbox> | null = null;
 let activeUserId: string | null = null;
@@ -51,8 +48,16 @@ async function addOutboxItem(kind: OutboxItem['kind'], payload: unknown, request
   await queue.add(kind, payload);
 }
 
+// Keep a warning even after space becomes available: the failed fix cannot be reconstructed.
+// Memory is a fallback if even the separate warning store cannot be written.
+let gpsSaveFailure = false;
+export async function hasGpsSaveFailure(): Promise<boolean> { return gpsSaveFailure || (await getGpsSaveWarning()) === '1'; }
+export async function acknowledgeGpsSaveFailure(): Promise<void> { gpsSaveFailure = false; await setGpsSaveWarning(null); }
 /** Locations are batched so one offline flap does not create a burst of requests. */
-export async function enqueueLocation(point: GeoPoint) { await addOutboxItem('location', point); }
+export async function enqueueLocation(point: GeoPoint) {
+  try { await addOutboxItem('location', point); }
+  catch (error) { gpsSaveFailure = true; await setGpsSaveWarning('1'); throw error; }
+}
 export async function enqueueReport(report: ReportInput, userId?: string) { await addOutboxItem('report', report, userId); }
 export async function enqueueDailyReport(report: DailyReportInput, userId?: string) { await addOutboxItem('daily-report', report, userId); }
 /**
@@ -140,7 +145,7 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
     const pendingOrders = await queue.count('order');
     return { sent: 0, pending: pendingBefore, pendingVisits, pendingOrders, notice: ownership.notice, blockedByOwner: true };
   }
-  const items = await queue.listForReplay(200);
+  const items = await queue.listForReplay(200, retryRejected);
   const replay = await replayOutboxActions(items, queue, {
     checkIn: checkInVisit,
     checkOut: checkOutVisit,
@@ -150,33 +155,19 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
   }, { retryRejected });
   let sent = replay.sent;
   let notice = replay.notice;
-  const locations: GeoPoint[] = [];
-  for (const item of items) {
-    if (item.kind !== 'location') continue;
-    // Parsed separately: a truncated payload is not a network error, and bumping it would keep
-    // the same dead row at the head of the queue for the life of the install.
-    try { locations.push(JSON.parse(item.payload) as GeoPoint); }
-    catch { await queue.remove(item.key); }
-  }
-  /*
-   * A fix older than a day cannot belong to any open shift (the server closes a shift that has
-   * been silent for 18 hours), so it would only ever be rejected. Dropping it here matters:
-   * a rejected batch is split in half until every point fails, which is ~128 requests for a
-   * single stale backlog of 80 points — every time the app came back online.
-   */
-  const cutoff = Date.now() - STALE_FIX_MS;
-  const fresh: GeoPoint[] = [];
-  for (const point of locations) {
-    if (point.recordedAt >= cutoff) fresh.push(point);
-    else await queue.remove(point.id);
-  }
-  // Preserve unsent fixes on transient errors and isolate invalid points.
+  // Even old fixes may belong to a completed shift: let the server verify each one rather than
+  // guessing from its age. Rejected points stay saved and do not starve newer points.
   try {
-    sent += await sendLocationChunks(fresh, pushLocations, id => queue.remove(id));
+    sent += await replayLocationOutbox(items, queue, pushLocations);
   } catch (error) {
     // The clock is the engineer's to fix, and every fix in the queue is still good.
     if ((error as { code?: string }).code !== 'CLOCK_SKEW') throw error;
     const gpsNotice = (error as Error).message;
+    notice = notice ? `${notice} ${gpsNotice}` : gpsNotice;
+  }
+  const rejectedLocations = await queue.countRejectedLocations();
+  if (rejectedLocations) {
+    const gpsNotice = `في ${rejectedLocations} نقطة موقع محفوظة على الهاتف لم يقبلها السيرفر أو تعذر قراءتها؛ قد يكون وقتها خارج الوردية أو مدة الاحتفاظ. المسار غير مكتمل. لا تمسح بيانات التطبيق، وراجع المكتب؛ يمكن إعادة المحاولة من «مزامنة الآن».`;
     notice = notice ? `${notice} ${gpsNotice}` : gpsNotice;
   }
   const pending = await queue.count();

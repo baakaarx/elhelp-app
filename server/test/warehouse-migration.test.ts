@@ -37,6 +37,19 @@ test('legacy warehouse and movement schema is preserved and new actions work', a
     assert.equal(instance.store.get('SELECT qty FROM stock_movements WHERE id=?','old-movement')?.qty, 12.5);
     assert.equal(instance.store.get('SELECT COUNT(*) AS n FROM stock_movements')?.n, 1);
     assert.equal(instance.store.get('SELECT COUNT(*) AS n FROM inventory_movements')?.n, 1);
+    // The legacy warehouses table also requires updated_at; a damaged return must create a
+    // separate warehouse without reclassifying an existing one or changing the old history.
+    const named = await client.post('/api/warehouse/warehouses').set(auth).send({name:'مخزن المرتجعات التالفة'});assert.equal(named.status,201);
+    const customer = await client.post('/api/customers').set(auth).send({name:'عميل قديم للمرتجع'});assert.equal(customer.status,201);
+    const saleId=randomUUID(),sale=await client.post('/api/sales').set(auth).send({id:saleId,customerId:customer.body.customer.id,warehouseId:warehouse.body.warehouse.id,paid:0,lines:[{productId:product.body.product.id,qty:1,price:10}]});assert.equal(sale.status,201);
+    const path=`/api/sales/corrections/sale/${saleId}`,detail=(await client.get(path).set(auth)).body;
+    const correction={id:randomUUID(),reason:'تالف على قاعدة قديمة',balancePiasters:detail.balancePiasters,revision:detail.revision,lines:[{lineId:detail.lines[0].id,correctedMilli:1000,returnedMilli:1000,damagedMilli:1000,stockKind:'returned'}],cash:null};
+    assert.equal((await client.post(path).set(auth).send(correction)).status,201);
+    assert.equal((await client.post(path).set(auth).send(correction)).body.duplicate,true);
+    const listAfter=(await client.get('/api/warehouse/warehouses').set(auth)).body.warehouses;
+    const damaged=listAfter.find((w:{damaged:boolean})=>w.damaged);assert.ok(damaged);assert.notEqual(damaged.id,named.body.warehouse.id);
+    assert.equal(instance.store.get('SELECT updated_at FROM warehouses WHERE id=?',damaged.id)?.updated_at !== null,true);
+    assert.equal(instance.store.get('SELECT COUNT(*) AS n FROM stock_movements')?.n,1);
   } finally { await instance.close(); rmSync(dir, { recursive:true, force:true }); }
 });
 

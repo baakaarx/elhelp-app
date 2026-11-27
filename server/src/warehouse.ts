@@ -70,6 +70,7 @@ export function createWarehouseRouter(store: Store) {
           previousProductId=String(old.product_id);return;
         }
         if(!store.get('SELECT id FROM warehouses WHERE id=?',data.warehouseId)) throw Error('WAREHOUSE');
+        if(store.get('SELECT 1 FROM damaged_warehouse_v1 WHERE warehouse_id=?',data.warehouseId)) throw Error('DAMAGED_READ_ONLY');
         if(store.get("SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?)",p.name,p.unit,p.unitSize,p.unitSize)) throw Error('PRODUCT_PACK_CONFLICT');
         store.run('INSERT INTO products(id,name,category,unit,unit_size,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',productId,p.name,p.category,p.unit,p.unitSize,now,now);
         store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES(?,?,?)',data.warehouseId,productId,milli);
@@ -79,6 +80,7 @@ export function createWarehouseRouter(store: Store) {
       });
     } catch(e) {
       if ((e as Error).message==='WAREHOUSE') {res.status(400).json({error:'اختار مخزن موجود.'});return;}
+      if ((e as Error).message==='DAMAGED_READ_ONLY') {res.status(409).json({error:'مخزن التالف للعرض واستقبال المرتجعات المسجلة على الفواتير فقط.',code:'DAMAGED_READ_ONLY'});return;}
       if ((e as Error).message==='REQUEST_CONFLICT') {res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
       if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس العبوة موجود بالفعل. اختاره لتسجيل رصيده في المخزن ده.'});return;}
       throw e;
@@ -89,11 +91,11 @@ export function createWarehouseRouter(store: Store) {
     res.setHeader('Cache-Control', 'private, no-store');
     const rows=store.all(`SELECT w.id AS warehouseId,w.name AS warehouseName,p.id AS productId,p.name AS productName,p.unit,p.unit_size AS unitSize,s.milli_qty AS qty
       FROM warehouse_stock s JOIN warehouses w ON w.id=s.warehouse_id JOIN products p ON p.id=s.product_id
-      WHERE p.active=1 AND s.milli_qty<100000 ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE,p.id`);
+      WHERE p.active=1 AND s.milli_qty<100000 AND w.id NOT IN (SELECT warehouse_id FROM damaged_warehouse_v1) ORDER BY w.name COLLATE NOCASE,p.name COLLATE NOCASE,p.id`);
     res.json({items:rows.map(row=>({...row,qty:Number(row.qty)/1000}))});
   });
   router.get('/warehouses', (_req, res) => {
-    res.json({ warehouses: store.all('SELECT id,name,created_at AS createdAt FROM warehouses ORDER BY name COLLATE NOCASE'), legacyHistory });
+    res.json({ warehouses: store.all('SELECT id,name,created_at AS createdAt,EXISTS(SELECT 1 FROM damaged_warehouse_v1 d WHERE d.warehouse_id=warehouses.id) AS damaged FROM warehouses ORDER BY name COLLATE NOCASE').map(w=>({...w,damaged:!!w.damaged})), legacyHistory });
   });
   router.post('/warehouses', (req, res) => {
     const parsed = z.object({ name }).strict().safeParse(req.body);
@@ -152,6 +154,8 @@ export function createWarehouseRouter(store: Store) {
         const previous = duplicate();
         if (previous === 1) { replay = true; return; }
         if (previous === -1) throw new Error('REQUEST_CONFLICT');
+        // No ordinary movements until an explicit damaged-stock policy is adopted.
+        if (store.get('SELECT 1 FROM damaged_warehouse_v1 WHERE warehouse_id=? OR warehouse_id=?',from,to)) throw new Error('DAMAGED_READ_ONLY');
         if (m.kind === 'opening') {
           if (store.get('SELECT 1 FROM warehouse_stock WHERE warehouse_id=? AND product_id=?', to, m.productId)) throw new Error('STOCK_INITIALIZED');
           store.run('INSERT INTO warehouse_stock(warehouse_id,product_id,milli_qty) VALUES (?,?,?)', to, m.productId, milli);
@@ -171,6 +175,7 @@ export function createWarehouseRouter(store: Store) {
       });
     } catch (e) {
       if ((e as Error).message === 'REQUEST_CONFLICT') { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.' }); return; }
+      if ((e as Error).message === 'DAMAGED_READ_ONLY') { res.status(409).json({ error: 'مخزن التالف للعرض واستقبال المرتجعات المسجلة على الفواتير فقط؛ لا تتاح له حركة عادية.', code:'DAMAGED_READ_ONLY' }); return; }
       if ((e as Error).message === 'STOCK_INITIALIZED') { res.status(409).json({ error: 'الرصيد الافتتاحي اتسجل قبل كده.' }); return; }
       if ((e as Error).message === 'STOCK_NOT_INITIALIZED') { res.status(409).json({ error: 'سجّل الرصيد الافتتاحي للصنف في كل مخزن للحركة الأول.' }); return; }
       if ((e as Error).message === 'STOCK_LIMIT') { res.status(409).json({ error: 'الرصيد أكبر من الحد الآمن للتسجيل. راجع المسؤول.', code:'STOCK_LIMIT' }); return; }

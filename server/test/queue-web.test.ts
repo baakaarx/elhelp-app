@@ -4,8 +4,8 @@ import type { OutboxItem } from '../../mobile/src/types.js';
 
 /**
  * The web outbox keeps a single localStorage array. Two things used to go wrong once it filled:
- * reports were evicted by a plain `slice(-500)` (silently losing the engineer's work), and the
- * flush read strictly by age, so a long stretch of fixes starved a queued report.
+ * reports and fixes were silently evicted, and a long stretch of fixes starved a queued report.
+ * All pending work must survive, with actions replayed before fixes.
  */
 const store = new Map<string, string>();
 let rejectWrites = false;
@@ -36,16 +36,16 @@ test('reports are flushed before an older backlog of fixes', async () => {
   assert.deepEqual(order, ['rep-1', 'fix-0', 'fix-1'], `got ${order.join(',')}`);
 });
 
-test('the cap evicts old fixes, never a queued report', async () => {
+test('a long GPS backlog preserves all fixes and reports', async () => {
   store.clear();
   const queue = await createQueue();
   await queue.add('report', { id: 'rep-2' });
   for (let i = 0; i < 600; i++) await queue.add('location', { id: `fix-${i}` });
 
   const keys = readRaw().map(item => item.key);
-  assert.ok(keys.length <= 500, `cap not applied: ${keys.length}`);
+  assert.equal(keys.length, 601);
   assert.ok(keys.includes('rep-2'), 'the queued report was evicted by the fix backlog');
-  assert.ok(!keys.includes('fix-0'), 'the oldest fixes should be the ones dropped');
+  assert.ok(keys.includes('fix-0'), 'the oldest fix must stay until confirmed by the server');
 });
 
 test('the soft cap never evicts offline visits when no GPS fixes can be dropped', async () => {
@@ -168,4 +168,25 @@ test('a reused key never silently discards different offline work', async () => 
   const items = await queue.list();
   assert.equal(items.length, 1);
   assert.deepEqual(JSON.parse(items[0].payload), original);
+});
+
+test('quota failure never evicts existing locations to save a new action', async () => {
+  store.clear(); const queue=await createQueue();
+  await queue.add('location',{id:'keep-gps',recordedAt:1});
+  const before=store.get(KEY);rejectWrites=true;
+  try { await assert.rejects(queue.add('report',{id:'report-cannot-fit'}),/لم يتم حفظ البيانات الجديدة/); }
+  finally { rejectWrites=false; }
+  assert.equal(store.get(KEY),before);assert.equal((await queue.list())[0].key,'keep-gps');
+});
+
+test('rejected locations remain on the device but cannot starve fresh fixes',async()=>{
+  store.clear();const queue=await createQueue();
+  for(let i=0;i<205;i++){await queue.add('location',{id:`old-${i}`});await queue.reject(`old-${i}`);}
+  await queue.add('location',{id:'new-gps'});
+  assert.equal(await queue.countRejectedLocations(),205);
+  assert.deepEqual((await queue.listForReplay(2)).map(x=>x.key),['new-gps']);
+  assert.deepEqual((await queue.listForReplay(2,true)).map(x=>x.key),['old-0','old-1']);
+  await queue.bump('old-0');await queue.bump('old-1');
+  assert.deepEqual((await queue.listForReplay(2,true)).map(x=>x.key),['old-2','old-3'], 'repeated manual retries eventually reach the rest');
+  assert.equal(await queue.count(),206);
 });

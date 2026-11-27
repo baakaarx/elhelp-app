@@ -28,30 +28,11 @@ function read(): OutboxItem[] {
     return parsed;
   } catch { throw new Error(READ_ERROR); }
 }
-const MAX_ITEMS = 500;
-/**
- * The cap used to be a plain `slice(-500)`, so a long offline stretch of fixes could silently
- * evict a queued report — the engineer's actual work. Fixes are dropped first now.
- */
-function trim(items: OutboxItem[]) {
-  let overflow = items.length - MAX_ITEMS;
-  if (overflow <= 0) return items;
-  const kept: OutboxItem[] = [];
-  for (const item of items) {
-    if (item.kind === 'location' && overflow > 0) { overflow--; continue; }
-    kept.push(item);
-  }
-  // If there are more than 500 non-location actions, keep them all rather than silently deleting
-  // an engineer's work. The item count is a soft cap; storage quota errors are surfaced below.
-  return kept;
-}
+// localStorage writes are atomic. Never evict an existing GPS point to make room: on quota
+// failure the previous queue remains intact and the caller must report the failed new write.
 function write(items: OutboxItem[]) {
-  try { localStorage.setItem(KEY, JSON.stringify(trim(items))); }
-  catch {
-    // Quota exceeded: keep the reports and visits, and let low-priority GPS fixes go first.
-    try { localStorage.setItem(KEY, JSON.stringify(items.filter(item => item.kind !== 'location'))); }
-    catch { throw new Error('مساحة حفظ البيانات على الهاتف ممتلئة؛ لم يتم حفظ الطلب. أرسل البيانات المعلقة أو فرّغ مساحة ثم أعد المحاولة.'); }
-  }
+  try { localStorage.setItem(KEY, JSON.stringify(items)); }
+  catch { throw new Error('مساحة حفظ البيانات على الهاتف ممتلئة؛ لم يتم حفظ البيانات الجديدة. أرسل البيانات المعلقة أو فرّغ مساحة ثم أعد المحاولة.'); }
 }
 
 export async function createQueue(): Promise<Outbox> {
@@ -72,10 +53,13 @@ export async function createQueue(): Promise<Outbox> {
       // Reports first: see queue.native.ts — a GPS backlog must not starve them.
       return [...items.filter(item => item.kind !== 'location'), ...items.filter(item => item.kind === 'location')].slice(0, limit);
     },
-    async listForReplay(locationLimit = 200) {
+    async listForReplay(locationLimit = 200, includeRejectedLocations = false) {
       const items = read().sort((a, b) => a.createdAt - b.createdAt);
-      return [...items.filter(item => item.kind !== 'location'), ...items.filter(item => item.kind === 'location').slice(0, locationLimit)];
+      const points = items.filter(item => item.kind === 'location' && (includeRejectedLocations || !item.rejected));
+      if (includeRejectedLocations) points.sort((a,b) => a.attempts-b.attempts || a.createdAt-b.createdAt);
+      return [...items.filter(item => item.kind !== 'location'), ...points.slice(0, locationLimit)];
     },
+    async countRejectedLocations() { return read().filter(item => item.kind === 'location' && item.rejected).length; },
     async remove(key: string) { write(read().filter(item => item.key !== key)); },
     async bump(key: string) { write(read().map(item => (item.key === key ? { ...item, attempts: item.attempts + 1 } : item))); },
     async reject(key: string) { write(read().map(item => (item.key === key ? { ...item, rejected: true } : item))); },
