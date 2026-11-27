@@ -4,6 +4,7 @@ import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, s
 import { sendOrderWithOutbox, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
+import { confirmShiftState } from './shiftReconciliation';
 import { shouldQueue } from './retry';
 import { getDeviceId, getDeviceName } from './device';
 import { getActiveShift, setActiveShift } from './storage';
@@ -142,20 +143,16 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       ]);
       // A single empty answer used to look like "the shift ended". If the phone believes a
       // shift is open, ask once more before dropping the engineer out mid-workday.
-      let shift = state.shift;
-      if (!shift && (await getActiveShift())) {
-        await new Promise(resolve => setTimeout(resolve, 900));
-        const retry = await shiftState().catch(() => null);
-        if (retry?.shift) shift = retry.shift;
-        else {
-          await setActiveShift(null);
-          await stopTracking().catch(() => undefined);
-          setTrackingActive(false);
-          setError('الوردية اتقفلت على الحساب من السيرفر. ابدأ وردية جديدة عشان تسجيل الموقع يرجع.');
-        }
+      const confirmed = await confirmShiftState(state.shift, !!(await getActiveShift()), shiftState,
+        () => new Promise(resolve => setTimeout(resolve, 900)));
+      if (confirmed.closed) {
+        await setActiveShift(null);
+        await stopTracking().catch(() => undefined);
+        setTrackingActive(false);
+        setError('الوردية اتقفلت على الحساب من السيرفر. ابدأ وردية جديدة عشان تسجيل الموقع يرجع.');
       }
       if (!mounted.current) return;
-      setSummary({ ...(nextSummary ?? {}), shift } as RepSummary);
+      setSummary({ ...(nextSummary ?? {}), shift: confirmed.shift } as RepSummary);
       setVisits(Array.isArray(nextVisits.visits) ? nextVisits.visits : []);
     } catch (e) {
       const status = (e as { status?: number }).status ?? 0;

@@ -1,6 +1,6 @@
 import * as Location from 'expo-location';
 import { announceMockLocation, isMockedLocation, MOCK_LOCATION_MESSAGE, trustedFix, type TrustedFix } from './locationIntegrity';
-import { cacheFix, clearLocationCache, discardCachedFixForMockLocation, getCachedFix } from './locationCache';
+import { cacheFix, clearLocationCache, discardCachedFixForMockLocation, getCachedFix, lastKnownMaxAge } from './locationCache';
 
 export type Fix = TrustedFix;
 export { MOCK_LOCATION_MESSAGE, onMockLocationDetected } from './locationIntegrity';
@@ -85,10 +85,11 @@ export async function captureOnce(options: { maxAgeMs?: number; timeoutMs?: numb
   const precise = toFix(precisePosition);
   if (lastLocationIssue === 'mocked') return null;
   if (precise) candidates.push(precise);
-  if (!precise || (precise.accuracy ?? 999) > CACHE_ACCURACY_M) {
-    // A reading the OS already has (often far better indoors) beats a fresh coarse one.
+  const knownMaxAge = lastKnownMaxAge(maxAge);
+  if (knownMaxAge !== null && (!precise || (precise.accuracy ?? 999) > CACHE_ACCURACY_M)) {
+    // Respect the caller's freshness window; maxAgeMs: 0 explicitly requests a fresh fix.
     const knownPosition = await withTimeout(
-      Location.getLastKnownPositionAsync({ maxAge: 120000, requiredAccuracy: MAX_ACCURACY_M }), 3000);
+      Location.getLastKnownPositionAsync({ maxAge: knownMaxAge, requiredAccuracy: MAX_ACCURACY_M }), 3000);
     const known = toFix(knownPosition);
     if (lastLocationIssue === 'mocked') return null;
     if (known) candidates.push(known);

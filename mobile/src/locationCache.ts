@@ -1,6 +1,11 @@
 import type { TrustedFix } from './locationIntegrity';
 
 interface CachedFix { fix: TrustedFix; at: number }
+
+/** Native last-known fixes obey the same freshness window as our in-memory cache. */
+export function lastKnownMaxAge(maxAgeMs: number): number | null {
+  return Number.isFinite(maxAgeMs) && maxAgeMs > 0 ? maxAgeMs : null;
+}
 let cached: CachedFix | null = null;
 
 /** Return the last precise fix while it is still inside the caller's freshness window. */
