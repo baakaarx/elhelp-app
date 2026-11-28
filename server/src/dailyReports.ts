@@ -73,18 +73,29 @@ export function listDailyReports(store: Store, filter: { userId?: string; repId?
   const rows = store.all(`${SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY (d.status='new') DESC, d.report_date DESC, d.created_at DESC LIMIT 300`, ...params);
   return rows.map(row => ({ ...row, version: DAILY_REPORT_VERSION, visits: visits(store, String(row.id)) })) as DailyReport[];
 }
+/** Only compares immutable data written by the original request, not review status or timestamps. */
+export function sameDailyReport(report: DailyReport, data: NewDailyReport): boolean {
+  if (report.engineerName !== data.engineerName || report.reportDate !== data.reportDate || report.leftAt !== data.leftAt
+      || report.returnedAt !== data.returnedAt || report.circumstances !== data.circumstances || report.signedName !== data.signedName
+      || report.lat !== (data.location?.lat ?? null) || report.lng !== (data.location?.lng ?? null) || report.accuracy !== (data.location?.accuracy ?? null)
+      || report.visits.length !== data.visits.length) return false;
+  return data.visits.every((v, i) => {
+    const r = report.visits[i];
+    return r.customerName === v.customerName && r.governorate === v.governorate && r.district === v.district && r.village === v.village
+      && r.phone === v.phone && r.areaFeddan === v.areaFeddan && r.crops === v.crops && r.recommendations === v.recommendations && r.outcome === v.outcome;
+  });
+}
+
+/** Called within the enclosing transaction, which also checks uniqueness and records the audit. */
 export function insertDailyReport(store: Store, userId: string, shiftId: string | null, data: NewDailyReport, now: number, timezone: string) {
   const dayName = weekdayName(data.reportDate, timezone);
-  store.transaction(() => {
-    const result = store.run(`INSERT OR IGNORE INTO daily_reports(id,user_id,shift_id,engineer_name,report_date,day_name,left_at,returned_at,circumstances,status,created_at,signed_name,signed_at,lat,lng,accuracy)
-      VALUES (?,?,?,?,?,?,?,?,?,'new',?,?,?,?,?,?)`, data.id, userId, shiftId, data.engineerName, data.reportDate, dayName, data.leftAt, data.returnedAt,
-      data.circumstances, now, data.signedName, now, data.location?.lat ?? null, data.location?.lng ?? null, data.location?.accuracy ?? null);
-    if (!result.changes) return;
-    data.visits.forEach((visit, index) => {
-      store.run(`INSERT INTO daily_report_visits(id,report_id,position,customer_name,governorate,district,village,phone,area_feddan,crops,recommendations,outcome)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, `${data.id}:${index + 1}`, data.id, index + 1, visit.customerName, visit.governorate, visit.district, visit.village,
-        visit.phone, visit.areaFeddan, visit.crops, visit.recommendations, visit.outcome);
-    });
+  store.run(`INSERT INTO daily_reports(id,user_id,shift_id,engineer_name,report_date,day_name,left_at,returned_at,circumstances,status,created_at,signed_name,signed_at,lat,lng,accuracy)
+    VALUES (?,?,?,?,?,?,?,?,?,'new',?,?,?,?,?,?)`, data.id, userId, shiftId, data.engineerName, data.reportDate, dayName, data.leftAt, data.returnedAt,
+    data.circumstances, now, data.signedName, now, data.location?.lat ?? null, data.location?.lng ?? null, data.location?.accuracy ?? null);
+  data.visits.forEach((visit, index) => {
+    store.run(`INSERT INTO daily_report_visits(id,report_id,position,customer_name,governorate,district,village,phone,area_feddan,crops,recommendations,outcome)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, `${data.id}:${index + 1}`, data.id, index + 1, visit.customerName, visit.governorate, visit.district, visit.village,
+      visit.phone, visit.areaFeddan, visit.crops, visit.recommendations, visit.outcome);
   });
 }
 export function validateReportDate(date: string, timezone: string, retentionDays: number) {

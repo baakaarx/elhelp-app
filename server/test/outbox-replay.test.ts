@@ -274,3 +274,15 @@ test('a timeout or unverifiable order confirmation keeps the order for retry and
     if (failure.status === 503) assert.match(result.notice ?? '', /راجع المكتب/);
   }
 });
+
+test('unidentifiable corrupt check-in blocks every visit dependency regardless of queue order', async () => {
+  for (const corrupt of ['{broken', 'null', '{}']) {
+    const entries=[item('checkout','visit-checkout',checkout),item('linked','order',{id:'linked',visitId:visit.id}),{...item('broken','visit-checkin',visit),payload:corrupt},item('report','report',report),item('unlinked','order',{id:'unlinked'})];
+    const pending=new Map(entries.map(x=>[x.key,x])); const calls:string[]=[];
+    const result=await replayOutboxActions(entries,{async remove(key){pending.delete(key);},async bump(){assert.fail('must not bump');},async reject(){assert.fail('must not reject');},async unreject(){}}, {
+      async checkIn(){calls.push('checkin');},async checkOut(){calls.push('checkout');},async report(){calls.push('report');},async dailyReport(){},async createOrder(order){calls.push(order.id);}
+    });
+    assert.deepEqual(calls,['report','unlinked']); assert.deepEqual([...pending.keys()],['checkout','linked','broken']);
+    assert.match(result.notice??'',/لا تحذف/);
+  }
+});

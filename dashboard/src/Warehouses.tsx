@@ -11,7 +11,7 @@ type Movement = { id:string; kind:'opening'|'in'|'out'|'transfer'; productName:s
 const labels = { opening:'رصيد افتتاحي', in:'إضافة', out:'صرف', transfer:'نقل' } as const;
 const parseQty = (value:string) => { const normalized=normalizeDecimal(value); return /^\d+(\.\d+)?$/.test(normalized) ? Number(normalized) : NaN; };
 const qtyText = (value:number) => value.toLocaleString('ar-EG',{maximumFractionDigits:3});
-type PendingMovement = {body:{id:string;kind:Movement['kind'];productId:string;qty:number;note:string;fromWarehouseId?:string;toWarehouseId?:string}; description:string; path?:undefined} | {path:'/api/warehouse/stock-items';body:{id:string;warehouseId:string;product:{name:string;category:string;unit:string;unitSize:string};qty:number};description:string};
+type PendingMovement = {body:{id:string;kind:Movement['kind'];productId:string;qty:number;note:string;productSnapshot?:{name:string;unit:string;unitSize:string;active:boolean};fromWarehouseId?:string;toWarehouseId?:string}; description:string; path?:undefined} | {path:'/api/warehouse/stock-items';body:{id:string;warehouseId:string;product:{name:string;category:string;unit:string;unitSize:string};qty:number};description:string};
 type LowStock = {warehouseId:string;warehouseName:string;productId:string;productName:string;unit:string;unitSize:string;qty:number};
 
 export default function Warehouses({userId}:{userId:string}) {
@@ -133,9 +133,22 @@ export default function Warehouses({userId}:{userId:string}) {
       const serialized=JSON.stringify(operation), existing=localStorage.getItem(pendingKey);
       if(existing && existing!==serialized) {setPendingRaw(existing);throw Error('في حركة معلقة على الجهاز. لازم تتأكد منها الأول.');}
       localStorage.setItem(pendingKey,serialized);setPendingRaw(serialized);
-      try {await post(operation.path || '/api/warehouse/movements',operation.body);localStorage.removeItem(pendingKey);setPendingRaw(null);}
-      catch(e) {
-        if(e instanceof ApiError && e.status>=400 && e.status<500 && ![401,403,408,429].includes(e.status)){localStorage.removeItem(pendingKey);setPendingRaw(null);}
+      try {
+        const result = await post<unknown>(operation.path || '/api/warehouse/movements',operation.body);
+        const reply = result as {ok?:unknown;duplicate?:unknown;requestId?:unknown;productId?:unknown}|null;
+        if (!reply || typeof reply !== 'object' || reply.ok !== true || typeof reply.duplicate !== 'boolean' || reply.requestId !== operation.body.id
+          || (operation.path && (typeof reply.productId !== 'string' || !reply.productId))) {
+          throw new ApiError('تعذر التأكد من حفظ الحركة. هي ما زالت معلقة؛ راجع المكتب ولا تكررها.',503,'MOVEMENT_CONFIRMATION_UNCERTAIN');
+        }
+        localStorage.removeItem(pendingKey);setPendingRaw(null);
+      } catch(e) {
+        if(e instanceof ApiError && e.code==='REQUEST_CONFLICT') {
+          throw new ApiError('رقم الحركة مستخدم لبيانات مختلفة. العملية المعلقة ما زالت محفوظة؛ راجع المسؤول ولا تسجلها مرة أخرى.',409,'REQUEST_CONFLICT');
+        }
+        if(e instanceof ApiError && e.status>=400 && e.status<500 && ![401,403,408,429].includes(e.status)) {
+          localStorage.removeItem(pendingKey);setPendingRaw(null);
+          if(e.code==='PRODUCT_CHANGED'){refreshVersion.current++;setNeedsRefresh(true);}
+        }
         throw e;
       }
     }); } finally {sending.current=false;}
@@ -151,10 +164,13 @@ export default function Warehouses({userId}:{userId:string}) {
     if(pendingRaw || needsRefresh || !stockReady){setError('راجع الحركة المعلقة وحدّث الأرصدة قبل تسجيل حركة تانية.');return;}
     if (!Number.isFinite(parseQty(qty)) || !hasInputPrecision(qty,3)) { setError('اكتب كمية صحيحة بحد أقصى ٣ أرقام بعد العلامة العشرية.'); return; }
     if (kind!=='opening' && parseQty(qty)===0) {setError('اكتب كمية أكبر من صفر للحركة؛ الصفر مسموح للرصيد الافتتاحي فقط.');return;}
+    const selected = stock.find(p=>p.id===productId);
+    if (!selected || !selected.active) {setError('اختار صنفًا متاحًا وحدّث الأرصدة.');return;}
     const body = {id:crypto.randomUUID(),kind,productId,qty:parseQty(qty),note,
+      productSnapshot:{name:selected.name,unit:selected.unit,unitSize:selected.unitSize,active:selected.active},
       ...(kind === 'opening' || kind === 'in' ? {toWarehouseId:warehouseId} : {fromWarehouseId:warehouseId}),
       ...(kind === 'transfer' ? {toWarehouseId:destination} : {})};
-    const description=`${labels[kind]} · ${stock.find(p=>p.id===productId) ? `${stock.find(p=>p.id===productId)!.name} · ${stock.find(p=>p.id===productId)!.unit} ${stock.find(p=>p.id===productId)!.unitSize}` : 'صنف'} · ${qtyText(body.qty)} · ${warehouses.find(w=>w.id===warehouseId)?.name || 'مخزن'}${kind==='transfer'?` إلى ${warehouses.find(w=>w.id===destination)?.name || 'مخزن'}`:''}`;
+    const description=`${labels[kind]} · ${selected.name} · ${selected.unit} ${selected.unitSize} · ${qtyText(body.qty)} · ${warehouses.find(w=>w.id===warehouseId)?.name || 'مخزن'}${kind==='transfer'?` إلى ${warehouses.find(w=>w.id===destination)?.name || 'مخزن'}`:''}`;
     await finishMovement({body,description});
   }
   return <section className="page">

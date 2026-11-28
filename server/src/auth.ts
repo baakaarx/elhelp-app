@@ -38,7 +38,8 @@ export function sessionUser(store: Store, token: unknown): Row | undefined {
   if (typeof token !== 'string' || token.length < 20 || token.length > 300) return undefined;
   const now = Date.now();
   return store.get(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
-    WHERE s.token_hash=? AND s.expires_at>? AND s.created_at + ?>? AND u.active=1`,
+    WHERE s.token_hash=? AND s.expires_at>? AND s.created_at + ?>? AND u.active=1
+      AND COALESCE(u.approval_status, 'approved') NOT IN ('pending','rejected')`,
   tokenHash(token), now, MAX_SESSION_MS, now);
 }
 /**

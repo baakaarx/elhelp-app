@@ -377,7 +377,7 @@ test('a representative submits a report with location', async () => {
 
 test('replaying the same report id does not create a second row', async () => {
   const res = await rep.post('/api/reports').set(auth(repToken)).send({
-    id: reportId, type: 'visit', title: 'زيارة مزرعة اختبار', body: 'تفاصيل', customer: 'مزرعة الاختبار', amount: null, location: null,
+    id: reportId, type: 'visit', title: 'زيارة مزرعة اختبار', body: 'تفاصيل', customer: 'مزرعة الاختبار', amount: null, location: {lat:31.2,lng:29.9,accuracy:8},
   });
   assert.equal(res.status, 200);
   assert.equal(res.body.duplicate, true);
@@ -436,8 +436,12 @@ test('replaying a daily report id is idempotent', async () => {
   const report = store.get('SELECT * FROM daily_reports WHERE id=?', dailyId)!;
   const res = await rep.post('/api/daily-reports').set(auth(repToken)).send({
     version: 1, id: dailyId, engineerName: report.engineer_name, reportDate: report.report_date, leftAt: report.left_at,
-    returnedAt: report.returned_at, circumstances: report.circumstances, signedName: report.signed_name, confirmed: true, location: null,
-    visits: [{ customerName: 'مزرعة النور', governorate: 'القاهرة', district: 'مدينة نصر', village: 'القرية', phone: '', areaFeddan: 12, crops: 'قمح', recommendations: '', outcome: '' }],
+    returnedAt: report.returned_at, circumstances: report.circumstances, signedName: report.signed_name, confirmed: true, location: {lat:31.2,lng:29.9,accuracy:9},
+    visits: [
+      { customerName: 'مزرعة النور', governorate: 'القاهرة', district: 'مدينة نصر', village: 'القرية', phone: '01000000001', areaFeddan: 12, crops: 'قمح', recommendations: 'ري', outcome: 'متابعة' },
+      { customerName: 'عميل الاختبار', governorate: 'الجيزة', district: 'الدقي', village: '', phone: '', areaFeddan: null, crops: '', recommendations: '', outcome: 'عينة' },
+      { customerName: 'مزرعة السلام', governorate: 'الشرقية', district: 'بلبيس', village: 'قرية', phone: '01000000003', areaFeddan: 25, crops: 'ذرة', recommendations: 'فحص', outcome: 'موعد' },
+    ],
   });
   assert.equal(res.status, 200);
   assert.equal(res.body.duplicate, true);

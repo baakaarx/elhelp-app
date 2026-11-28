@@ -205,3 +205,23 @@ test('an audit failure rolls back both the stock movement and its balance', asyn
   assert.equal((await client.post('/api/warehouse/movements').set(admin).send(input)).status,201);
   assert.equal(Number(instance.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p)?.milli_qty),5000);
 });
+
+test('stale product snapshot is checked under the lock without breaking old or already saved retries',async()=>{
+ const w=(await client.post('/api/warehouse/warehouses').set(admin).send({name:`مخزن نسخة ${randomUUID()}`})).body.warehouse.id;
+ const created=await client.post('/api/warehouse/products').set(admin).send({name:`صنف نسخة ${randomUUID()}`,category:'other',unit:'عبوة',unitSize:'١ لتر'});
+ const p=created.body.product, base={id:randomUUID(),kind:'opening',productId:p.id,toWarehouseId:w,qty:3,productSnapshot:{name:p.name,unit:p.unit,unitSize:p.unitSize,active:true}};
+ const transaction=instance.store.transaction.bind(instance.store);
+ instance.store.transaction=fn=>{instance.store.run('UPDATE products SET unit_size=? WHERE id=?','٢ لتر',p.id);transaction(fn);};
+ let res;try{res=await client.post('/api/warehouse/movements').set(admin).send(base);}finally{instance.store.transaction=transaction;}
+ assert.equal(res.status,409);assert.equal(res.body.code,'PRODUCT_CHANGED');assert.equal(instance.store.get('SELECT 1 FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p.id),undefined);
+ const changed={...base,productSnapshot:{...base.productSnapshot,unitSize:'٢ لتر'}};
+ const success=await client.post('/api/warehouse/movements').set(admin).send(changed);assert.equal(success.status,201);assert.equal(success.body.requestId,base.id);
+ instance.store.run('UPDATE products SET name=? WHERE id=?',`صنف مختلف ${randomUUID()}`,p.id);
+ const replay=await client.post('/api/warehouse/movements').set(admin).send(changed);assert.equal(replay.status,200);assert.equal(replay.body.duplicate,true);assert.equal(replay.body.requestId,base.id);
+ assert.equal((await client.post('/api/warehouse/movements').set(admin).send({...changed,qty:5})).body.code,'REQUEST_CONFLICT');
+ // Old saved requests have no snapshot and remain replayable.
+ const old={id:randomUUID(),kind:'in',productId:p.id,toWarehouseId:w,qty:1};
+ assert.equal((await client.post('/api/warehouse/movements').set(admin).send(old)).status,201);
+ assert.equal((await client.post('/api/warehouse/movements').set(admin).send(old)).body.duplicate,true);
+ assert.equal(instance.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p.id)?.milli_qty,4000);
+});

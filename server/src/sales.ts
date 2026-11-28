@@ -53,6 +53,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
       CUSTOMER:'اختار عميل شغال من القائمة.', WAREHOUSE:'اختار مخزن صحيح.', ORDER:'الطلبية مش مرسلة للمكتب أو تخص عميل تاني.', ORDER_CHANGED:'الطلبية اتغيرت. حدّث البيانات وراجع الفاتورة من جديد.', ORDER_LINES:'اختار أصناف من الطلبية واكتب الكمية الفعلية وسعر المكتب.',
       ORDER_SOLD:'الطلبية دي اتسجّلت لها فاتورة قبل كده.', REP:'المهندس المختار غير موجود أو موقوف.', ORDER_TOTAL:'الطلبية القديمة فيها اختلاف في الإجمالي. افتحها من شاشة الفاتورة وراجع الكميات والأسعار.', PRODUCT:'الصنف غير موجود أو موقوف.',
       DUPLICATE_PRODUCT:'اختار كل صنف مرة واحدة.', PRECISION:'الكمية تقبل ٣ أرقام عشرية والسعر رقمين عشريين.',
+      ORDER_PRODUCT_CHANGED:'وحدة أو عبوة صنف في الطلبية تختلف عن الصنف الحالي في المخزن. الفاتورة لم تُسجّل؛ راجع المكتب قبل البيع.',
       NO_OPENING:'خلّي المخازن تسجّل الرصيد الافتتاحي للصنف الأول.', SHORT:'الكمية المطلوبة أكبر من رصيد المخزن.',
       PAID:'المبلغ المدفوع أكبر من إجمالي الفاتورة.', BIG:'إجمالي الفاتورة أكبر من المسموح.',
       OPENING:'المديونية القديمة للعميل اتسجلت قبل كده.', PAYMENT:'الدفعة أكبر من المبلغ المتبقي على العميل.',
@@ -325,6 +326,12 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
           lines=data.lines.map(line=>{const product=store.get('SELECT id,name,unit,unit_size AS unitSize,active FROM products WHERE id=?',line.productId);if(!product?.active)throw Error('PRODUCT');return {...line,name:String(product.name),unit:String(product.unit),unitSize:String(product.unitSize)};});
         }
         if (!lines.length || new Set(lines.map(l=>l.productId)).size!==lines.length) throw Error('DUPLICATE_PRODUCT');
+        // A historical order snapshots its pack. Stock is keyed by product id, so never deduct
+        // a current 5-litre pack for an order and invoice that say 1 litre.
+        if (data.orderId) for (const line of lines) {
+          const current = store.get('SELECT unit,unit_size AS unitSize FROM products WHERE id=?', line.productId);
+          if (!current || current.unit !== line.unit || current.unitSize !== line.unitSize) throw Error('ORDER_PRODUCT_CHANGED');
+        }
         let total=0; const calculated=lines.map(line=>{
           if (!Number.isFinite(line.price) || line.price<0 || line.price>1_000_000_000 || !Number.isFinite(line.qty) || line.qty>100_000 || !exact(line.price,100) || !exact(line.qty,1000) || milli(line.qty)<1) throw Error('PRECISION');
           const amount=Number((BigInt(milli(line.qty))*BigInt(cents(line.price))+500n)/1000n);
@@ -350,7 +357,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         if(data.orderId) store.run('INSERT INTO order_invoice_notices_v1(order_id,user_id,created_at) SELECT id,user_id,? FROM orders WHERE id=?',now,data.orderId);
         store.audit(actor.id,'sales.confirm',{saleId:data.id,customerId:data.customerId,orderId:data.orderId??null});
       });
-    } catch(e) { const code=(e as Error).message; if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;} if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    } catch(e) { const code=(e as Error).message; if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;} if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','ORDER_PRODUCT_CHANGED','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
     if(replay){res.json({ok:true,duplicate:true});return;}
     if(data.orderId){try{onOrderSold(data.orderId);}catch(e){console.error('[sales] order notification failed',e);}}
     res.status(201).json({ok:true,duplicate:false});
