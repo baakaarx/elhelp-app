@@ -18,7 +18,8 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   // The ticking clock only exists for the open visit's stopwatch. It used to run on every
   // visit screen: a full re-render of the whole list every second, all day, on a phone that is
   // already tracking GPS — for a number that does not change when nothing is open.
-  const openVisitId = field.summary?.openVisit?.id ?? null;
+  const localStart = field.queuedVisits.starts.find(v => !field.queuedVisits.finished.includes(v.id));
+  const openVisitId = localStart?.id ?? field.summary?.openVisit?.id ?? null;
   // The book is asked for here as well as inside the sheet: this tab is where an engineer lands when
   // he is still in range of a network, and the list has to be in memory before he walks into a farm
   // with no signal.
@@ -37,7 +38,15 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
   const shift = field.summary?.shift ?? null;
   const allVisits = Array.isArray(field.visits) ? field.visits : [];
   const visits = useMemo(() => (filter === 'all' ? allVisits : allVisits.filter(v => v.status === filter)), [allVisits, filter]);
-  const open = field.summary?.openVisit ?? null;
+  const localCustomer = localStart ? field.customers.find(c => c.id === localStart.customerId) : undefined;
+  const localVisit: Visit | null = localStart ? {
+    id: localStart.id, userId: user.id, customerId: localStart.customerId, customerName: localCustomer?.name ?? 'عميل محفوظ على الهاتف',
+    governorate: localCustomer?.governorate ?? '', district: localCustomer?.district ?? '', village: localCustomer?.village ?? '', phone: localCustomer?.phone ?? '',
+    purpose: localStart.purpose, notes: localStart.notes, outcome: '', status: 'open', checkedInAt: localStart.recordedAt,
+    checkedOutAt: null, durationSeconds: null, inLat: localStart.location.lat, inLng: localStart.location.lng, inAccuracy: localStart.location.accuracy,
+    outLat: null, outLng: null, repName: user.name, repColor: user.color,
+  } : null;
+  const open = localVisit ?? field.summary?.openVisit ?? null;
   // The list also carries visits from the last two weeks: those whose result is still missing
   // (the system closed them) and one left open by a shift that ended somewhere else. Every
   // figure in the header is about today, so the average is not a mix of several days.
@@ -88,16 +97,18 @@ export default function VisitsScreen({ user, field }: { user: User; field: Field
               <Text style={styles.timer}>{hhmmss(now - open.checkedInAt)}</Text>
             </Row>
             <Heading>{open.customerName}</Heading>
+            {localVisit && <Body>الزيارة محفوظة على الهاتف وتنتظر المزامنة.</Body>}
+            {field.queuedVisits.finished.includes(open.id) && <Body>النتيجة محفوظة وتنتظر المزامنة؛ لا تكررها.</Body>}
             <Body muted>
               {visitPurposeLabels[open.purpose] ?? 'زيارة'} · دخلت {timeText(open.checkedInAt, timeZone)}
               {open.inAccuracy ? ` · دقة ±${Math.round(open.inAccuracy)} م` : ''}
             </Body>
             <Row style={{ gap: space.sm }}>
-              <Button style={{ flex: 1 }} label={isToday(open.checkedInAt, timeZone) ? 'إنهاء وتسجيل النتيجة' : 'اقفل الزيارة القديمة'} onPress={() => setCheckOutVisit(open)} />
+              <Button style={{ flex: 1 }} label={isToday(open.checkedInAt, timeZone) ? 'إنهاء وتسجيل النتيجة' : 'اقفل الزيارة القديمة'} disabled={field.queuedVisits.finished.includes(open.id)} onPress={() => setCheckOutVisit(open)} />
             </Row>
           </Card>
         ) : (
-          <Button label={shift ? '+ تسجيل زيارة جديدة' : 'ابدأ الوردية من الرئيسية'} onPress={() => { if (shift) setCheckInOpen(true); }} disabled={!shift} icon="◎" />
+          <Button label={shift ? '+ تسجيل زيارة جديدة' : 'ابدأ الوردية من الرئيسية'} onPress={() => { if (shift) setCheckInOpen(true); }} disabled={!shift || field.queuedVisits.finished.length > 0} icon="◎" />
         )}
 
         <Button label="قائمة الأصناف اللي بنبيعها" variant="soft" onPress={() => setCatalogueOpen(true)} icon="☷" />

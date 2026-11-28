@@ -505,6 +505,13 @@ export class Store {
         CREATE INDEX IF NOT EXISTS locations_recorded ON locations(recorded_at);
       `);
     }
+    // Preserve the original point for safe duplicate checks even when the stored timestamp was
+    // adjusted for clock skew. Old points have no fingerprint and are checked conservatively.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS location_requests_v1 (
+      user_id TEXT NOT NULL, point_id TEXT NOT NULL, request_hash TEXT NOT NULL,
+      PRIMARY KEY(user_id,point_id),
+      FOREIGN KEY(user_id,point_id) REFERENCES locations(user_id,point_id) ON DELETE CASCADE
+    )`);
     // Every representative used to be created with the same default colour, so the live map
     // drew identical pins for the whole team. Give each one its own colour once; an explicit
     // colour is never touched, and the second run finds nothing to do.

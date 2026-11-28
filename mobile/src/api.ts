@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
-import { getToken, setToken } from './storage';
+import { getToken, setToken, clearTokenIfMatches } from './storage';
 import { isConfirmedOrderResponse } from './orderDelivery';
 import { confirmedCheckIn, confirmedCheckOut, confirmedDailyReport, confirmedReport } from './actionConfirmation';
 import { networkMessage } from './networkMessage';
@@ -37,8 +37,21 @@ export const UNCONFIGURED = API_BASE === '' && Platform.OS !== 'web';
  * A network failure cannot tell us whether the server committed a write. Queueing callers
  * report local persistence only after it succeeds; other callers must verify before repeating.
  */
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getToken();
+// Bind this runtime to the session it displayed. Another tab may replace localStorage, but
+// it must never silently turn this tab's actions into actions by the other account.
+let boundToken: string | null | undefined;
+export async function clearCurrentSession(): Promise<void> {
+  const expected = boundToken === undefined ? await getToken() : boundToken;
+  await clearTokenIfMatches(expected);
+  boundToken = null;
+}
+async function request<T>(path: string, init: RequestInit = {}, expectedToken?: string): Promise<T> {
+  const current = await getToken();
+  const loginRequest = path === '/api/auth/login' || path === '/api/auth/oauth';
+  if (boundToken === undefined && !loginRequest) boundToken = current;
+  if (!loginRequest && current !== boundToken) throw new ApiError('الجلسة اتغيرت في تبويب آخر. سجّل الدخول من جديد قبل المتابعة.', 401, 'SESSION_CHANGED');
+  if (expectedToken !== undefined && (current !== expectedToken || boundToken !== expectedToken)) throw new ApiError('الجلسة اتغيرت؛ البيانات محفوظة لحسابها ولم تُرسل.', 401, 'SESSION_CHANGED');
+  const token = loginRequest ? null : boundToken;
   const headers: Record<string, string> = { Accept: 'application/json', 'X-Mandoub-Client': 'rep', ...(init.headers as Record<string, string> | undefined) };
   if (token) headers['X-Mandoub-Token'] = token;
   if (init.body) headers['Content-Type'] = 'application/json';
@@ -51,14 +64,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   const body = isJson ? await res.json().catch(() => null) : null;
   if (!res.ok) {
-    if (res.status === 401) await setToken(null);
+    if (res.status === 401 && !loginRequest) { await clearTokenIfMatches(token ?? null); boundToken = null; }
     const code = typeof body?.code === 'string' ? body.code : undefined;
     throw new ApiError(body?.error || `فشل الطلب (${res.status})`, res.status, code);
   }
   return body as T;
 }
-export const post = <T>(path: string, data: unknown) =>
-  request<T>(path, { method: 'POST', body: JSON.stringify(data) });
+export const post = <T>(path: string, data: unknown, expectedToken?: string) =>
+  request<T>(path, { method: 'POST', body: JSON.stringify(data) }, expectedToken);
 export const get = <T>(path: string) => request<T>(path, { method: 'GET' });
 /**
  * Erases the signed-in account on the server. The email acts as the confirmation step the
@@ -74,8 +87,8 @@ export const deleteMyAccount = (email: string) =>
  * الطلبية بتتبعت من غير GPS ومن غير وردية: هي وعد بالكميات مش بحركة — والضغط نفسه معناه «ابعت»،
  * فالطابور هنا بيستقبل نفس الجسم لو الشبكة قطعت، والسيرفر بيقبل إعادة الإرسال من غير ما يضاعف.
  */
-export async function createOrder(order: OrderInput) {
-  const result = await post<{ order: OrderView; duplicate: boolean }>('/api/orders', order);
+export async function createOrder(order: OrderInput, expectedToken?: string) {
+  const result = await post<{ order: OrderView; duplicate: boolean }>('/api/orders', order, expectedToken);
   if (!isConfirmedOrderResponse(order, result)) {
     throw new ApiError('تعذر التأكد من بيانات الطلبية عند المكتب. راجع المكتب قبل إعادة إرسالها.', 503, 'ORDER_CONFIRMATION_UNCERTAIN');
   }
@@ -89,11 +102,20 @@ export const readOrderInvoiceNotice = (orderId:string) => post<{ok:true}>(`/api/
 export async function login(email: string, password: string) {
   const res = await post<{ token: string; user: User }>('/api/auth/login', { email: email.trim().toLowerCase(), password });
   await setToken(res.token);
+  boundToken = res.token;
   return res.user;
 }
 export const me = () => get<{ user: User }>('/api/auth/me').then(r => r.user);
+/** A queued action may only travel with a token verified for its saved owner. */
+export async function verifiedOwnerToken(owner: string): Promise<string> {
+  const token = await getToken();
+  if (!token) throw new ApiError('سجّل الدخول بالحساب صاحب البيانات لمزامنتها.', 401);
+  const result = await request<{user:User}>('/api/auth/me', {}, token);
+  if (result?.user?.id !== owner) throw new ApiError('البيانات المحفوظة تخص حسابًا آخر؛ لم تُرسل.', 401, 'SESSION_CHANGED');
+  return token;
+}
 export async function logout() {
-  try { await post('/api/auth/logout', {}); } finally { await setToken(null); }
+  try { await post('/api/auth/logout', {}); } finally { await clearCurrentSession(); }
 }
 export const shiftState = () => get<ShiftResponse>('/api/me/shift?snapshot=0');
 export async function startShift(consentVersion: string, location: { lat: number; lng: number; accuracy: number | null }, deviceId: string, deviceName?: string) {
@@ -115,16 +137,17 @@ export const authProviders = () =>
 export async function oauthLogin(provider: 'google' | 'apple', idToken: string, name?: string) {
   const res = await post<{ token: string; user: User }>('/api/auth/oauth', { provider, idToken, name });
   await setToken(res.token);
+  boundToken = res.token;
   return res.user;
 }
-export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points });
-export async function sendReport(report: ReportInput) {
-  const result = await post<{ report: { id: string }; duplicate: boolean }>('/api/reports', report);
+export const pushLocations = (points: GeoPoint[], expectedToken?: string) => post<{ accepted: number; duplicates: number }>('/api/locations', { points }, expectedToken);
+export async function sendReport(report: ReportInput, expectedToken?: string) {
+  const result = await post<{ report: { id: string }; duplicate: boolean }>('/api/reports', report, expectedToken);
   if (!confirmedReport(report, result)) throw new ApiError('تعذر التأكد من التقرير المحفوظ. لا تكرره، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
   return result;
 }
-export async function sendDailyReport(report: DailyReportInput) {
-  const result = await post<{ report: { id: string }; duplicate: boolean }>('/api/daily-reports', report);
+export async function sendDailyReport(report: DailyReportInput, expectedToken?: string) {
+  const result = await post<{ report: { id: string }; duplicate: boolean }>('/api/daily-reports', report, expectedToken);
   if (!confirmedDailyReport(report, result)) throw new ApiError('تعذر التأكد من التقرير اليومي المحفوظ. لا تكرره، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
   return result;
 }
@@ -172,8 +195,8 @@ export const myRoute = (userId: string, date?: string) => get<RouteResponse>(`/a
  * `recordedAt` is the instant the visit was recorded. It is only sent when the phone had no
  * signal and kept the visit: a live request lets the server stamp its own clock.
  */
-export async function checkInVisit(visit: VisitInput & { recordedAt?: number }) {
-  const result = await post<{ visit: Visit; duplicate: boolean; recordedOffline?: boolean }>('/api/visits/check-in', visit);
+export async function checkInVisit(visit: VisitInput & { recordedAt?: number }, expectedToken?: string) {
+  const result = await post<{ visit: Visit; duplicate: boolean; recordedOffline?: boolean }>('/api/visits/check-in', visit, expectedToken);
   if (!confirmedCheckIn(visit, result)) throw new ApiError('تعذر التأكد من تسجيل الزيارة. لا تكررها، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
   return result;
 }
@@ -182,8 +205,8 @@ export interface CheckOutBody {
   location: { lat: number; lng: number; accuracy: number | null } | null;
   recordedAt?: number;
 }
-export async function checkOutVisit(id: string, body: CheckOutBody) {
-  const result = await post<{ visit: Visit; duplicate: boolean; recordedLate?: boolean }>(`/api/visits/${id}/check-out`, body);
+export async function checkOutVisit(id: string, body: CheckOutBody, expectedToken?: string) {
+  const result = await post<{ visit: Visit; duplicate: boolean; recordedLate?: boolean }>(`/api/visits/${id}/check-out`, body, expectedToken);
   if (!confirmedCheckOut(id, body, result)) throw new ApiError('تعذر التأكد من حفظ نتيجة الزيارة. لا تكررها، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
   return result;
 }

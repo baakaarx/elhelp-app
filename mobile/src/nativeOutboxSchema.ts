@@ -20,6 +20,7 @@ export function initializeNativeOutbox(db: {
       if (!db.getAllSync<{name:string}>('PRAGMA table_info(outbox)').some(column => column.name === 'rejected')) throw error;
     }
   }
+  db.execSync('CREATE TABLE IF NOT EXISTS outbox_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)');
   db.execSync('CREATE INDEX IF NOT EXISTS outbox_pending_location ON outbox(kind,rejected,created_at)');
 }
 

@@ -24,6 +24,13 @@ export async function setToken(token: string | null): Promise<void> {
     else await SecureStore.deleteItemAsync(TOKEN_KEY);
   } catch { /* a lost session is recoverable by signing in again */ }
 }
+/** Do not erase a newer session installed by another browser tab. */
+export async function clearTokenIfMatches(expected: string | null): Promise<void> {
+  try {
+    if (web) { if (localStorage.getItem(TOKEN_KEY) === expected) localStorage.removeItem(TOKEN_KEY); return; }
+    if (await SecureStore.getItemAsync(TOKEN_KEY) === expected) await SecureStore.deleteItemAsync(TOKEN_KEY);
+  } catch { /* identity cleanup is best effort */ }
+}
 export async function getConsentAt(): Promise<number | null> {
   try {
     const raw = web ? localStorage.getItem(CONSENT_KEY) : await SecureStore.getItemAsync(CONSENT_KEY);
@@ -39,12 +46,12 @@ export async function setConsentAt(value: number | null): Promise<void> {
 }
 
 async function getPrivateString(key: string): Promise<string | null> {
-  try { return web ? localStorage.getItem(key) : await SecureStore.getItemAsync(key); }
+  try { return web ? (key === ACTIVE_USER_KEY ? sessionStorage.getItem(key) : localStorage.getItem(key)) : await SecureStore.getItemAsync(key); }
   catch { return null; }
 }
 async function setPrivateString(key: string, value: string | null): Promise<void> {
   try {
-    if (web) { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); return; }
+    if (web) { const storage = key === ACTIVE_USER_KEY ? sessionStorage : localStorage; if (value === null) storage.removeItem(key); else storage.setItem(key, value); return; }
     if (value === null) await SecureStore.deleteItemAsync(key);
     else await SecureStore.setItemAsync(key, value);
   } catch { /* local identity hints are recoverable by signing in again */ }
@@ -65,11 +72,11 @@ export const setGpsSaveWarning = (value: string | null) => setPrivateString(GPS_
  * the active shift. Used by logout and by account deletion (the store-mandated path).
  */
 export async function clearDeviceData(): Promise<void> {
-  await Promise.all([setToken(null), setActiveShift(null), setConsentAt(null), setActiveUserId(null)]);
+  await Promise.all([setActiveShift(null), setConsentAt(null), setActiveUserId(null)]);
 }
 
 export async function getActiveShift(): Promise<string | null> {
-  try { return web ? localStorage.getItem(SHIFT_KEY) : await SecureStore.getItemAsync(SHIFT_KEY); }
+  try { return web ? sessionStorage.getItem(SHIFT_KEY) : await SecureStore.getItemAsync(SHIFT_KEY); }
   catch { return null; }
 }
 export async function setActiveShift(id: string | null): Promise<void> {

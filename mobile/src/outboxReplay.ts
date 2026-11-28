@@ -25,7 +25,12 @@ export async function replayOutboxActions(
 ): Promise<OutboxReplayResult> {
   let sent = 0;
   let notice: string | undefined;
+  // Pre-populate before replay: device clock changes can put a dependent action before its
+  // check-in in createdAt order. Only release the dependency after the check-in is confirmed.
   const checkInsToRetry = new Set<string>();
+  for (const item of items) if (item.kind === 'visit-checkin') {
+    try { const value = JSON.parse(item.payload); if (typeof value?.id === 'string' && value.id.trim()) checkInsToRetry.add(value.id); } catch { /* handled below */ }
+  }
   // If any check-in cannot be identified, no visit-linked action is safe to send, even
   // when it appears earlier in the queue. Keep unrelated reports and orders moving.
   const unknownCheckIn = items.some(item => {
@@ -84,6 +89,7 @@ export async function replayOutboxActions(
         continue;
       }
       await queue.remove(item.key);
+      if (item.kind === 'visit-checkin') checkInsToRetry.delete((payload as QueuedCheckIn).id);
       sent++;
     } catch (error) {
       const status = (error as { status?: number }).status ?? 0;

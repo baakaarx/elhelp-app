@@ -1,11 +1,11 @@
-import { checkInVisit, checkOutVisit, createOrder, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
+import { verifiedOwnerToken, checkInVisit, checkOutVisit, createOrder, pushLocations, sendDailyReport, sendReport, type CheckOutBody } from './api';
 import { createQueue, type Outbox } from './queue';
 import { replayLocationOutbox } from './locationQueue';
 import { replayOutboxActions } from './outboxReplay';
 import { outboxOwnership } from './outboxOwnership';
 import { createOutboxRunner } from './outboxRunner';
 import { deliverOrderSafely, type OrderDelivery } from './orderDelivery';
-import { getActiveUserId, getOutboxOwner, getGpsSaveWarning, setGpsSaveWarning, setActiveUserId, setOutboxOwner } from './storage';
+import { getActiveUserId, getOutboxOwner, getGpsSaveWarning, setGpsSaveWarning, setActiveUserId } from './storage';
 import type { DailyReportInput, GeoPoint, OutboxItem, ReportInput, VisitInput } from './types';
 
 let queuePromise: Promise<Outbox> | null = null;
@@ -20,8 +20,7 @@ const outbox = () => (queuePromise ??= createQueue());
 export async function activateOutboxUser(userId: string): Promise<void> {
   activeUserId = userId;
   await setActiveUserId(userId);
-  const queue = await outbox();
-  if (await queue.count() === 0) await setOutboxOwner(userId);
+  await outbox();
 }
 export async function deactivateOutboxUser(): Promise<void> {
   activeUserId = null;
@@ -35,17 +34,7 @@ async function addOutboxItem(kind: OutboxItem['kind'], payload: unknown, request
   const queue = await outbox();
   const ownerId = requestedOwnerId ?? await ownerForCurrentSession();
   if (!ownerId) throw new Error('انتهت الجلسة؛ سجّل الدخول من جديد قبل حفظ بيانات للمزامنة.');
-  const count = await queue.count();
-  const savedOwner = await getOutboxOwner();
-  const ownership = outboxOwnership(savedOwner, ownerId, count);
-  if (!ownership.allowed) {
-    throw new Error(`${ownership.notice || 'لا يمكن إضافة البيانات إلى قائمة المزامنة الحالية.'} لم يُحفظ الطلب الجديد.`);
-  }
-  if (count === 0) {
-    await setOutboxOwner(ownerId);
-    if (await getOutboxOwner() !== ownerId) throw new Error('تعذر تسجيل ملكية البيانات المحفوظة على هذا الهاتف؛ لم نحفظ الطلب.');
-  }
-  await queue.add(kind, payload);
+  await queue.addOwned(kind, payload, ownerId, await getOutboxOwner());
 }
 
 // Keep a warning even after space becomes available: the failed fix cannot be reconstructed.
@@ -78,18 +67,33 @@ export async function enqueueOrder(order: import('./types').OrderInput & { recor
   await addOutboxItem('order', order, userId);
 }
 
-/** Clear only after the engineer confirms pending work should be discarded. */
-export async function clearOutbox(): Promise<void> {
-  activeUserId = null;
-  await (await outbox()).clear();
-  await Promise.all([setOutboxOwner(null), setActiveUserId(null)]);
+/** Account erasure must never clear a different account's pending work. */
+export async function clearOutboxForDeletedUser(userId: string): Promise<boolean> {
+  return (await outbox()).clearOwned(userId, await getOutboxOwner());
 }
 
 /** Fast local ownership check used before opening or resuming a shift; it does no network work. */
 export async function outboxOwnerStatus(userId: string | null): Promise<{ blockedByOwner: boolean; notice?: string }> {
   const queue = await outbox();
-  const ownership = outboxOwnership(await getOutboxOwner(), userId, await queue.count());
+  const ownership = outboxOwnership(await queue.owner(await getOutboxOwner()), userId, await queue.count());
   return ownership.allowed ? { blockedByOwner: false } : { blockedByOwner: true, notice: ownership.notice };
+}
+
+/** Local visits remain actionable until their start and result have reached the server. */
+export async function queuedVisitState(userId: string): Promise<{ starts: Array<VisitInput & {recordedAt:number}>; finished: string[] }> {
+  const queue = await outbox();
+  const snapshot = await queue.snapshot(await getOutboxOwner(), 0);
+  if (!outboxOwnership(snapshot.owner, userId, snapshot.count).allowed) return { starts: [], finished: [] };
+  const items = snapshot.items;
+  const starts: Array<VisitInput & {recordedAt:number}> = [], finished: string[] = [];
+  for (const item of items) {
+    try {
+      const value = JSON.parse(item.payload);
+      if (item.kind === 'visit-checkin' && value && typeof value.id === 'string' && typeof value.customerId === 'string' && value.location && typeof value.recordedAt === 'number') starts.push(value);
+      if (item.kind === 'visit-checkout' && typeof value?.visitId === 'string') finished.push(value.visitId);
+    } catch { /* replay reports the corrupt row and leaves it untouched */ }
+  }
+  return { starts, finished };
 }
 
 /**
@@ -115,10 +119,16 @@ export function sendOrderWithOutbox(order: import('./types').OrderInput, userId?
       },
       send: async payload => {
         // A visit created offline needs to reach the server before an order referencing it.
-        if (payload.visitId && (await queue.listForReplay(0)).some(item => item.kind === 'visit-checkin' && item.key === payload.visitId)) {
+        if (payload.visitId && (await queue.listForReplay(0)).some(item => {
+          if (item.kind !== 'visit-checkin') return false;
+          try { const value = JSON.parse(item.payload); return !value || typeof value.id !== 'string' || !value.id.trim() || value.id === payload.visitId; } catch { return true; }
+        })) {
           throw Object.assign(new Error('الزيارة لم تتزامن بعد'), { status: 0 });
         }
-        return createOrder(payload);
+        const owner = userId ?? await ownerForCurrentSession();
+        if (!owner) throw Object.assign(new Error('سجّل الدخول بالحساب صاحب الطلبية.'), { status: 401 });
+        const token = await verifiedOwnerToken(owner);
+        return createOrder(payload, token);
       },
       remove: id => queue.remove(id),
     });
@@ -132,33 +142,34 @@ export function flushOutbox(userId?: string, options: { retryRejected?: boolean 
 
 async function flushOnce(requestedUserId?: string, retryRejected = false): Promise<FlushResult> {
   const queue = await outbox();
-  const pendingBefore = await queue.count();
+  const snapshot = await queue.snapshot(await getOutboxOwner(), 200, retryRejected);
+  const pendingBefore = snapshot.count;
   const userId = requestedUserId ?? await ownerForCurrentSession();
   if (pendingBefore === 0) {
-    if (userId) await setOutboxOwner(userId);
     return { sent: 0, pending: 0, pendingVisits: 0, pendingOrders: 0 };
   }
-  const savedOwner = await getOutboxOwner();
+  const savedOwner = snapshot.owner;
   const ownership = outboxOwnership(savedOwner, userId, pendingBefore);
   if (!ownership.allowed) {
     const pendingVisits = await queue.count('visit-checkin') + await queue.count('visit-checkout');
     const pendingOrders = await queue.count('order');
     return { sent: 0, pending: pendingBefore, pendingVisits, pendingOrders, notice: ownership.notice, blockedByOwner: true };
   }
-  const items = await queue.listForReplay(200, retryRejected);
+  const items = snapshot.items;
+  const token = await verifiedOwnerToken(userId!);
   const replay = await replayOutboxActions(items, queue, {
-    checkIn: checkInVisit,
-    checkOut: checkOutVisit,
-    report: sendReport,
-    dailyReport: sendDailyReport,
-    createOrder,
+    checkIn: value => checkInVisit(value, token),
+    checkOut: (id, value) => checkOutVisit(id, value, token),
+    report: value => sendReport(value, token),
+    dailyReport: value => sendDailyReport(value, token),
+    createOrder: value => createOrder(value, token),
   }, { retryRejected });
   let sent = replay.sent;
   let notice = replay.notice;
   // Even old fixes may belong to a completed shift: let the server verify each one rather than
   // guessing from its age. Rejected points stay saved and do not starve newer points.
   try {
-    sent += await replayLocationOutbox(items, queue, pushLocations);
+    sent += await replayLocationOutbox(items, queue, points => pushLocations(points, token));
   } catch (error) {
     // The clock is the engineer's to fix, and every fix in the queue is still good.
     if ((error as { code?: string }).code !== 'CLOCK_SKEW') throw error;
@@ -173,6 +184,5 @@ async function flushOnce(requestedUserId?: string, retryRejected = false): Promi
   const pending = await queue.count();
   const pendingVisits = await queue.count('visit-checkin') + await queue.count('visit-checkout');
   const pendingOrders = await queue.count('order');
-  if (pending === 0) await setOutboxOwner(userId);
   return notice ? { sent, pending, pendingVisits, pendingOrders, notice } : { sent, pending, pendingVisits, pendingOrders };
 }

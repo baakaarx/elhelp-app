@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { myCustomers, myProducts, mySummary, myVisits, shiftState, startShift, stopShift, checkInVisit, checkOutVisit } from './api';
-import { sendOrderWithOutbox, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus, hasGpsSaveFailure, acknowledgeGpsSaveFailure } from './reports';
+import { sendOrderWithOutbox, enqueueVisitCheckIn, enqueueVisitCheckOut, flushOutbox, outboxOwnerStatus, queuedVisitState, hasGpsSaveFailure, acknowledgeGpsSaveFailure } from './reports';
 import { hasBackgroundPermission, hasForegroundPermission, isBackgroundTracking, requestPermissions, startTracking, stopTracking } from './tracking';
 import { captureOnce, locationIssueMessage } from './location';
 import { confirmShiftState } from './shiftReconciliation';
@@ -20,6 +20,7 @@ export interface CheckOutInput {
 export interface FieldBundle {
   summary: RepSummary | null;
   visits: Visit[];
+  queuedVisits: { starts: Array<VisitInput & {recordedAt:number}>; finished: string[] };
   pending: number;
   loading: boolean;
   busy: boolean;
@@ -84,6 +85,7 @@ const BACKGROUND_NOTICE = 'تتبع الخلفية مش شغال — الموق�
 export function useField(user: User | null, onSessionExpired: () => void): FieldBundle {
   const [summary, setSummary] = useState<RepSummary | null>(null);
   const [visits, setVisits] = useState<Visit[]>([]);
+  const [queuedVisits, setQueuedVisits] = useState<{ starts: Array<VisitInput & {recordedAt:number}>; finished: string[] }>({starts:[],finished:[]});
   const [pending, setPending] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -124,6 +126,11 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     productsRef.current = next;
     setProducts(next);
   }, []);
+  const refreshQueuedVisits = useCallback(async () => {
+    if (!user?.id) return;
+    const value = await queuedVisitState(user.id);
+    if (mounted.current && currentUserId.current === user.id) setQueuedVisits(value);
+  }, [user?.id]);
   const pendingVisitNotice = (visits: number, orders: number) => [
     visits > 0 ? `هناك ${visits} زيارة محفوظة على الهاتف ولم نتأكد من وصولها للسيرفر بعد.` : '',
     orders > 0 ? `هناك ${orders} طلبية محفوظة على الهاتف ولم نتأكد من وصولها للمكتب بعد.` : '',
@@ -238,13 +245,14 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
 
   useEffect(() => {
     if (!user) {
-      setTrackingActive(false); setSummary(null); setVisits([]); setError(''); setGpsSaveNotice('');
+      setTrackingActive(false); setSummary(null); setVisits([]); setQueuedVisits({starts:[],finished:[]}); setError(''); setGpsSaveNotice('');
       writeCustomers([]); listOwnerRef.current = null;
       writeProducts([]); productsOwnerRef.current = null;
       return;
     }
     void refresh();
     void checkGpsSaveNotice();
+    void refreshQueuedVisits().catch(() => undefined);
     const timer = setInterval(() => {
       if (syncing.current) return;
       syncing.current = true;
@@ -261,6 +269,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
           setSyncNotice(result.notice ?? '');
           setOfflineNotice(pendingVisitNotice(result.pendingVisits, result.pendingOrders));
         }
+        await refreshQueuedVisits().catch(() => undefined);
         // If the OS killed the background service mid-shift, the engineer must know now —
         // not when the manager reports a stale signal.
         if (trackingActiveRef.current && Platform.OS !== 'web') {
@@ -271,6 +280,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       })().catch(() => undefined).finally(() => { syncing.current = false; });
     }, 15000);
     void flushOutbox(user.id).then(result => {
+      void refreshQueuedVisits().catch(() => undefined);
       if (mounted.current) {
         setPending(result.pending);
         setSyncNotice(result.notice ?? '');
@@ -278,7 +288,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       }
     }).catch(() => { if (mounted.current) setSyncNotice('تعذر قراءة أو مزامنة البيانات المحفوظة على الهاتف. حالة المزامنة غير مؤكدة؛ لا تمسح بيانات التطبيق واطلب المساعدة.'); });
     return () => clearInterval(timer);
-  }, [user, refresh, checkGpsSaveNotice]);
+  }, [user, refresh, checkGpsSaveNotice, refreshQueuedVisits]);
 
   /**
    * Restart the position watcher for a shift that is already open.
@@ -382,8 +392,9 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
     // is already closed (blocking the engineer for nothing) or miss one he has just opened, and
     // then the server closes it with no result. Ask the server every time, and refuse only on a
     // positive answer — a failed request must not trap him in the field.
+    const local = user?.id ? await queuedVisitState(user.id) : { starts: [], finished: [] };
     const fresh = await myVisits().catch(() => null);
-    if (fresh?.visits.some(visit => visit.status === 'open')) {
+    if (local.starts.length || local.finished.length || fresh?.visits.some(visit => visit.status === 'open')) {
       const message = 'فيه زيارة مفتوحة. سجّل نتيجتها من تبويب «الزيارات» الأول، وبعدها أنهِ الوردية.';
       setError(message);
       throw new Error(message);
@@ -409,13 +420,17 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const checkIn = useCallback(async (input: VisitInput) => {
     setBusy(true); setError('');
     try {
+      const local = user?.id ? await queuedVisitState(user.id) : {starts:[], finished:[]};
+      if (local.starts.length || local.finished.length) throw new Error('هناك زيارة محفوظة تنتظر المزامنة؛ أكملها أو زامنها قبل بدء زيارة أخرى.');
       try {
         await checkInVisit(input);
       } catch (e) {
         if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckIn({ ...input, recordedAt: Date.now() }, user?.id);
+        await refreshQueuedVisits();
         setOfflineNotice('الزيارة محفوظة على الهاتف ولم نتأكد من وصولها. سيحاول التطبيق مزامنتها أثناء فتحه؛ لا تكررها.');
         const result = await flushOutbox(user?.id).catch(() => null);
+        await refreshQueuedVisits().catch(() => undefined);
         if (result && mounted.current) {
           setPending(result.pending);
           setSyncNotice(result.notice ?? '');
@@ -426,7 +441,7 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, user?.id]);
+  }, [refresh, user?.id, refreshQueuedVisits]);
 
   /**
    * An order is a quantities-only record: no GPS, no shift, no open-visit lock — the office priced
@@ -457,11 +472,24 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
   const checkOut = useCallback(async (id: string, input: CheckOutInput) => {
     setBusy(true); setError('');
     try {
+      const local = user?.id ? await queuedVisitState(user.id) : {starts:[],finished:[]};
+      if (local.finished.includes(id)) throw new Error('نتيجة الزيارة محفوظة بالفعل وتنتظر المزامنة؛ لا تكررها.');
+      if (local.starts.some(v => v.id === id)) {
+        await enqueueVisitCheckOut(id, { ...input, recordedAt: Date.now() }, user?.id);
+        await refreshQueuedVisits();
+        setOfflineNotice('نتيجة الزيارة محفوظة على الهاتف وتنتظر مزامنة بداية الزيارة. لا تكررها.');
+        const result = await flushOutbox(user?.id).catch(() => null);
+        await refreshQueuedVisits().catch(() => undefined);
+        if (result && mounted.current) { setPending(result.pending); setSyncNotice(result.notice ?? ''); }
+        if (result?.pendingVisits === 0) await refresh();
+        return;
+      }
       try {
         await checkOutVisit(id, input);
       } catch (e) {
         if (!shouldQueue(e)) throw e;
         await enqueueVisitCheckOut(id, { ...input, recordedAt: Date.now() }, user?.id);
+        await refreshQueuedVisits();
         setOfflineNotice('نتيجة الزيارة محفوظة على الهاتف ولم نتأكد من وصولها. سيحاول التطبيق مزامنتها أثناء فتحه؛ لا تكررها.');
         const result = await flushOutbox(user?.id).catch(() => null);
         if (result && mounted.current) {
@@ -474,10 +502,10 @@ export function useField(user: User | null, onSessionExpired: () => void): Field
       await refresh();
     } catch (e) { setError((e as Error).message); throw e; }
     finally { setBusy(false); }
-  }, [refresh, user?.id]);
+  }, [refresh, user?.id, refreshQueuedVisits]);
 
   return {
-    summary, visits, pending, loading, busy, trackingActive, syncNotice, gpsSaveNotice, acknowledgeGpsNotice, offlineNotice, backgroundNotice, error,
+    summary, visits, queuedVisits, pending, loading, busy, trackingActive, syncNotice, gpsSaveNotice, acknowledgeGpsNotice, offlineNotice, backgroundNotice, error,
     customers, customersLoading, customersNotice, loadCustomers,
     products, productsLoading, productsNotice, loadProducts,
     clearError: () => setError(''),

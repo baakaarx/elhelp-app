@@ -1198,19 +1198,33 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     let accepted = 0, duplicates = 0;
     const historicalFixes: number[] = [];
-    store.transaction(() => {
+    try { store.transaction(() => {
       for (const p of parsed.data.points) {
+        const requestHash = createHash('sha256').update(JSON.stringify(p)).digest('hex');
+        const existing = store.get(`SELECT l.*, r.request_hash FROM locations l LEFT JOIN location_requests_v1 r
+          ON r.user_id=l.user_id AND r.point_id=l.point_id WHERE l.user_id=? AND l.point_id=?`, res.locals.user.id, p.id);
+        if (existing) {
+          // Old rows lack the original timestamp; accept only an exact stored match, otherwise
+          // retain the point for manual review instead of claiming an unproven duplicate.
+          const same = existing.request_hash ? existing.request_hash === requestHash
+            : existing.shift_id === p.shiftId && existing.lat === p.lat && existing.lng === p.lng
+              && existing.accuracy === p.accuracy && existing.speed === p.speed && existing.heading === p.heading
+              && existing.battery === p.battery && existing.recorded_at === p.recordedAt;
+          if (!same) throw Error('LOCATION_ID_CONFLICT');
+          duplicates++; continue;
+        }
         const recordedAt = stamped(p.recordedAt, shiftCache.get(p.shiftId) as Record<string, any>);
-        const result = store.run(`INSERT OR IGNORE INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.id, res.locals.user.id, p.shiftId, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.battery,
-          recordedAt, now, 'gps');
-        if (result.changes) {
-          accepted++;
-          if (recordedAt < now - 5 * 60000) historicalFixes.push(recordedAt);
-        } else duplicates++;
+        store.run(`INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.id, res.locals.user.id, p.shiftId, p.lat, p.lng, p.accuracy, p.speed, p.heading, p.battery, recordedAt, now, 'gps');
+        store.run('INSERT INTO location_requests_v1(user_id,point_id,request_hash) VALUES(?,?,?)',res.locals.user.id,p.id,requestHash);
+        accepted++;
+        if (recordedAt < now - 5 * 60000) historicalFixes.push(recordedAt);
       }
       store.run('UPDATE users SET last_seen=? WHERE id=?', now, res.locals.user.id);
-    });
+    }); } catch (error) {
+      if ((error as Error).message === 'LOCATION_ID_CONFLICT') { res.status(422).json({error:'معرّف نقطة الموقع مستخدم لبيانات مختلفة أو قديمة لا يمكن تأكيدها. النقطة محفوظة على الهاتف؛ راجع المكتب.',code:'LOCATION_ID_CONFLICT'}); return; }
+      throw error;
+    }
     // Recent fixes cannot belong to a completed cached day, so they only refresh the live view.
     // A delayed offline batch can change an older report: evict each affected calendar day and
     // the short-lived response cache, but do not make every second of a live track rebuild KPIs.
@@ -1884,60 +1898,54 @@ export function createApp(overrides: Partial<Config> = {}) {
   });
 
   app.post('/api/price-tiers', adminOnly, (req, res) => {
-    const parsed = tierFields.extend({ position: z.number().int().min(0).max(99).optional() }).strict().safeParse(req.body ?? {});
+    const parsed = tierFields.strict().safeParse(req.body ?? {});
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'اسم نوع السعر مطلوب.' }); return; }
-    const name = parsed.data.name.trim();
-    if (store.get('SELECT id, active FROM price_tiers WHERE name COLLATE NOCASE=?', name)) {
-      res.status(409).json({ error: `«${name}» موجود في قائمة الأنواع بالفعل.`, code: 'TIER_EXISTS' }); return;
-    }
-    const top = Number(store.get('SELECT COALESCE(MAX(position), -1) AS m FROM price_tiers')?.m ?? -1);
-    const id = randomUUID();
-    store.run('INSERT INTO price_tiers(id,name,position,created_at,updated_at) VALUES (?,?,?,?,?)',
-      id, name, parsed.data.position ?? top + 1, Date.now(), Date.now());
-    store.audit(res.locals.user.id, 'tier.create', { tierId: id, name });
+    const name = parsed.data.name.trim(), id = randomUUID();
+    try {
+      store.transaction(() => {
+        if (store.get('SELECT id FROM price_tiers WHERE name COLLATE NOCASE=?', name)) throw customerGateError(409, `«${name}» موجود في قائمة الأنواع بالفعل.`, 'TIER_EXISTS');
+        const top = Number(store.get('SELECT COALESCE(MAX(position), -1) AS m FROM price_tiers')?.m ?? -1);
+        store.run('INSERT INTO price_tiers(id,name,position,created_at,updated_at) VALUES (?,?,?,?,?)', id, name, parsed.data.position ?? top + 1, Date.now(), Date.now());
+        store.audit(res.locals.user.id, 'tier.create', { tierId: id, name });
+      });
+    } catch (error) { if (sendCustomerGateError(error,res)) return; throw error; }
     res.status(201).json({ tier: asTier(store.get(`${tierSelect} WHERE t.id=?`, id)!) });
   });
 
   app.patch('/api/price-tiers/:id', adminOnly, (req, res) => {
-    const current = store.get('SELECT * FROM price_tiers WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
-    if (!current) { res.status(404).json({ error: 'نوع السعر غير موجود.' }); return; }
     const parsed = tierFields.partial().extend({ active: z.boolean().optional() }).strict().safeParse(req.body ?? {});
     if (!parsed.success || Object.keys(parsed.data).length === 0) {
-      res.status(400).json({ error: parsed.success ? 'مفيش حاجة تتغير.' : parsed.error.issues[0]?.message || 'بيانات غير صحيحة.' });
-      return;
+      res.status(400).json({ error: parsed.success ? 'مفيش حاجة تتغير.' : parsed.error.issues[0]?.message || 'بيانات غير صحيحة.' }); return;
     }
-    const name = parsed.data.name === undefined ? current.name : parsed.data.name.trim();
-    if (name !== current.name && store.get('SELECT id FROM price_tiers WHERE name COLLATE NOCASE=? AND id<>?', name, current.id)) {
-      res.status(409).json({ error: `«${name}» موجود بالفعل كنوع تاني في القائمة.`, code: 'TIER_EXISTS' }); return;
-    }
-    // Stopping the only active type would leave the price list with no column to price anything under.
-    if (parsed.data.active === false) {
-      const activeOthers = Number(store.get('SELECT COUNT(*) AS c FROM price_tiers WHERE active=1 AND id<>?', current.id)?.c || 0);
-      if (!activeOthers) {
-        res.status(409).json({ error: 'ده نوع السعر الوحيد الشغال — الوقف بيسيب القائمة من غير عمود. اعمل واحد تاني الأول.', code: 'LAST_TIER' });
-        return;
-      }
-    }
-    store.run('UPDATE price_tiers SET name=?, position=?, active=?, updated_at=? WHERE id=?',
-      name, parsed.data.position ?? current.position, parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
-      Date.now(), current.id);
-    store.audit(res.locals.user.id, 'tier.update', { tierId: current.id, fields: Object.keys(parsed.data) });
-    res.json({ tier: asTier(store.get(`${tierSelect} WHERE t.id=?`, current.id)!) });
+    const id = String(req.params.id), data = parsed.data;
+    try {
+      store.transaction(() => {
+        const current = store.get('SELECT * FROM price_tiers WHERE id=?', id);
+        if (!current) throw customerGateError(404, 'نوع السعر غير موجود.');
+        const name = data.name === undefined ? current.name : data.name.trim();
+        if (name !== current.name && store.get('SELECT id FROM price_tiers WHERE name COLLATE NOCASE=? AND id<>?', name, id)) throw customerGateError(409, `«${name}» موجود بالفعل كنوع تاني في القائمة.`, 'TIER_EXISTS');
+        if (data.active === false && current.active && !Number(store.get('SELECT COUNT(*) AS c FROM price_tiers WHERE active=1 AND id<>?', id)?.c || 0)) throw customerGateError(409, 'ده نوع السعر الوحيد الشغال — الوقف بيسيب القائمة من غير عمود. اعمل واحد تاني الأول.', 'LAST_TIER');
+        store.run('UPDATE price_tiers SET name=?, position=?, active=?, updated_at=? WHERE id=?', name, data.position ?? current.position, data.active === undefined ? current.active : Number(data.active), Date.now(), id);
+        store.audit(res.locals.user.id, 'tier.update', { tierId: id, fields: Object.keys(data) });
+      });
+    } catch (error) { if (sendCustomerGateError(error,res)) return; throw error; }
+    res.json({ tier: asTier(store.get(`${tierSelect} WHERE t.id=?`, id)!) });
   });
 
   app.delete('/api/price-tiers/:id', adminOnly, (req, res) => {
-    const current = store.get('SELECT * FROM price_tiers WHERE id=?', String(req.params.id)) as Record<string, any> | undefined;
-    if (!current) { res.status(404).json({ error: 'نوع السعر غير موجود.' }); return; }
-    const priced = Number(store.get('SELECT COUNT(*) AS c FROM product_prices WHERE tier_id=?', current.id)?.c || 0);
-    if (priced) {
-      res.status(409).json({ error: `${priced} صنف ليه سعر تحت «${current.name}» — الحذف يمسح الأسعار دي. وقّف النوع بدل الحذف.`, code: 'TIER_HAS_PRICES' });
-      return;
-    }
-    // Customers keep being quoted at a rate that no longer exists, so the link clears and the answer
-    // says how many men the office now has to price by hand.
-    const unquoted = Number(store.get('SELECT COUNT(*) AS c FROM customers WHERE price_tier_id=?', current.id)?.c || 0);
-    store.run('DELETE FROM price_tiers WHERE id=?', current.id);
-    store.audit(res.locals.user.id, 'tier.delete', { name: current.name, unquoted });
+    const id = String(req.params.id); let unquoted = 0;
+    try {
+      store.transaction(() => {
+        const current = store.get('SELECT * FROM price_tiers WHERE id=?', id);
+        if (!current) throw customerGateError(404, 'نوع السعر غير موجود.');
+        const priced = Number(store.get('SELECT COUNT(*) AS c FROM product_prices WHERE tier_id=?', id)?.c || 0);
+        if (priced) throw customerGateError(409, `${priced} صنف ليه سعر تحت «${current.name}» — الحذف يمسح الأسعار دي. وقّف النوع بدل الحذف.`, 'TIER_HAS_PRICES');
+        if (current.active && !Number(store.get('SELECT COUNT(*) AS c FROM price_tiers WHERE active=1 AND id<>?', id)?.c || 0)) throw customerGateError(409, 'ده نوع السعر الوحيد الشغال — اعمل نوع تاني قبل الحذف.', 'LAST_TIER');
+        unquoted = Number(store.get('SELECT COUNT(*) AS c FROM customers WHERE price_tier_id=?', id)?.c || 0);
+        store.run('DELETE FROM price_tiers WHERE id=?', id);
+        store.audit(res.locals.user.id, 'tier.delete', { name: current.name, unquoted });
+      });
+    } catch (error) { if (sendCustomerGateError(error,res)) return; throw error; }
     res.json({ ok: true, unquoted });
   });
 
