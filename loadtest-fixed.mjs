@@ -262,7 +262,7 @@ async function repLoop(rep, myCustomers, products, deadline) {
   await call('rep.shiftStop', 'POST', '/api/shifts/stop', rep.token, {});
 }
 
-async function salesLoop(staff, customerIds, deadline) {
+async function salesLoop(staff, customerIds, warehouses, deadline) {
   while (Date.now() < deadline) {
     const options = await call('sales.options', 'GET', '/api/sales/options', staff.token);
     const salesOverview = await call('sales.overview', 'GET', '/api/sales/overview', staff.token);
@@ -271,7 +271,9 @@ async function salesLoop(staff, customerIds, deadline) {
     const pendingOrders = (options.body?.orders || []).filter(order => customerIds.has(order.customerId));
     if (pendingOrders.length && Math.random() < 0.5) {
       const order = pick(pendingOrders);
-      const warehouse = pick(options.body.warehouses || []);
+      // Only the warehouses seeded by this run have opening stock for its new products.
+      // Older runs may have left warehouses in the same test database.
+      const warehouse = pick(warehouses);
       if (warehouse) {
         const lines = (order.lines?.length ? order.lines : []).map((l) => ({ productId: l.productId, qty: l.qty, price: (1000 + Math.floor(Math.random() * 4001)) / 100 }));
         if (lines.length) {
@@ -317,7 +319,7 @@ async function warehouseLoop(staff, warehouses, products, deadline) {
   const deadline = Date.now() + DURATION_SEC * 1000;
   await Promise.all([
     ...reps.map((rep) => repLoop(rep, customersByRep.get(rep.email) || [], products, deadline)),
-    ...salesStaff.map((s, index) => salesLoop(s, new Set(allCustomers.filter((_, i) => i % salesStaff.length === index).map(c => c.id)), deadline)),
+    ...salesStaff.map((s, index) => salesLoop(s, new Set(allCustomers.filter((_, i) => i % salesStaff.length === index).map(c => c.id)), warehouses, deadline)),
     ...warehouseStaff.map((w) => warehouseLoop(w, warehouses, products, deadline)),
   ]);
 
