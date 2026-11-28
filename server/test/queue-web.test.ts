@@ -219,3 +219,26 @@ test('missing browser locks fails closed without altering or clearing pending da
     assert.equal(store.get(KEY),before);
   } finally {Object.defineProperty(globalThis,'navigator',{configurable:true,value:original});}
 });
+
+test('concurrent accounts cannot claim and mix an empty outbox', async () => {
+  store.clear();
+  const a = await createQueue(), b = await createQueue();
+  const results = await Promise.allSettled([
+    a.addOwned('report', {id:'owner-a'}, 'A', null),
+    b.addOwned('report', {id:'owner-b'}, 'B', null),
+  ]);
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  const snapshot = await a.snapshot(null);
+  assert.equal(snapshot.count, 1);
+  assert.equal(snapshot.owner, results[0].status === 'fulfilled' ? 'A' : 'B');
+  assert.equal(await b.clearOwned(snapshot.owner === 'A' ? 'B' : 'A', null), false);
+  assert.equal((await a.snapshot(null)).count, 1);
+});
+
+test('unowned legacy work is not silently adopted or overwritten', async () => {
+  store.clear();
+  const q = await createQueue();
+  await q.add('report', {id:'old'});
+  await assert.rejects(q.addOwned('report', {id:'new'}, 'A', null));
+  assert.equal((await q.snapshot(null)).count, 1);
+});

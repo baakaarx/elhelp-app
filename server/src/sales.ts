@@ -13,7 +13,7 @@ const cents = (n: number) => Math.round(n * 100);
 const milli = (n: number) => Math.round(n * 1000);
 const exact = (n: number, scale: number) => hasDecimalPrecision(n, scale === 100 ? 2 : 3);
 const bodySale = z.object({ id, customerId:entityId, warehouseId:entityId, orderId:entityId.optional(), repId:entityId.nullable().optional(), paid:money,
-  lines:z.array(z.object({productId:entityId,qty:quantity,price:money}).strict()).max(100).default([]) }).strict();
+  lines:z.array(z.object({productId:entityId,qty:quantity,price:money,productSnapshot:z.object({name:z.string(),unit:z.string(),unitSize:z.string()}).strict().optional()}).strict()).max(100).default([]) }).strict();
 const bodyEntry = z.object({id,customerId:entityId,amount:money}).strict();
 const correctionBody=z.object({id,reason:z.string().trim().min(5).max(500),balancePiasters:z.number().int().safe(),revision:z.number().int().nonnegative(),
   lines:z.array(z.object({lineId:entityId,correctedMilli:z.number().int().nonnegative().max(100_000_000),returnedMilli:z.number().int().nonnegative().max(100_000_000),damagedMilli:z.number().int().nonnegative().max(100_000_000).optional(),stockKind:z.enum(['returned','error']).nullable()}).strict()).max(100),
@@ -53,6 +53,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
       CUSTOMER:'اختار عميل شغال من القائمة.', WAREHOUSE:'اختار مخزن صحيح.', ORDER:'الطلبية مش مرسلة للمكتب أو تخص عميل تاني.', ORDER_CHANGED:'الطلبية اتغيرت. حدّث البيانات وراجع الفاتورة من جديد.', ORDER_LINES:'اختار أصناف من الطلبية واكتب الكمية الفعلية وسعر المكتب.',
       ORDER_SOLD:'الطلبية دي اتسجّلت لها فاتورة قبل كده.', REP:'المهندس المختار غير موجود أو موقوف.', ORDER_TOTAL:'الطلبية القديمة فيها اختلاف في الإجمالي. افتحها من شاشة الفاتورة وراجع الكميات والأسعار.', PRODUCT:'الصنف غير موجود أو موقوف.',
       DUPLICATE_PRODUCT:'اختار كل صنف مرة واحدة.', PRECISION:'الكمية تقبل ٣ أرقام عشرية والسعر رقمين عشريين.',
+      PRODUCT_CHANGED:'بيانات الصنف اتغيرت. الفاتورة لم تُسجّل؛ حدّث البيانات وراجعها قبل البيع.',
       ORDER_PRODUCT_CHANGED:'وحدة أو عبوة صنف في الطلبية تختلف عن الصنف الحالي في المخزن. الفاتورة لم تُسجّل؛ راجع المكتب قبل البيع.',
       NO_OPENING:'خلّي المخازن تسجّل الرصيد الافتتاحي للصنف الأول.', SHORT:'الكمية المطلوبة أكبر من رصيد المخزن.',
       PAID:'المبلغ المدفوع أكبر من إجمالي الفاتورة.', BIG:'إجمالي الفاتورة أكبر من المسموح.',
@@ -222,7 +223,7 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
     if(!parsed.success || (type!=='sale'&&type!=='receipt')){res.status(400).json({error:'راجع بيانات التصحيح وسببه.'});return;}
     const data=parsed.data,actor=res.locals.user,request=JSON.stringify({type,targetId,...data});
     const old=duplicate('office_corrections_v1',data.id,request,actor.id);
-    if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true,requestId:data.id}:{error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;}
     let replay=false;
     try {store.transaction(()=>{
       const locked=duplicate('office_corrections_v1',data.id,request,actor.id);
@@ -269,14 +270,14 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
       }
       store.audit(actor.id,'sales.correction',{correctionId:data.id,type,targetId});
     });}catch(e){const code=(e as Error).message;const errors:Record<string,string>={REQUEST_CONFLICT:'رقم العملية مستخدم لبيانات مختلفة.',NOT_FOUND:'العملية غير موجودة.',STALE:'الحساب أو التصحيحات اتغيرت؛ افتح العملية وراجعها من جديد.',LINES:'راجع أصناف التصحيح.',EMPTY:'حدد تغييرًا واحدًا على الأقل.',CASH:'المبلغ أكبر من المدفوع المتبقي في العملية.',QUANTITY:'الكمية أكبر من المسموح أو البضاعة المرتجعة أكبر من الكمية المصححة.',STOCK:'تعذر إضافة المرتجع للمخزن؛ راجع المسؤول.'};if(errors[code]){res.status(409).json({error:errors[code],code});return;}throw e;}
-    if(replay){res.json({ok:true,duplicate:true});return;}
-    res.status(201).json({ok:true,duplicate:false});
+    if(replay){res.json({ok:true,duplicate:true,requestId:data.id});return;}
+    res.status(201).json({ok:true,duplicate:false,requestId:data.id});
   });
   router.post('/', (req,res) => {
     const parsed=bodySale.safeParse(req.body); if (!parsed.success) {res.status(400).json({error:'راجع العميل والمخزن والأصناف والمبالغ.'});return;}
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user;
     const old=duplicate('office_sales_v1',data.id,request,actor.id);
-    if (old) {res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    if (old) {res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true,requestId:data.id}:{error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;}
     let replay=false;
     try {
       store.transaction(()=>{
@@ -326,6 +327,11 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
           lines=data.lines.map(line=>{const product=store.get('SELECT id,name,unit,unit_size AS unitSize,active FROM products WHERE id=?',line.productId);if(!product?.active)throw Error('PRODUCT');return {...line,name:String(product.name),unit:String(product.unit),unitSize:String(product.unitSize)};});
         }
         if (!lines.length || new Set(lines.map(l=>l.productId)).size!==lines.length) throw Error('DUPLICATE_PRODUCT');
+        for (const line of data.lines) if (line.productSnapshot) {
+          const current = store.get('SELECT name,unit,unit_size AS unitSize FROM products WHERE id=?', line.productId);
+          const expected = line.productSnapshot;
+          if (!current || current.name !== expected.name || current.unit !== expected.unit || current.unitSize !== expected.unitSize) throw Error('PRODUCT_CHANGED');
+        }
         // A historical order snapshots its pack. Stock is keyed by product id, so never deduct
         // a current 5-litre pack for an order and invoice that say 1 litre.
         if (data.orderId) for (const line of lines) {
@@ -357,15 +363,15 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
         if(data.orderId) store.run('INSERT INTO order_invoice_notices_v1(order_id,user_id,created_at) SELECT id,user_id,? FROM orders WHERE id=?',now,data.orderId);
         store.audit(actor.id,'sales.confirm',{saleId:data.id,customerId:data.customerId,orderId:data.orderId??null});
       });
-    } catch(e) { const code=(e as Error).message; if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;} if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','ORDER_PRODUCT_CHANGED','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
-    if(replay){res.json({ok:true,duplicate:true});return;}
+    } catch(e) { const code=(e as Error).message; if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;} if (['CUSTOMER','WAREHOUSE','ORDER','ORDER_CHANGED','ORDER_LINES','ORDER_SOLD','ORDER_TOTAL','ORDER_PRODUCT_CHANGED','PRODUCT_CHANGED','REP','PRODUCT','DUPLICATE_PRODUCT','PRECISION','NO_OPENING','SHORT','PAID','BIG'].includes(code)) {res.status(409).json({error:fail(code),code});return;} throw e; }
+    if(replay){res.json({ok:true,duplicate:true,requestId:data.id});return;}
     if(data.orderId){try{onOrderSold(data.orderId);}catch(e){console.error('[sales] order notification failed',e);}}
-    res.status(201).json({ok:true,duplicate:false});
+    res.status(201).json({ok:true,duplicate:false,requestId:data.id});
   });
   router.post('/opening', (req,res) => {
     const parsed=bodyEntry.safeParse(req.body);if(!parsed.success){res.status(400).json({error:'اكتب المديونية بالجنيه والقرش.'});return;}
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user, old=duplicate('office_debts_v1',data.id,request,actor.id);
-    if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true,requestId:data.id}:{error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;}
     if(!exact(data.amount,100)){res.status(400).json({error:'اكتب المديونية بالجنيه والقرش.'});return;}
     let replay=false;
     try { store.transaction(()=>{
@@ -375,14 +381,14 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
       if(store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=?',data.customerId))throw Error('OPENING');
       store.run('INSERT INTO office_debts_v1 VALUES(?,?,?,?,?,?,?)',data.id,data.customerId,cents(data.amount),actor.id,actor.name,request,Date.now());
       store.audit(actor.id,'sales.opening',{customerId:data.customerId});
-    }); } catch(e) {const code=(e as Error).message;if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}if(['CUSTOMER','OPENING'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
-    if(replay){res.json({ok:true,duplicate:true});return;}
-    res.status(201).json({ok:true,duplicate:false});
+    }); } catch(e) {const code=(e as Error).message;if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;}if(['CUSTOMER','OPENING'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
+    if(replay){res.json({ok:true,duplicate:true,requestId:data.id});return;}
+    res.status(201).json({ok:true,duplicate:false,requestId:data.id});
   });
   router.post('/receipts', (req,res) => {
     const parsed=bodyEntry.safeParse(req.body);if(!parsed.success){res.status(400).json({error:'اكتب مبلغ الدفعة بالجنيه والقرش.'});return;}
     const data=parsed.data, request=JSON.stringify(data), actor=res.locals.user, old=duplicate('office_receipts_v1',data.id,request,actor.id);
-    if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true}:{error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+    if(old){res.status(old===1?200:409).json(old===1?{ok:true,duplicate:true,requestId:data.id}:{error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;}
     if(!exact(data.amount,100)||data.amount<=0){res.status(400).json({error:'اكتب مبلغ الدفعة بالجنيه والقرش.'});return;}
     let replay=false;
     try {store.transaction(()=>{
@@ -392,9 +398,9 @@ export function createSalesRouter(store: Store, timezone:string, onOrderSold:(or
       if(cents(data.amount)>balance(data.customerId))throw Error('PAYMENT');
       store.run('INSERT INTO office_receipts_v1 VALUES(?,?,?,?,?,?,?)',data.id,data.customerId,cents(data.amount),actor.id,actor.name,request,Date.now());
       store.audit(actor.id,'sales.receipt',{receiptId:data.id,customerId:data.customerId});
-    });} catch(e){const code=(e as Error).message;if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}if(['CUSTOMER','PAYMENT'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
-    if(replay){res.json({ok:true,duplicate:true});return;}
-    res.status(201).json({ok:true,duplicate:false});
+    });} catch(e){const code=(e as Error).message;if(code==='REQUEST_CONFLICT'){res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;}if(['CUSTOMER','PAYMENT'].includes(code)){res.status(409).json({error:fail(code),code});return;}throw e;}
+    if(replay){res.json({ok:true,duplicate:true,requestId:data.id});return;}
+    res.status(201).json({ok:true,duplicate:false,requestId:data.id});
   });
   return router;
 }

@@ -48,7 +48,7 @@ export default function Sales({timezone,userId,ordersVersion,requestedOrderId,on
   const [needsRefresh,setNeedsRefresh]=useState(false);
   const [review,setReview]=useState<'sale'|'receipt'|'opening'|null>(null);
   const handleStockFailure=(e:unknown)=>{
-    if(!(e instanceof ApiError) || !['SHORT','NO_OPENING'].includes(e.code ?? '')) return false;
+    if(!(e instanceof ApiError) || !['SHORT','NO_OPENING','PRODUCT_CHANGED','ORDER_PRODUCT_CHANGED'].includes(e.code ?? '')) return false;
     setReview(null);setNeedsRefresh(true);
     showError(`${e.message} الفاتورة لم تُحفظ ولم يُخصم أي صنف. حدّث الأرصدة ثم راجع الفاتورة مرة أخرى.`);
     return true;
@@ -117,13 +117,13 @@ export default function Sales({timezone,userId,ordersVersion,requestedOrderId,on
         }
         // A proxy, outdated server or malformed response can answer 200 without confirming the
         // write. Keep the exact request for idempotent retry rather than claiming it was saved.
-        if (!result || typeof result !== 'object' || (result as {ok?:unknown}).ok !== true || typeof (result as {duplicate?:unknown}).duplicate !== 'boolean') {
+        if (!result || typeof result !== 'object' || (result as {ok?:unknown}).ok !== true || typeof (result as {duplicate?:unknown}).duplicate !== 'boolean' || (result as {requestId?:unknown}).requestId !== (operation.body as {id:string}).id) {
           throw new ApiError('تعذر التأكد من حفظ العملية. أعد التأكيد بنفس الطلب ولا تسجلها مرة أخرى.', 0, 'UNCERTAIN_RESPONSE');
         }
         localStorage.removeItem(pendingKey);setPendingRaw(null);
       } catch(e) {
         // Authentication or a lost response might follow an earlier successful commit.
-        if(e instanceof ApiError && e.status>=400 && e.status<500 && e.status!==401 && e.status!==403 && e.status!==408 && e.status!==429) {
+        if(e instanceof ApiError && e.status>=400 && e.status<500 && e.status!==401 && e.status!==403 && e.status!==408 && e.status!==429 && !(e.status===409 && (!e.code || e.code==='REQUEST_CONFLICT'))) {
           localStorage.removeItem(pendingKey);setPendingRaw(null);
         }
         throw e;
@@ -152,7 +152,7 @@ export default function Sales({timezone,userId,ordersVersion,requestedOrderId,on
   async function confirmReview(){if(!review)return;setError('');setMessage('');setBusy(true);
     try {
       if(review==='sale'){
-        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parsePrice(l.price)}))}:{repId:repChoice==='none'?null:repChoice,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parsePrice(l.price)}))})};
+        const body={id:saleRequest.current||(saleRequest.current=crypto.randomUUID()),customerId,warehouseId,paid:paidValue,...(mode==='order'?{orderId,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parsePrice(l.price),...(selectedOrder?.recommendation?{productSnapshot:(({name,unit,unitSize})=>({name,unit,unitSize}))(options!.products.find(p=>p.id===l.productId)!)}:{})}))}:{repId:repChoice==='none'?null:repChoice,lines:lines.map(l=>({productId:l.productId,qty:parse(l.qty),price:parsePrice(l.price),productSnapshot:(({name,unit,unitSize})=>({name,unit,unitSize}))(options!.products.find(p=>p.id===l.productId)!)}))})};
         await sendOperation({path:'/api/sales',body,kind:'sale'});saleRequest.current='';setPaid('');setOrderId('');setLines([emptyLine()]);setShowSale(false);setRepChoice('');setReview(null);await refreshAfter('الفاتورة اتسجلت واتخصمت الكمية من المخزن.');
       } else {
         const ref=review==='receipt'?receiptRequest:openingRequest;

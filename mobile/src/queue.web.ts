@@ -1,8 +1,10 @@
 import { assertSameQueuedAction, outboxKey } from './outboxKey';
+import { outboxOwnership } from './outboxOwnership';
 import type { Outbox } from './queue';
 import type { OutboxItem, OutboxKind } from './types';
 
 const KEY = 'mandoub.outbox';
+const OWNER_KEY = 'mandoub_outbox_owner';
 const READ_ERROR = 'تعذّر قراءة البيانات المعلّقة على هذا الهاتف؛ لم نمسحها. لا تحذف بيانات التطبيق أو المتصفح، واطلب المساعدة قبل المتابعة.';
 const KINDS = new Set<OutboxKind>(['location', 'report', 'daily-report', 'visit-checkin', 'visit-checkout', 'order']);
 
@@ -43,20 +45,40 @@ async function mutate<T>(fn: () => T): Promise<T> {
   return navigator.locks.request('mandoub.outbox.write.v1', { mode: 'exclusive' }, fn);
 }
 
+function append(kind: OutboxKind, payload: unknown, items = read()) {
+  const key = outboxKey(kind, payload), serialized = JSON.stringify(payload);
+  const existing = items.find(item => item.key === key);
+  if (existing) assertSameQueuedAction(existing, kind, serialized);
+  else { items.push({ key, kind, payload: serialized, createdAt: Date.now(), attempts: 0, rejected: false }); write(items); }
+}
+
+function replayItems(items: OutboxItem[], limit: number, includeRejected: boolean) {
+  items.sort((a, b) => a.createdAt - b.createdAt);
+  const points = items.filter(item => item.kind === 'location' && (includeRejected || !item.rejected));
+  if (includeRejected) points.sort((a,b) => a.attempts-b.attempts || a.createdAt-b.createdAt);
+  return [...items.filter(item => item.kind !== 'location'), ...points.slice(0, limit)];
+}
 export async function createQueue(): Promise<Outbox> {
   return {
     async add(kind: OutboxKind, payload: unknown) {
-      const key = outboxKey(kind, payload);
-      return mutate(() => {
+      await mutate(() => append(kind, payload));
+    },
+    async addOwned(kind: OutboxKind, payload: unknown, owner: string, _legacyOwner: string | null) {
+      await mutate(() => {
         const items = read();
-        const serialized = JSON.stringify(payload);
-        const existing = items.find(item => item.key === key);
-        if (existing) assertSameQueuedAction(existing, kind, serialized);
-        else {
-          items.push({ key, kind, payload: serialized, createdAt: Date.now(), attempts: 0, rejected: false });
-          write(items);
+        const savedOwner = localStorage.getItem(OWNER_KEY);
+        const ownership = outboxOwnership(savedOwner, owner, items.length);
+        if (!ownership.allowed) throw new Error(`${ownership.notice || 'لا يمكن إضافة البيانات إلى قائمة المزامنة الحالية.'} لم يُحفظ الطلب الجديد.`);
+        if (!items.length) {
+          try { localStorage.setItem(OWNER_KEY, owner); }
+          catch { throw new Error('تعذر تسجيل ملكية البيانات المحفوظة على هذا الهاتف؛ لم نحفظ الطلب.'); }
         }
+        append(kind, payload, items);
       });
+    },
+    async owner(_legacyOwner: string | null) { try { return localStorage.getItem(OWNER_KEY); } catch { throw new Error(READ_ERROR); } },
+    async snapshot(_legacyOwner: string | null, locationLimit = 200, includeRejectedLocations = false) {
+      return mutate(() => { const items = read(); return {owner: localStorage.getItem(OWNER_KEY), count: items.length, items: replayItems(items, locationLimit, includeRejectedLocations)}; });
     },
     async list(limit = 200) {
       const items = read().sort((a, b) => a.createdAt - b.createdAt);
@@ -64,10 +86,7 @@ export async function createQueue(): Promise<Outbox> {
       return [...items.filter(item => item.kind !== 'location'), ...items.filter(item => item.kind === 'location')].slice(0, limit);
     },
     async listForReplay(locationLimit = 200, includeRejectedLocations = false) {
-      const items = read().sort((a, b) => a.createdAt - b.createdAt);
-      const points = items.filter(item => item.kind === 'location' && (includeRejectedLocations || !item.rejected));
-      if (includeRejectedLocations) points.sort((a,b) => a.attempts-b.attempts || a.createdAt-b.createdAt);
-      return [...items.filter(item => item.kind !== 'location'), ...points.slice(0, locationLimit)];
+      return replayItems(read(), locationLimit, includeRejectedLocations);
     },
     async countRejectedLocations() { return read().filter(item => item.kind === 'location' && item.rejected).length; },
     async remove(key: string) { await mutate(() => write(read().filter(item => item.key !== key))); },
@@ -76,5 +95,6 @@ export async function createQueue(): Promise<Outbox> {
     async unreject(key: string) { await mutate(() => write(read().map(item => (item.key === key ? { ...item, rejected: false } : item)))); },
     async count(kind?: OutboxKind) { return kind ? read().filter(item => item.kind === kind).length : read().length; },
     async clear() { await mutate(() => { read(); write([]); }); },
+    async clearOwned(owner: string) { return mutate(() => { const items = read(); if (items.length && localStorage.getItem(OWNER_KEY) !== owner) return false; write([]); return true; }); },
   };
 }

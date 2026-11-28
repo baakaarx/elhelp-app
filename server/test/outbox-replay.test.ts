@@ -286,3 +286,17 @@ test('unidentifiable corrupt check-in blocks every visit dependency regardless o
     assert.match(result.notice??'',/لا تحذف/);
   }
 });
+
+test('clock rollback keeps checkout and linked order behind check-in and retries them next pass', async () => {
+  const initial = [item('checkout', 'visit-checkout', checkout), item('order', 'order', {id:'o',visitId:visit.id}), item('checkin', 'visit-checkin', visit)];
+  const pending = new Map(initial.map(row => [row.key,row]));
+  const queue = { async remove(k:string) { pending.delete(k); }, async bump(_k:string) {}, async reject(_k:string) {}, async unreject(_k:string) {} };
+  const calls:string[] = [];
+  const send = { async checkIn() { calls.push('in'); }, async checkOut() { calls.push('out'); }, async createOrder() { calls.push('order'); }, async report() {}, async dailyReport() {} };
+  await replayOutboxActions(initial, queue, send);
+  assert.deepEqual(calls, ['in']);
+  assert.deepEqual([...pending.keys()], ['checkout','order']);
+  await replayOutboxActions([...pending.values()], queue, send);
+  assert.deepEqual(calls, ['in','out','order']);
+  assert.equal(pending.size, 0);
+});

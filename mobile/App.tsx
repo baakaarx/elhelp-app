@@ -9,9 +9,9 @@ import HomeScreen from './src/HomeScreen';
 import VisitsScreen from './src/VisitsScreen';
 import CustomersScreen from './src/CustomersScreen';
 import SettingsScreen from './src/SettingsScreen';
-import { UNCONFIGURED, me, logout } from './src/api';
+import { UNCONFIGURED, me, logout, clearCurrentSession } from './src/api';
 import { clearDeviceData, getToken } from './src/storage';
-import { activateOutboxUser, clearOutbox, deactivateOutboxUser, flushOutbox } from './src/reports';
+import { activateOutboxUser, clearOutboxForDeletedUser, deactivateOutboxUser, flushOutbox } from './src/reports';
 import { hhmmss } from './src/format';
 import { stopTracking } from './src/tracking';
 import { useField } from './src/useField';
@@ -82,11 +82,21 @@ function Root() {
   const [checking, setChecking] = useState(true);
 
   const onSessionExpired = useCallback(async () => {
-    await stopTracking();
+    await stopTracking().catch(() => undefined);
     await deactivateOutboxUser();
     setUser(null);
   }, []);
   const field = useField(user ?? null, onSessionExpired);
+  useEffect(() => {
+    if (Platform.OS !== 'web' || !user) return;
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'mandoub_token' && event.oldValue !== event.newValue) {
+        void onSessionExpired();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [user, onSessionExpired]);
   const selectTab = useCallback((next: Tab) => {
     setTab(next);
     // Refresh visits on entry so a
@@ -98,7 +108,8 @@ function Root() {
     await stopTracking().catch(() => undefined);
     // If the phone is offline the server call can fail, but logout() still erases the local token.
     try { await logout(); } catch { /* the next login remains available without a network call */ }
-    try { await clearOutbox(); } catch { /* no queue or local store unavailable */ }
+    // Never erase work that arrived after the pre-logout check. Keep it owned and recoverable.
+    await deactivateOutboxUser();
     await clearDeviceData();
     setUser(null);
   }, []);
@@ -107,11 +118,11 @@ function Root() {
     const result = await flushOutbox(ownerId).catch(() => null);
     if (!result || result.pending > 0) {
       const detail = result
-        ? `ما زال هناك ${result.pending} عنصر محفوظ على الهاتف ولم يصل إلى السيرفر. ابقَ داخل الحساب وجرّب المزامنة، أو سجّل الخروج بعد تأكيد حذف البيانات المعلّقة.`
-        : 'تعذر التأكد من حالة المزامنة. يمكنك البقاء داخل الحساب والمحاولة لاحقًا، أو تسجيل الخروج بعد تأكيد حذف البيانات المعلّقة.';
+        ? `ما زال هناك ${result.pending} عنصر محفوظ على الهاتف ولم يصل إلى السيرفر. ابقَ داخل الحساب وجرّب المزامنة، أو سجّل الخروج مع إبقاء البيانات المعلّقة على الجهاز للحساب نفسه.`
+        : 'تعذر التأكد من حالة المزامنة. يمكنك البقاء داخل الحساب والمحاولة لاحقًا، أو تسجيل الخروج مع إبقاء البيانات المعلّقة محفوظة على الجهاز.';
       Alert.alert('بيانات لم تتم مزامنتها', detail, [
         { text: 'البقاء في الحساب', style: 'cancel' },
-        { text: 'تسجيل الخروج وحذف المعلّق', style: 'destructive', onPress: () => { void completeLogout(); } },
+        { text: 'تسجيل الخروج وترك المعلّق محفوظًا', style: 'destructive', onPress: () => { void completeLogout(); } },
       ]);
       return;
     }
@@ -218,7 +229,8 @@ function Root() {
                   await deactivateOutboxUser();
                   setUser(null);
                   let outboxCleared = true;
-                  try { await clearOutbox(); } catch { outboxCleared = false; }
+                  try { outboxCleared = await clearOutboxForDeletedUser(user.id); } catch { outboxCleared = false; }
+                  await clearCurrentSession();
                   await clearDeviceData();
                   if (!outboxCleared) {
                     Alert.alert('تم حذف الحساب', 'لكن تعذر محو بعض البيانات المعلقة من الهاتف. لا تسجّل الدخول بحساب آخر على هذا الجهاز قبل التواصل مع المسؤول.');

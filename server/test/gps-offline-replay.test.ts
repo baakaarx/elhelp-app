@@ -66,3 +66,12 @@ test('manual retry sends previously rejected points when the server can accept t
  assert.equal(rows.length,3);assert.equal(await replayLocationOutbox(rows,queue,send),3);
  assert.equal(await queue.count(),0);assert.equal(await queue.countRejectedLocations(),0);
 });
+
+test('GPS id replay confirms identical original point and rejects changed point without overwriting',async()=>{
+ const point=makePoint(randomUUID(),now-25*hour);
+ const first=await send([point]); assert.equal(first.accepted,1);
+ const duplicate=await send([point]); assert.equal(duplicate.duplicates,1);
+ const conflict=await client.post('/api/locations').set(auth).send({points:[{...point,lat:30.5}]});
+ assert.equal(conflict.status,422);assert.equal(conflict.body.code,'LOCATION_ID_CONFLICT');
+ assert.equal(instance.store.get('SELECT lat FROM locations WHERE user_id=(SELECT id FROM users WHERE email=?) AND point_id=?','gps-rep@test.local',point.id)?.lat,point.lat);
+});

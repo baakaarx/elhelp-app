@@ -2,6 +2,10 @@ import type { OutboxItem, OutboxKind } from './types';
 
 export interface Outbox {
   add(kind: OutboxKind, payload: unknown): Promise<void>;
+  /** Atomically check/claim ownership and append; legacyOwner is only used for pre-upgrade data. */
+  addOwned(kind: OutboxKind, payload: unknown, owner: string, legacyOwner: string | null): Promise<void>;
+  owner(legacyOwner: string | null): Promise<string | null>;
+  snapshot(legacyOwner: string | null, locationLimit?: number, includeRejectedLocations?: boolean): Promise<{owner: string | null; count: number; items: OutboxItem[]}>;
   list(limit?: number): Promise<OutboxItem[]>;
   /** All field actions in FIFO order, plus a bounded batch of GPS points. */
   listForReplay(locationLimit?: number, includeRejectedLocations?: boolean): Promise<OutboxItem[]>;
@@ -13,6 +17,7 @@ export interface Outbox {
   count(kind?: OutboxKind): Promise<number>;
   /** Drops everything queued on the device (used when an account is erased). */
   clear(): Promise<void>;
+  clearOwned(owner: string, legacyOwner: string | null): Promise<boolean>;
 }
 /**
  * Metro resolves `./queue` to `queue.native.ts` (expo-sqlite) on iOS/Android and to
