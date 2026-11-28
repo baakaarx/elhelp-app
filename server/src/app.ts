@@ -15,7 +15,7 @@ import { clientHint, clientRoleMismatch, createSession, hashPassword, publicUser
 import { dayBounds, distanceMeters, haversine, localDate, type GeoPoint } from './geo.js';
 import { classifySilence, LOW_BATTERY_PERCENT, PRESENT_FRESH_MS, stationaryMinutes } from './fieldStatus.js';
 import { elapsedMinutesText } from './elapsedTime.js';
-import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, validateReportDate } from './dailyReports.js';
+import { newDailyReportSchema, dailyReportRow, listDailyReports, insertDailyReport, sameDailyReport, validateReportDate } from './dailyReports.js';
 import { dailyReportPdf } from './dailyPdf.js';
 import { deleteAccountPage, privacyPage } from './privacy.js';
 import { OauthError, verifyIdToken } from './oauth.js';
@@ -713,11 +713,20 @@ export function createApp(overrides: Partial<Config> = {}) {
     }
     if (user.approval_status === 'pending') { res.status(403).json({ error: 'حسابك بانتظار موافقة المدير — سيتم تفعيله قريبًا.', code: 'PENDING_APPROVAL' }); return; }
     if (user.approval_status === 'rejected') { res.status(403).json({ error: 'تم رفض حسابك — تواصل مع الإدارة.', code: 'REJECTED' }); return; }
+    const result: { session?: ReturnType<typeof createSession>; user?: Record<string, any> } = {};
+    store.transaction(() => {
+      // A password reset, suspension or approval change can race a login in another process.
+      const locked = store.get('SELECT * FROM users WHERE id=?', user.id);
+      if (!locked || !locked.active || locked.password_hash !== user.password_hash || locked.role !== user.role
+          || locked.approval_status === 'pending' || locked.approval_status === 'rejected') return;
+      result.session = createSession(store, user.id);
+      result.user = locked;
+      store.audit(user.id, 'auth.login');
+    });
+    if (!result.session || !result.user) { res.status(401).json({ error: 'بيانات الدخول أو حالة الحساب تغيرت. حاول تسجيل الدخول مرة أخرى.' }); return; }
     loginFailures.delete(parsed.data.email);
-    const session = createSession(store, user.id);
-    setSessionCookie(req, res, user.role as 'admin' | 'rep', session.token, SESSION_MS);
-    store.audit(user.id, 'auth.login');
-    res.json({ ...session, user: publicUser(user) });
+    setSessionCookie(req, res, result.user.role as 'admin' | 'rep', result.session.token, SESSION_MS);
+    res.json({ ...result.session, user: publicUser(result.user) });
   });
 
   /* ── Sign in with Google / Apple ────────────────────────────────────────────────
@@ -787,16 +796,23 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = z.object({ status: z.enum(['approved', 'rejected', 'pending']) }).strict().safeParse(req.body);
     const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
     if (!parsed.success || !user) { res.status(400).json({ error: 'بيانات الموافقة غير صحيحة.' }); return; }
-    const previousStatus = String(user.approval_status || 'approved');
-    store.run('UPDATE users SET approval_status=? WHERE id=?', parsed.data.status, user.id);
-    if (parsed.data.status !== 'approved') { store.run('DELETE FROM sessions WHERE user_id=?', user.id); io.in(`user:${user.id}`).disconnectSockets(true); }
+    let previousStatus = '', missing = false;
+    store.transaction(() => {
+      const locked = store.get("SELECT approval_status FROM users WHERE id=? AND role='rep'", user.id);
+      if (!locked) { missing = true; return; }
+      previousStatus = String(locked.approval_status || 'approved');
+      store.run('UPDATE users SET approval_status=? WHERE id=?', parsed.data.status, user.id);
+      if (parsed.data.status !== 'approved') store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+      store.audit(res.locals.user.id, 'rep.approval', { repId: user.id, status: parsed.data.status });
+    });
+    if (missing) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
+    if (parsed.data.status !== 'approved') io.in(`user:${user.id}`).disconnectSockets(true);
     if (previousStatus !== parsed.data.status) {
       const message = parsed.data.status === 'approved'
         ? 'تم تفعيل حسابك. يمكنك تسجيل الدخول ومتابعة عملك.'
         : parsed.data.status === 'rejected' ? 'تم تحديث حالة حسابك. تواصل مع مدير المتابعة.' : 'حسابك بانتظار مراجعة الإدارة.';
       notifyUser(user.id, 'تحديث حالة الحساب', message, { type: 'account_status', status: parsed.data.status });
     }
-    store.audit(res.locals.user.id, 'rep.approval', { repId: user.id, status: parsed.data.status });
     invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
@@ -820,22 +836,32 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (user.role === 'admin' && parsed.data.newPassword.length < MIN_ADMIN_PASSWORD_LENGTH) {
       res.status(400).json({ error: `كلمة مرور المدير ${MIN_ADMIN_PASSWORD_LENGTH} حرفًا على الأقل.`, code: 'PASSWORD_TOO_SHORT' }); return;
     }
-    store.run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(parsed.data.newPassword), user.id);
-    // Every other device is signed out, so a password change cannot leave an old session alive.
-    store.run('DELETE FROM sessions WHERE user_id=? AND token_hash<>?', user.id, res.locals.tokenHash);
-    // A live socket keeps its identity from the handshake, so deleting the row is not enough:
-    // the other devices must be dropped or they keep receiving live updates.
+    const newHash = hashPassword(parsed.data.newPassword);
+    let changed = false;
+    store.transaction(() => {
+      // A password reset or session revocation may have happened since authentication.
+      const locked = store.get('SELECT password_hash FROM users WHERE id=?', user.id);
+      if (!locked || locked.password_hash !== user.password_hash || !store.get('SELECT 1 FROM sessions WHERE user_id=? AND token_hash=?', user.id, res.locals.tokenHash)) return;
+      store.run('UPDATE users SET password_hash=? WHERE id=?', newHash, user.id);
+      // Every other device is signed out in the same commit as the password and audit.
+      store.run('DELETE FROM sessions WHERE user_id=? AND token_hash<>?', user.id, res.locals.tokenHash);
+      store.audit(user.id, 'auth.password_change');
+      changed = true;
+    });
+    if (!changed) { res.status(409).json({ error: 'تغيرت كلمة المرور أو الجلسة أثناء الطلب. سجّل الدخول مجددًا.', code: 'PASSWORD_CHANGED' }); return; }
+    // A live socket keeps its identity from the handshake, so deleting the row is not enough.
     io.in(`user:${user.id}`).disconnectSockets(true);
-    store.audit(user.id, 'auth.password_change');
     res.json({ ok: true });
   });
   app.post('/api/auth/logout', auth, (req, res) => {
-    if (res.locals.user.role === 'rep') endShift(res.locals.user.id);
-    // Logging out must stop notifications on the old phone before another person can use it.
-    store.run('DELETE FROM push_tokens WHERE user_id=?', res.locals.user.id);
-    store.run('DELETE FROM sessions WHERE token_hash=?', res.locals.tokenHash);
+    store.transaction(() => {
+      if (res.locals.user.role === 'rep') endShift(res.locals.user.id);
+      // Logging out must stop notifications on the old phone before another person can use it.
+      store.run('DELETE FROM push_tokens WHERE user_id=?', res.locals.user.id);
+      store.run('DELETE FROM sessions WHERE token_hash=?', res.locals.tokenHash);
+      store.audit(res.locals.user.id, 'auth.logout');
+    });
     clearSessionCookies(req, res);
-    store.audit(res.locals.user.id, 'auth.logout');
     io.in(`user:${res.locals.user.id}`).disconnectSockets(true);
     invalidateKpis(); broadcast();
     res.json({ ok: true });
@@ -876,7 +902,13 @@ export function createApp(overrides: Partial<Config> = {}) {
     const snapshot = { id: user.id, role: user.role };
     // One transaction: a half-deleted account (sessions gone, rows left behind) is worse than
     // none, and SQLite does not support nesting them.
+    let lastAdmin = false;
     store.transaction(() => {
+      // Recheck inside the write lock: two full admins can otherwise delete one another's
+      // last available administrator between the preflight count and the deletion.
+      const current = store.get('SELECT role,active,access_scope FROM users WHERE id=?', user.id);
+      if (current?.role === 'admin' && current.active && current.access_scope === 'full'
+          && Number(store.get("SELECT COUNT(*) AS c FROM users WHERE role='admin' AND active=1 AND access_scope='full'")?.c || 0) <= 1) { lastAdmin = true; return; }
       endShift(user.id);
       store.run('DELETE FROM sessions WHERE user_id=?', user.id);
       // Every table that holds personal data references users(id) ON DELETE CASCADE.
@@ -886,6 +918,7 @@ export function createApp(overrides: Partial<Config> = {}) {
       store.run('INSERT INTO audit_log(user_id,action,created_at,metadata) VALUES (?,?,?,?)',
         `deleted:${String(snapshot.id).slice(0, 8)}`, 'account.delete', Date.now(), JSON.stringify({ role: snapshot.role }));
     });
+    if (lastAdmin) { res.status(409).json({ error: 'هذا آخر حساب مدير. أضف مديرًا آخر أو احذف الحساب من قاعدة البيانات على السيرفر.', code: 'LAST_ADMIN' }); return; }
     io.in(`user:${snapshot.id}`).disconnectSockets(true);
     clearSessionCookies(req, res);
     invalidateDistanceForUser(snapshot.id);
@@ -925,14 +958,16 @@ export function createApp(overrides: Partial<Config> = {}) {
       sets.push(key + '=?'); params.push(value);
     }
     if (parsed.data.active !== undefined) { sets.push('active=?'); params.push(Number(parsed.data.active)); }
-    store.run('UPDATE users SET ' + sets.join(', ') + ' WHERE id=?', ...params, user.id);
-    if (parsed.data.active === false) {
-      endShift(user.id);
-      store.run('DELETE FROM sessions WHERE user_id=?', user.id);
-      io.in(`user:${user.id}`).disconnectSockets(true);
-    }
-    store.audit(res.locals.user.id, parsed.data.active === undefined ? 'rep.update' : (parsed.data.active ? 'rep.enable' : 'rep.disable'),
-      { repId: user.id, fields: Object.keys(parsed.data) });
+    store.transaction(() => {
+      store.run('UPDATE users SET ' + sets.join(', ') + ' WHERE id=?', ...params, user.id);
+      if (parsed.data.active === false) {
+        endShift(user.id);
+        store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+      }
+      store.audit(res.locals.user.id, parsed.data.active === undefined ? 'rep.update' : (parsed.data.active ? 'rep.enable' : 'rep.disable'),
+        { repId: user.id, fields: Object.keys(parsed.data) });
+    });
+    if (parsed.data.active === false) io.in(`user:${user.id}`).disconnectSockets(true);
     invalidateKpis(); broadcast();
     res.json({ user: publicUser(store.get('SELECT * FROM users WHERE id=?', user.id)!) });
   });
@@ -1087,14 +1122,18 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!shift) {
       const id = randomUUID(), now = Date.now();
       store.transaction(() => {
+        // A concurrent start can commit after the preflight read. Reuse that shift instead of
+        // creating two open shifts and splitting the phone's queued points between them.
+        shift = store.get('SELECT * FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+        if (shift) return;
         store.run('INSERT INTO shifts(id,user_id,started_at,consent_version,consent_at,device_id,device_name,start_lat,start_lng,start_accuracy) VALUES (?,?,?,?,?,?,?,?,?,?)',
           id, res.locals.user.id, now, CONSENT_VERSION, now, parsed.data.deviceId, parsed.data.deviceName || '', parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null);
         store.run(`INSERT INTO locations(point_id,user_id,shift_id,lat,lng,accuracy,speed,heading,battery,recorded_at,received_at,source)
           VALUES (?,?,?,?,?,?,NULL,NULL,NULL,?,?,'gps')`, randomUUID(), res.locals.user.id, id, parsed.data.location.lat, parsed.data.location.lng, parsed.data.location.accuracy ?? null, now, now);
         store.run('UPDATE users SET last_seen=? WHERE id=?', now, res.locals.user.id);
         store.audit(res.locals.user.id, 'shift.start', { consentVersion: CONSENT_VERSION, deviceId: parsed.data.deviceId, lat: parsed.data.location.lat, lng: parsed.data.location.lng });
+        shift = store.get('SELECT * FROM shifts WHERE id=?', id);
       });
-      shift = store.get('SELECT * FROM shifts WHERE id=?', id);
     }
     invalidateKpis(); broadcast();
     res.json({ shift });
@@ -1116,7 +1155,7 @@ export function createApp(overrides: Partial<Config> = {}) {
     invalidateKpis(); broadcast();
     res.status(201).json({ id, idleMinutes });
   });
-  app.post('/api/shifts/stop', repOnly, (_req, res) => { endShift(res.locals.user.id); broadcast(); res.json({ ok: true }); });
+  app.post('/api/shifts/stop', repOnly, (_req, res) => { store.transaction(() => endShift(res.locals.user.id)); broadcast(); res.json({ ok: true }); });
   app.post('/api/presence', repOnly, (_req, res) => {
     store.run('UPDATE users SET last_seen=? WHERE id=?', Date.now(), res.locals.user.id);
     broadcast();
@@ -1237,139 +1276,99 @@ export function createApp(overrides: Partial<Config> = {}) {
     res.json({ customers: rows.slice(0, limit).map(row => asCustomer(row)!), hasMore: rows.length > limit });
   });
 
+  const customerGateError = (statusCode: number, message: string, code?: string) => Object.assign(new Error(message), { customerGate: true, statusCode, code });
+  const sendCustomerGateError = (error: unknown, res: express.Response) => {
+    const e = error as any;
+    if (!e?.customerGate) return false;
+    res.status(e.statusCode).json({ error: e.message, ...(e.code ? { code: e.code } : {}) });
+    return true;
+  };
   app.post('/api/customers', adminOnly, (req, res) => {
     const parsed = newCustomer.safeParse(req.body ?? {});
     if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
-      return;
+      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return;
     }
-    let owner: { id: string; name: string } | undefined;
-    if (parsed.data.repId) {
-      owner = findActiveRep(parsed.data.repId);
-      if (!owner) { res.status(404).json({ error: 'المهندس غير موجود أو حسابه متوقف.' }); return; }
-    }
-    let tier: { id: string; name: string } | undefined;
-    if (parsed.data.priceTierId) {
-      tier = loadActiveTier(parsed.data.priceTierId);
-      if (!tier) { res.status(404).json({ error: 'نوع السعر ده مش موجود أو موقوف.', code: 'TIER_NOT_FOUND' }); return; }
-    }
-    const name = String(parsed.data.name).trim();
-    // The office list has no UNIQUE index behind it on purpose (see customers_unassigned_name in
-    // db.ts: a unique one would make deleting an engineer fail), so its no-duplicate rule is asked
-    // here instead — this route is the only place a company customer is ever created.
-    if (!owner && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=?', name)) {
-      res.status(409).json({ error: `«${name}» موجود في قائمة الشركة بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' }); return;
-    }
-    const now = Date.now();
-    const id = randomUUID();
+    const data = parsed.data, name = data.name.trim(), id = randomUUID(), now = Date.now();
+    let ownerName = 'الشركة';
     try {
-      store.run(`INSERT INTO customers(id,rep_id,name,phone,governorate,district,village,notes,stage,lost_reason,price_tier_id,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      id, owner?.id ?? null, name, parsed.data.phone, parsed.data.governorate, parsed.data.district, parsed.data.village,
-        parsed.data.notes, parsed.data.stage, parsed.data.lostReason, tier?.id ?? null, now, now);
+      store.transaction(() => {
+        const owner = data.repId ? findActiveRep(data.repId) : undefined;
+        if (data.repId && !owner) throw customerGateError(404, 'المهندس غير موجود أو حسابه متوقف.');
+        if (owner) ownerName = owner.name;
+        const tier = data.priceTierId ? loadActiveTier(data.priceTierId) : undefined;
+        if (data.priceTierId && !tier) throw customerGateError(404, 'نوع السعر ده مش موجود أو موقوف.', 'TIER_NOT_FOUND');
+        if (!owner && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=?', name))
+          throw customerGateError(409, `«${name}» موجود في قائمة الشركة بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, 'CUSTOMER_EXISTS');
+        store.run(`INSERT INTO customers(id,rep_id,name,phone,governorate,district,village,notes,stage,lost_reason,price_tier_id,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, owner?.id ?? null, name, data.phone, data.governorate, data.district, data.village,
+          data.notes, data.stage, data.lostReason, tier?.id ?? null, now, now);
+        store.audit(res.locals.user.id, 'customer.create', { customerId: id, repId: owner?.id ?? null, name, priceTierId: tier?.id ?? null });
+      });
     } catch (error) {
-      // The index is the last word for a row that does have an owner, and a duplicated customer is a
-      // duplicated sales figure — so the answer says which list the name is already in.
-      if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(409).json({ error: `«${name}» موجود في قائمة ${owner ? owner.name : 'الشركة'} بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' });
-        return;
-      }
+      if (sendCustomerGateError(error, res)) return;
+      if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: `«${name}» موجود في قائمة ${ownerName} بالفعل — عدّل السطر الموجود بدل إضافة نسخة.`, code: 'CUSTOMER_EXISTS' }); return; }
       throw error;
     }
-    store.audit(res.locals.user.id, 'customer.create', { customerId: id, repId: owner?.id ?? null, name, priceTierId: tier?.id ?? null });
     res.status(201).json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, id)) });
   });
 
-  /** The office edits the book; an engineer reads his slice of it and records visits on it. */
   app.patch('/api/customers/:id', adminOnly, (req, res) => {
-    const current = loadCustomer(req.params.id);
-    if (!current) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
     const parsed = patchCustomer.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) });
-      return;
-    }
-    // «مرفوض» without a reason is how a lost customer becomes nobody's mistake.
-    if (parsed.data.stage === 'lost' && !String(parsed.data.lostReason ?? current.lost_reason ?? '').trim()) {
-      res.status(400).json({ error: 'اكتب سبب رفض العميل قبل ما تقفله.', code: 'LOST_REASON_REQUIRED' }); return;
-    }
-    /**
-     * The row is stored in snake_case and the body arrives in camelCase, so every column is taken from one
-     * of the two by name — never from a spread of both. A spread reads `lostReason` off a row whose column
-     * is `lost_reason`, comes back undefined, and `?? ''` turns that into a blank: an edit of a customer's
-     * phone number used to erase the reason he was refused, and `unit_size` did the same to an item's pack.
-     */
-    const keep = (sent: string | undefined, column: unknown) => (sent === undefined ? String(column ?? '') : sent);
-    const name = String(parsed.data.name ?? current.name).trim();
-    const phone = keep(parsed.data.phone, current.phone);
-    const governorate = keep(parsed.data.governorate, current.governorate);
-    const district = keep(parsed.data.district, current.district);
-    const village = keep(parsed.data.village, current.village);
-    const notes = keep(parsed.data.notes, current.notes);
-    const stage = parsed.data.stage ?? current.stage;
-    const lostReason = keep(parsed.data.lostReason, current.lost_reason);
-    if (current.rep_id === null && name !== String(current.name).trim()
-      && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', name, current.id)) {
-      res.status(409).json({ error: `«${name}» موجود في قائمة الشركة بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
-    }
-    // Sending the same type back is not a change, and clearing it (null) is: «من غير تحديد» is an answer
-    // the office gives on purpose when a man's rate is being argued about.
-    let tierId = current.price_tier_id ?? null;
-    if (parsed.data.priceTierId !== undefined) {
-      if (parsed.data.priceTierId === null) tierId = null;
-      else {
-        const chosen = loadActiveTier(parsed.data.priceTierId);
-        if (!chosen) { res.status(404).json({ error: 'نوع السعر ده مش موجود أو موقوف.', code: 'TIER_NOT_FOUND' }); return; }
-        tierId = chosen.id;
-      }
-    }
+    if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات العميل غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
+    const id = String(req.params.id), data = parsed.data;
     try {
-      store.run(`UPDATE customers SET name=?, phone=?, governorate=?, district=?, village=?, notes=?, stage=?, lost_reason=?, price_tier_id=?, active=?, updated_at=?
-        WHERE id=?`,
-      name, phone, governorate, district, village, notes, stage, lostReason,
-        tierId, parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0),
-        Date.now(), current.id);
+      store.transaction(() => {
+        // Merge with the current locked row, not an earlier snapshot from another writer.
+        const current = loadCustomer(id);
+        if (!current) throw customerGateError(404, 'العميل غير موجود.');
+        const keep = (sent: string | undefined, value: unknown) => sent === undefined ? String(value ?? '') : sent;
+        const name = String(data.name ?? current.name).trim(), stage = data.stage ?? current.stage;
+        const lostReason = keep(data.lostReason, current.lost_reason);
+        if (stage === 'lost' && !lostReason.trim()) throw customerGateError(400, 'اكتب سبب رفض العميل قبل ما تقفله.', 'LOST_REASON_REQUIRED');
+        if (current.rep_id === null && name !== String(current.name).trim()
+          && store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', name, id))
+          throw customerGateError(409, `«${name}» موجود في قائمة الشركة بالفعل — ادمج العميلين الأول.`, 'CUSTOMER_EXISTS');
+        let tierId = current.price_tier_id ?? null;
+        if (data.priceTierId !== undefined) {
+          if (data.priceTierId === null) tierId = null;
+          else { const chosen = loadActiveTier(data.priceTierId); if (!chosen) throw customerGateError(404, 'نوع السعر ده مش موجود أو موقوف.', 'TIER_NOT_FOUND'); tierId = chosen.id; }
+        }
+        store.run(`UPDATE customers SET name=?, phone=?, governorate=?, district=?, village=?, notes=?, stage=?, lost_reason=?, price_tier_id=?, active=?, updated_at=? WHERE id=?`,
+          name, keep(data.phone,current.phone), keep(data.governorate,current.governorate), keep(data.district,current.district),
+          keep(data.village,current.village), keep(data.notes,current.notes), stage, lostReason, tierId,
+          data.active === undefined ? current.active : Number(data.active), Date.now(), id);
+        store.audit(res.locals.user.id, 'customer.update', { customerId: id, fields: Object.keys(data) });
+      });
     } catch (error) {
-      if (String((error as Error).message).includes('UNIQUE')) {
-        res.status(409).json({ error: `«${name}» موجود في قائمة ${current.rep_id ? 'المهندس ده' : 'الشركة'} بالفعل — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' });
-        return;
-      }
+      if (sendCustomerGateError(error,res)) return;
+      if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: 'الاسم موجود بالفعل في القائمة — ادمج العميلين الأول.', code: 'CUSTOMER_EXISTS' }); return; }
       throw error;
     }
-    store.audit(res.locals.user.id, 'customer.update', { customerId: current.id, fields: Object.keys(parsed.data) });
-    if ((parsed.data.active !== undefined || parsed.data.name !== undefined || parsed.data.phone !== undefined)
-      && store.get('SELECT 1 FROM orders WHERE customer_id=? LIMIT 1', current.id)) io.to('admins').emit('order', {customerChanged:true});
+    if ((data.active !== undefined || data.name !== undefined || data.phone !== undefined)
+      && store.get('SELECT 1 FROM orders WHERE customer_id=? LIMIT 1', id)) io.to('admins').emit('order', {customerChanged:true});
     invalidateKpis(); broadcast();
-    res.json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
+    res.json({ customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, id)) });
   });
 
-  /**
-   * Delete only while nothing was ever recorded on him. The moment a visit points at the row, deleting
-   * the customer takes his history with him — stopping him keeps both.
-   */
+  /** Delete only while no visit, order or financial history exists. */
   app.delete('/api/customers/:id', adminOnly, (req, res) => {
-    const current = loadCustomer(req.params.id);
-    if (!current) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
-    const visits = Number(store.get('SELECT COUNT(*) AS c FROM visits WHERE customer_id=?', current.id)?.c || 0);
-    if (visits) {
-      res.status(409).json({ error: `العميل عليه ${visits} زيارة — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, code: 'CUSTOMER_HAS_VISITS' });
-      return;
-    }
-    // An order is the same kind of history as a visit: the office priced it, the total is in the book,
-    // and deleting the customer underneath would leave the row pointing at nobody. Stop the customer
-    // instead — the order keeps its name and its lines.
-    const orders = Number(store.get('SELECT COUNT(*) AS c FROM orders WHERE customer_id=?', current.id)?.c || 0);
-    if (orders) {
-      res.status(409).json({ error: `العميل عليه ${orders} طلبية — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, code: 'CUSTOMER_HAS_ORDERS' });
-      return;
-    }
-    if (store.get('SELECT 1 FROM office_sales_v1 WHERE customer_id=? LIMIT 1', current.id)
-      || store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=? LIMIT 1', current.id)
-      || store.get('SELECT 1 FROM office_receipts_v1 WHERE customer_id=? LIMIT 1', current.id)) {
-      res.status(409).json({ error: 'العميل عليه سجل مبيعات أو مديونية — وقّفه بدل الحذف للحفاظ على الحساب.', code: 'CUSTOMER_HAS_SALES' }); return;
-    }
-    store.run('DELETE FROM customers WHERE id=?', current.id);
-    store.audit(res.locals.user.id, 'customer.delete', { name: current.name, repId: current.rep_id ?? null });
+    const id = String(req.params.id);
+    try {
+      store.transaction(() => {
+        const current = loadCustomer(id);
+        if (!current) throw customerGateError(404, 'العميل غير موجود.');
+        const visits = Number(store.get('SELECT COUNT(*) AS c FROM visits WHERE customer_id=?', id)?.c || 0);
+        if (visits) throw customerGateError(409, `العميل عليه ${visits} زيارة — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, 'CUSTOMER_HAS_VISITS');
+        const orders = Number(store.get('SELECT COUNT(*) AS c FROM orders WHERE customer_id=?', id)?.c || 0);
+        if (orders) throw customerGateError(409, `العميل عليه ${orders} طلبية — وقّفه بدل الحذف عشان تاريخه يفضل مرتبط بيه.`, 'CUSTOMER_HAS_ORDERS');
+        if (store.get('SELECT 1 FROM office_sales_v1 WHERE customer_id=? LIMIT 1', id)
+          || store.get('SELECT 1 FROM office_debts_v1 WHERE customer_id=? LIMIT 1', id)
+          || store.get('SELECT 1 FROM office_receipts_v1 WHERE customer_id=? LIMIT 1', id))
+          throw customerGateError(409, 'العميل عليه سجل مبيعات أو مديونية — وقّفه بدل الحذف للحفاظ على الحساب.', 'CUSTOMER_HAS_SALES');
+        store.run('DELETE FROM customers WHERE id=?', id);
+        store.audit(res.locals.user.id, 'customer.delete', { name: current.name, repId: current.rep_id ?? null });
+      });
+    } catch (error) { if (sendCustomerGateError(error,res)) return; throw error; }
     res.json({ ok: true });
   });
 
@@ -1380,31 +1379,33 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.post('/api/customers/:id/assign', adminOnly, (req, res) => {
     const parsed = z.object({ repId: z.uuid('اختار المهندس، أو «من غير مهندس» لو العميل هيرجع قائمة الشركة.').nullable() }).strict().safeParse(req.body ?? {});
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'اختار المهندس.' }); return; }
-    const current = loadCustomer(req.params.id);
-    if (!current) { res.status(404).json({ error: 'العميل غير موجود.' }); return; }
-    const from = current.rep_id ?? null;
-    if (parsed.data.repId === null) {
-      if (from === null) { res.json({ ok: true, unchanged: true, customer: asCustomer(current) }); return; }
-      if (store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', current.name, current.id)) {
-        res.status(409).json({ error: `«${current.name}» موجود بالفعل في قائمة الشركة — ادمج العميلين الأول.`, code: 'CUSTOMER_EXISTS' }); return;
-      }
-      store.run('UPDATE customers SET rep_id=NULL, updated_at=? WHERE id=?', Date.now(), current.id);
-      store.audit(res.locals.user.id, 'customer.assign', { customerId: current.id, from, to: null });
-      res.json({ ok: true, customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
-      return;
+    const id = String(req.params.id);
+    let unchanged = false;
+    try {
+      store.transaction(() => {
+        const current = loadCustomer(id);
+        if (!current) throw customerGateError(404, 'العميل غير موجود.');
+        const from = current.rep_id ?? null;
+        const owner = parsed.data.repId ? findActiveRep(parsed.data.repId) : undefined;
+        if (parsed.data.repId && !owner) throw customerGateError(404, 'المهندس غير موجود أو حسابه متوقف.');
+        const to = owner?.id ?? null;
+        if (from === to) { unchanged = true; return; }
+        const duplicate = to === null
+          ? store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', current.name, id)
+          : store.get('SELECT id FROM customers WHERE rep_id=? AND name COLLATE NOCASE=? AND id<>?', to, current.name, id);
+        if (duplicate) throw customerGateError(409, to === null
+          ? `«${current.name}» موجود بالفعل في قائمة الشركة — ادمج العميلين الأول.`
+          : `«${current.name}» موجود عند ${owner?.name} بالفعل — ادمج العميلين قبل النقل.`, 'CUSTOMER_EXISTS');
+        store.run('UPDATE customers SET rep_id=?, updated_at=? WHERE id=?', to, Date.now(), id);
+        store.audit(res.locals.user.id, 'customer.assign', { customerId: id, from, to });
+      });
+    } catch (error) {
+      if (sendCustomerGateError(error,res)) return;
+      if (String((error as Error).message).includes('UNIQUE')) { res.status(409).json({ error: 'الاسم موجود بالفعل في القائمة — ادمج العميلين الأول.', code: 'CUSTOMER_EXISTS' }); return; }
+      throw error;
     }
-    const owner = findActiveRep(parsed.data.repId);
-    if (!owner) { res.status(404).json({ error: 'المهندس غير موجود أو حسابه متوقف.' }); return; }
-    if (from === owner.id) { res.json({ ok: true, unchanged: true, customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) }); return; }
-    // The receiving list is the one that has to be free of the name; saying «merge them first» is the
-    // only useful answer, because silently keeping two rows for one farm is what broke the numbers.
-    if (store.get('SELECT id FROM customers WHERE rep_id=? AND name COLLATE NOCASE=? AND id<>?', owner.id, current.name, current.id)) {
-      res.status(409).json({ error: `«${current.name}» موجود عند ${owner.name} بالفعل — ادمج العميلين قبل النقل.`, code: 'CUSTOMER_EXISTS' }); return;
-    }
-    store.run('UPDATE customers SET rep_id=?, updated_at=? WHERE id=?', owner.id, Date.now(), current.id);
-    store.audit(res.locals.user.id, 'customer.assign', { customerId: current.id, from, to: owner.id });
-    invalidateKpis(); broadcast();
-    res.json({ ok: true, customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, current.id)) });
+    if (!unchanged) { invalidateKpis(); broadcast(); }
+    res.json({ ok: true, ...(unchanged ? { unchanged: true } : {}), customer: asCustomer(store.get(`${CUSTOMER_SELECT} WHERE c.id=?`, id)) });
   });
 
   /* ------------------------------------------------------------------ المناطق: مين بيشيل فين
@@ -1555,9 +1556,21 @@ export function createApp(overrides: Partial<Config> = {}) {
     const now = Date.now();
     try {
       store.transaction(() => {
+        if (repId && !findActiveRep(repId)) throw customerGateError(404, 'المهندس غير موجود أو حسابه متوقف.');
+        for (const row of moving) {
+          const current = store.get(`SELECT id,name,rep_id AS repId FROM customers WHERE ${where.join(' AND ')} AND id=?`, ...params, row.id);
+          if (!current || current.name !== row.name || (current.repId ?? null) !== row.fromRepId)
+            throw customerGateError(409, 'بيانات العملاء اتغيرت أثناء النقل — اعرض المنطقة وراجعها من جديد.', 'AREA_CHANGED');
+          const duplicate = owner
+            ? store.get('SELECT id FROM customers WHERE rep_id=? AND name COLLATE NOCASE=? AND id<>?', owner.id, row.name, row.id)
+            : store.get('SELECT id FROM customers WHERE rep_id IS NULL AND name COLLATE NOCASE=? AND id<>?', row.name, row.id);
+          if (duplicate) throw customerGateError(409, `«${row.name}» موجود بالفعل في القائمة المستقبلة — ادمج العميلين الأول.`, 'CUSTOMER_EXISTS');
+        }
         for (const row of moving) store.run('UPDATE customers SET rep_id=?, updated_at=? WHERE id=?', owner?.id ?? null, now, row.id);
+        store.audit(res.locals.user.id, 'customer.assignArea', { governorate, district, repId: owner?.id ?? null, onlyUnassigned, moved: moving.length, conflicts: conflicts.length });
       });
     } catch (error) {
+      if (sendCustomerGateError(error, res)) return;
       // The index has the last word, and the move is one transaction: whatever half of it was written
       // is rolled back, and the name in the way is named instead of a stack trace.
       if (String((error as Error).message).includes('UNIQUE')) {
@@ -1566,7 +1579,6 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
       throw error;
     }
-    store.audit(res.locals.user.id, 'customer.assignArea', { governorate, district, repId: owner?.id ?? null, onlyUnassigned, moved: moving.length, conflicts: conflicts.length });
     invalidateKpis(); broadcast();
     res.json({
       ok: true, governorate, district, repId: owner?.id ?? null, repName: owner?.name ?? '',
@@ -1726,6 +1738,7 @@ export function createApp(overrides: Partial<Config> = {}) {
           if (price.price === null) continue;
           store.run('INSERT INTO product_prices(product_id,tier_id,price,updated_at) VALUES (?,?,?,?)', id, price.tierId, price.price, now);
         }
+        store.audit(res.locals.user.id, 'product.create', { productId: id, name, unit, priced: prices.filter((p: { price: number | null }) => p.price !== null).length });
       });
     } catch (error) {
       if (/UNIQUE|PRODUCT_PACK_CONFLICT/.test(String((error as Error).message))) {
@@ -1733,7 +1746,6 @@ export function createApp(overrides: Partial<Config> = {}) {
       }
       throw error;
     }
-    store.audit(res.locals.user.id, 'product.create', { productId: id, name, unit, priced: prices.filter((p: { price: number | null }) => p.price !== null).length });
     res.status(201).json({
       product: asProduct(store.get('SELECT * FROM products WHERE id=?', id)!,
         store.all('SELECT tier_id AS tierId, price FROM product_prices WHERE product_id=?', id) as Array<{ tierId: string; price: number }>),
@@ -1768,11 +1780,23 @@ export function createApp(overrides: Partial<Config> = {}) {
       res.status(409).json({ error: `«${name} — ${unit}» هو «${clash.name}» الموجود بالفعل. عدّل السطر اللي موجود بدل ما تعمل صنفين.`, code: 'PRODUCT_EXISTS' });
       return;
     }
-    try {store.run(`UPDATE products SET name=?, category=?, unit=?, unit_size=?, notes=?, active=?, updated_at=? WHERE id=?`,
-      name, parsed.data.category ?? current.category, unit,
-      size, keep(parsed.data.notes, current.notes),
-      parsed.data.active === undefined ? current.active : (parsed.data.active ? 1 : 0), Date.now(), current.id);} catch(e) {if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.',code:'PRODUCT_EXISTS'});return;} throw e;}
-    store.audit(res.locals.user.id, 'product.update', { productId: current.id, fields: Object.keys(parsed.data) });
+    try { store.transaction(() => {
+      // Merge against the locked row, not the earlier snapshot: unrelated concurrent edits must
+      // survive, and an opening balance can appear between the preflight check and this lock.
+      const locked = store.get('SELECT * FROM products WHERE id=?', current.id);
+      if (!locked) throw new Error('PRODUCT_MISSING');
+      const lockedUnit = keep(parsed.data.unit, locked.unit).trim();
+      const lockedSize = keep(parsed.data.unitSize, locked.unit_size);
+      if ((lockedUnit !== locked.unit || lockedSize !== locked.unit_size) && store.get('SELECT 1 FROM warehouse_stock WHERE product_id=? LIMIT 1', current.id)) throw new Error('PRODUCT_HAS_STOCK');
+      store.run(`UPDATE products SET name=?, category=?, unit=?, unit_size=?, notes=?, active=?, updated_at=? WHERE id=?`,
+        parsed.data.name ?? locked.name, parsed.data.category ?? locked.category, lockedUnit, lockedSize,
+        keep(parsed.data.notes, locked.notes), parsed.data.active === undefined ? locked.active : (parsed.data.active ? 1 : 0), Date.now(), current.id);
+      store.audit(res.locals.user.id, 'product.update', { productId: current.id, fields: Object.keys(parsed.data) });
+    }); } catch(e) {
+      if ((e as Error).message === 'PRODUCT_MISSING') {res.status(404).json({error:'الصنف غير موجود.'});return;}
+      if ((e as Error).message === 'PRODUCT_HAS_STOCK') {res.status(409).json({error:'الصنف له رصيد مسجّل؛ تغيير الوحدة أو العبوة يغيّر معنى الرصيد. أضف صنفًا جديدًا بدلًا من ذلك.'});return;}
+      if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.',code:'PRODUCT_EXISTS'});return;} throw e;
+    }
     res.json({
       product: asProduct(store.get('SELECT * FROM products WHERE id=?', current.id)!,
         store.all('SELECT tier_id AS tierId, price FROM product_prices WHERE product_id=?', current.id) as Array<{ tierId: string; price: number }>),
@@ -1805,11 +1829,11 @@ export function createApp(overrides: Partial<Config> = {}) {
           ON CONFLICT(product_id,tier_id) DO UPDATE SET price=excluded.price, updated_at=excluded.updated_at`,
         current.id, price.tierId, price.price, now);
       }
-    });
-    store.audit(res.locals.user.id, 'product.prices', {
-      productId: current.id,
-      set: prices.filter(price => price.price !== null).map(price => ({ tierId: price.tierId, price: price.price })),
-      cleared: prices.filter(price => price.price === null).map(price => price.tierId),
+      store.audit(res.locals.user.id, 'product.prices', {
+        productId: current.id,
+        set: prices.filter(price => price.price !== null).map(price => ({ tierId: price.tierId, price: price.price })),
+        cleared: prices.filter(price => price.price === null).map(price => price.tierId),
+      });
     });
     res.json({
       product: asProduct(current,
@@ -1937,9 +1961,11 @@ export function createApp(overrides: Partial<Config> = {}) {
       if (de) { res.status(403).json({ error: de, code: 'DEVICE_MISMATCH' }); return; }
     }
     const data = parsed.data;
+    const matchesCheckIn = (visit: Record<string, any>) => visit.userId === res.locals.user.id && visit.customerId === data.customerId
+      && visit.purpose === data.purpose && visit.inLat === data.location.lat && visit.inLng === data.location.lng && visit.inAccuracy === (data.location.accuracy ?? null);
     const existing = visitRow(data.id);
     if (existing) {
-      if (existing.userId !== res.locals.user.id) { res.status(409).json({ error: 'معرّف الزيارة مستخدم بالفعل.' }); return; }
+      if (!matchesCheckIn(existing)) { res.status(409).json({ error: 'معرّف الزيارة مستخدم لبيانات مختلفة؛ راجع الزيارة المحفوظة.', code: 'VISIT_ID_IN_USE' }); return; }
       res.status(200).json({ visit: existing, duplicate: true }); return;
     }
     // A queued check-in from an old phone may have dependent visits and orders; retain that
@@ -2011,19 +2037,40 @@ export function createApp(overrides: Partial<Config> = {}) {
       return;
     }
 
-    const closedOnArrival = Boolean(open);
-    store.run(`INSERT INTO visits(id,user_id,customer_name,customer_id,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, String(customer.name), customer.id,
-      // The address halves fall back to the row: the phone sends what its GPS resolved, and what it did
-      // not, the office already knows.
-      data.governorate || String(customer.governorate || ''), data.district || String(customer.district || ''),
-      data.village || String(customer.village || ''), data.phone || String(customer.phone || ''), data.purpose, data.notes,
-      closedOnArrival ? 'closed' : 'open', checkedInAt, closedOnArrival ? checkedInAt : null,
-      closedOnArrival ? 0 : null, closedOnArrival ? 1 : 0, offline ? 1 : 0,
-      closedOnArrival ? AUTO_CLOSED_OUTCOME : '',
-      data.location.lat, data.location.lng, data.location.accuracy ?? null, now);
-    store.audit(res.locals.user.id, offline ? 'visit.check_in_offline' : 'visit.check_in',
-      { visitId: data.id, purpose: data.purpose, customerId: customer.id, ...(offline ? { recordedAt: checkedInAt } : {}) });
+    let replay = false;
+    try { store.transaction(() => {
+      // Every state-dependent check must be repeated after the write lock, because another
+      // server can create a visit, stop the shift or reassign the customer in the meantime.
+      const saved = visitRow(data.id);
+      if (saved) {
+        if (!matchesCheckIn(saved)) throw Object.assign(new Error('معرّف الزيارة مستخدم لبيانات مختلفة؛ راجع الزيارة المحفوظة.'), { statusCode: 409, code: 'VISIT_ID_IN_USE', visitGate: true });
+        replay = true; return;
+      }
+      const shift = offline
+        ? store.get('SELECT id FROM shifts WHERE user_id=? AND started_at<=? AND (ended_at IS NULL OR ended_at>=?) LIMIT 1', res.locals.user.id, checkedInAt, checkedInAt)
+        : store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL LIMIT 1', res.locals.user.id);
+      if (!shift) throw Object.assign(new Error(offline ? 'الزيارة المتأخرة مرفوضة: مفيش وردية مسجلة في الوقت ده.' : 'ابدأ الوردية أولًا قبل تسجيل الزيارة.'), { statusCode: offline ? 422 : 409, code: offline ? 'OFFLINE_VISIT_REJECTED' : undefined, visitGate: true });
+      const lockedOpen = store.get("SELECT id FROM visits WHERE user_id=? AND status='open'", res.locals.user.id);
+      if (lockedOpen && !offline) throw Object.assign(new Error('لديك زيارة مفتوحة. أنهِها قبل بدء زيارة جديدة.'), { statusCode: 409, openVisitId: lockedOpen.id, visitGate: true });
+      const lockedCustomer = store.get('SELECT id,name,phone,governorate,district,village,active,rep_id AS repId FROM customers WHERE id=?', data.customerId);
+      if (!lockedCustomer) throw Object.assign(new Error('العميل ده مش في قائمة الشركة.'), { statusCode: 400, code: 'CUSTOMER_NOT_FOUND', visitGate: true });
+      if (lockedCustomer.repId !== res.locals.user.id) throw Object.assign(new Error('العميل ده مش من قائمتك — المكتب هو اللي بيحدد مين يخدم كل عميل.'), { statusCode: 403, code: 'CUSTOMER_NOT_YOURS', visitGate: true });
+      if (!lockedCustomer.active) throw Object.assign(new Error('العميل متوقف. لو لازم يتزار، خلّي المكتب يرجّعه من شاشة العملاء.'), { statusCode: 409, code: 'CUSTOMER_INACTIVE', visitGate: true });
+      const closedOnArrival = Boolean(lockedOpen);
+      store.run(`INSERT INTO visits(id,user_id,customer_name,customer_id,governorate,district,village,phone,purpose,notes,status,checked_in_at,checked_out_at,duration_seconds,auto_closed,recorded_offline,outcome,in_lat,in_lng,in_accuracy,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, data.id, res.locals.user.id, String(lockedCustomer.name), lockedCustomer.id,
+        data.governorate || String(lockedCustomer.governorate || ''), data.district || String(lockedCustomer.district || ''),
+        data.village || String(lockedCustomer.village || ''), data.phone || String(lockedCustomer.phone || ''), data.purpose, data.notes,
+        closedOnArrival ? 'closed' : 'open', checkedInAt, closedOnArrival ? checkedInAt : null,
+        closedOnArrival ? 0 : null, closedOnArrival ? 1 : 0, offline ? 1 : 0,
+        closedOnArrival ? AUTO_CLOSED_OUTCOME : '', data.location.lat, data.location.lng, data.location.accuracy ?? null, now);
+      store.audit(res.locals.user.id, offline ? 'visit.check_in_offline' : 'visit.check_in',
+        { visitId: data.id, purpose: data.purpose, customerId: lockedCustomer.id, ...(offline ? { recordedAt: checkedInAt } : {}) });
+    }); } catch (error) {
+      if ((error as any)?.visitGate) { const e = error as any; res.status(e.statusCode).json({ error: e.message, ...(e.code ? { code: e.code } : {}), ...(e.openVisitId ? { openVisitId: e.openVisitId } : {}) }); return; }
+      throw error;
+    }
+    if (replay) { res.status(200).json({ visit: visitRow(data.id), duplicate: true }); return; }
     io.to('admins').emit('visit', visitRow(data.id));
     invalidateKpis(); broadcast();
     res.status(201).json({ visit: visitRow(data.id), duplicate: false, ...(offline ? { recordedOffline: true } : {}) });
@@ -2034,6 +2081,10 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: parsed.error.issues[0]?.message || 'بيانات إنهاء الزيارة غير صحيحة.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const visit = visitRow(String(req.params.id));
     if (!visit || visit.userId !== res.locals.user.id) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
+    const sameResult = (saved: Record<string, any> | undefined) => !!saved && saved.status === 'closed'
+      && !(saved.autoClosed && saved.outcome === AUTO_CLOSED_OUTCOME) && saved.outcome === parsed.data.outcome
+      && (!parsed.data.notes || saved.notes === parsed.data.notes)
+      && saved.outLat === (parsed.data.location?.lat ?? null) && saved.outLng === (parsed.data.location?.lng ?? null);
     if (parsed.data.amount !== null && parsed.data.amount > 0) {
       // Only acknowledge a replay of a previously saved legacy amount. Never treat a new
       // field amount as a customer receipt or discard it while claiming a successful save.
@@ -2055,6 +2106,11 @@ export function createApp(overrides: Partial<Config> = {}) {
       // Only while the result is still the automatic text: once it is written it is not
       // rewritten by a retry (the queued request may arrive twice), exactly like a normal visit.
       if (Number(visit.autoClosed) !== 1 || visit.outcome !== AUTO_CLOSED_OUTCOME) {
+        // Do not acknowledge a different result as if it had been saved; that can make an
+        // offline phone delete a queued result that never reached the register.
+        if (!sameResult(visit)) {
+          res.status(409).json({ error: 'الزيارة انتهت بنتيجة مختلفة؛ راجع المكتب قبل إعادة المحاولة.', code: 'VISIT_RESULT_CONFLICT' }); return;
+        }
         res.json({ visit, duplicate: true });
         return;
       }
@@ -2073,15 +2129,22 @@ export function createApp(overrides: Partial<Config> = {}) {
         lateAt = Math.max(Number(visit.checkedInAt), at);
       }
       const lateDuration = lateAt === null ? null : Math.max(0, Math.round((lateAt - Number(visit.checkedInAt)) / 1000));
-      // The visit result and its audit entry must commit together.
+      // The result and audit commit together, only if the automatic placeholder is still there.
+      let changed = false;
       store.transaction(() => {
-        store.run('UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=?',
-          late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id);
+        changed = Number(store.run("UPDATE visits SET outcome=?, notes=?, out_lat=?, out_lng=? WHERE id=? AND status='closed' AND auto_closed=1 AND outcome=?",
+          late.outcome, late.notes || visit.notes, late.location?.lat ?? null, late.location?.lng ?? null, visit.id, AUTO_CLOSED_OUTCOME).changes) > 0;
+        if (!changed) return;
         if (lateAt !== null) {
           store.run('UPDATE visits SET checked_out_at=?, duration_seconds=?, recorded_offline=1 WHERE id=?', lateAt, lateDuration, visit.id);
         }
         store.audit(res.locals.user.id, 'visit.result_recorded_late', { visitId: visit.id });
       });
+      if (!changed) {
+        const saved = visitRow(visit.id);
+        if (sameResult(saved)) { res.json({ visit: saved, duplicate: true }); return; }
+        res.status(409).json({ error: 'حالة الزيارة اتغيرت أثناء الحفظ؛ راجعها وأعد المحاولة.', code: 'VISIT_CHANGED' }); return;
+      }
       io.to('admins').emit('visit', visitRow(visit.id));
       invalidateKpis(); broadcast();
       res.json({ visit: visitRow(visit.id), duplicate: false, recordedLate: true });
@@ -2106,14 +2169,22 @@ export function createApp(overrides: Partial<Config> = {}) {
       offline = true;
     }
     const duration = Math.max(0, Math.round((closedAt - Number(visit.checkedInAt)) / 1000));
-    // Closing a visit and its audit entry are one operation.
+    // Closing a visit and its audit entry are one operation. Do not overwrite a result or
+    // automatic closure that occurred while this request waited for the lock.
+    let changed = false;
     store.transaction(() => {
-      store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
-        out_lat=?, out_lng=?, recorded_offline=MAX(recorded_offline, ?) WHERE id=?`, closedAt, duration, data.outcome, data.notes || visit.notes,
-        data.location?.lat ?? null, data.location?.lng ?? null, offline ? 1 : 0, visit.id);
+      changed = Number(store.run(`UPDATE visits SET status='closed', checked_out_at=?, duration_seconds=?, outcome=?, notes=?,
+        out_lat=?, out_lng=?, recorded_offline=MAX(recorded_offline, ?) WHERE id=? AND status='open'`, closedAt, duration, data.outcome, data.notes || visit.notes,
+        data.location?.lat ?? null, data.location?.lng ?? null, offline ? 1 : 0, visit.id).changes) > 0;
+      if (!changed) return;
       store.audit(res.locals.user.id, offline ? 'visit.check_out_offline' : 'visit.check_out',
         { visitId: visit.id, durationSeconds: duration, ...(offline ? { recordedAt: closedAt } : {}) });
     });
+    if (!changed) {
+      const saved = visitRow(visit.id);
+      if (sameResult(saved)) { res.json({ visit: saved, duplicate: true }); return; }
+      res.status(409).json({ error: 'حالة الزيارة اتغيرت أثناء الحفظ؛ راجعها وأعد المحاولة.', code: 'VISIT_CHANGED' }); return;
+    }
     io.to('admins').emit('visit', visitRow(visit.id));
     invalidateKpis(); broadcast();
     res.json({ visit: visitRow(visit.id), duplicate: false });
@@ -2402,8 +2473,15 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.delete('/api/visits/:id', adminOnly, (req, res) => {
     const visit = visitRow(String(req.params.id));
     if (!visit) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
-    store.run('DELETE FROM visits WHERE id=?', visit.id);
-    store.audit(res.locals.user.id, 'visit.delete', { visitId: visit.id, repId: visit.userId, status: visit.status });
+    let deleted = false;
+    store.transaction(() => {
+      const locked = visitRow(String(visit.id));
+      if (!locked) return;
+      store.run('DELETE FROM visits WHERE id=?', locked.id);
+      store.audit(res.locals.user.id, 'visit.delete', { visitId: locked.id, repId: locked.userId, status: locked.status });
+      deleted = true;
+    });
+    if (!deleted) { res.status(404).json({ error: 'الزيارة غير موجودة.' }); return; }
     io.to('admins').emit('visit', { id: visit.id, deleted: true });
     invalidateKpis(); broadcast();
     res.json({ ok: true, visit: { id: visit.id, userId: visit.userId, customerName: visit.customerName } });
@@ -2411,7 +2489,9 @@ export function createApp(overrides: Partial<Config> = {}) {
 
   app.get('/api/visits', auth, (req, res) => {
     const isAdmin = res.locals.user.role === 'admin';
-    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
+    if (req.query.date !== undefined && (typeof req.query.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(req.query.date))) { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
+    if (req.query.status !== undefined && req.query.status !== 'open' && req.query.status !== 'closed') { res.status(400).json({ error: 'حالة الزيارة غير صحيحة.' }); return; }
+    const date = typeof req.query.date === 'string' ? req.query.date : undefined;
     const status = req.query.status === 'open' || req.query.status === 'closed' ? req.query.status : undefined;
     const repId = isAdmin && typeof req.query.repId === 'string' ? req.query.repId : undefined;
     if (date) { try { dayBounds(date, config.timezone); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; } }
@@ -2704,11 +2784,18 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: 'كلمة المرور الجديدة قصيرة — ١٠ أحرف على الأقل.', code: 'PASSWORD_TOO_SHORT' }); return; }
     const user = store.get("SELECT * FROM users WHERE id=? AND role='rep'", String(req.params.id));
     if (!user) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
-    store.run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(parsed.data.password), user.id);
-    // A new password means every device signed in with the old one loses access at once.
-    store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+    const passwordHash = hashPassword(parsed.data.password);
+    let changed = false;
+    store.transaction(() => {
+      if (!store.get("SELECT id FROM users WHERE id=? AND role='rep'", user.id)) return;
+      store.run('UPDATE users SET password_hash=? WHERE id=?', passwordHash, user.id);
+      // A new password means every device signed in with the old one loses access at once.
+      store.run('DELETE FROM sessions WHERE user_id=?', user.id);
+      store.audit(res.locals.user.id, 'rep.password_reset', { repId: user.id });
+      changed = true;
+    });
+    if (!changed) { res.status(404).json({ error: 'المهندس غير موجود.' }); return; }
     io.in(`user:${user.id}`).disconnectSockets(true);
-    store.audit(res.locals.user.id, 'rep.password_reset', { repId: user.id });
     res.json({ ok: true });
   });
   // ---- CSV helpers: standard RFC-4180 CSV (UTF-8 with a BOM) for integrations and scripts.
@@ -2975,39 +3062,36 @@ export function createApp(overrides: Partial<Config> = {}) {
     if (!parsed.success) { res.status(400).json({ error: 'راجع بيانات التقرير: النوع والعنوان مطلوبان.', issues: parsed.error.issues.map(x => ({ path: x.path, message: x.message })) }); return; }
     const data = parsed.data;
     const ownerId = res.locals.user.id;
-    const existing = store.get('SELECT user_id AS userId FROM reports WHERE id=?', data.id);
-    if (existing && existing.userId !== ownerId) {
-      res.status(409).json({ error: 'معرّف التقرير مستخدم بالفعل.', code: 'REPORT_ID_IN_USE' });
-      return;
-    }
-    if (data.type === 'collection' || (data.amount !== null && data.amount > 0)) {
-      // Preserve idempotent replays of the same legacy report, but reject new financial data.
-      const old = existing ? reportRow(data.id) : undefined;
-      if (old && old.type === data.type && old.title === data.title && old.body === data.body && old.customer === data.customer
-          && old.amount === data.amount && old.lat === (data.location?.lat ?? null)
-          && old.lng === (data.location?.lng ?? null) && old.accuracy === (data.location?.accuracy ?? null)) {
-        res.json({ report: old, duplicate: true }); return;
+    let duplicate = false;
+    try { store.transaction(() => {
+      const old = reportRow(data.id);
+      if (old && old.userId !== ownerId) throw Object.assign(new Error('معرّف التقرير مستخدم بالفعل.'), { statusCode: 409, code: 'REPORT_ID_IN_USE', reportGate: true });
+      const same = old && old.type === data.type && old.title === data.title && old.body === data.body && old.customer === data.customer
+        && old.amount === data.amount && old.lat === (data.location?.lat ?? null)
+        && old.lng === (data.location?.lng ?? null) && old.accuracy === (data.location?.accuracy ?? null);
+      if (data.type === 'collection' || (data.amount !== null && data.amount > 0)) {
+        if (same) { duplicate = true; return; }
+        throw Object.assign(new Error('التحصيل لفريق المبيعات فقط. التقرير لم يُسجّل ولم يُخصم مبلغ من حساب العميل؛ راجع المكتب وحدّث التطبيق.'), { statusCode: 403, code: 'FIELD_COLLECTION_DISABLED', reportGate: true });
       }
-      res.status(403).json({ error: 'التحصيل لفريق المبيعات فقط. التقرير لم يُسجّل ولم يُخصم مبلغ من حساب العميل؛ راجع المكتب وحدّث التطبيق.', code: 'FIELD_COLLECTION_DISABLED' }); return;
-    }
-    const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', ownerId);
-    const now = Date.now();
-    const result = store.run(`INSERT OR IGNORE INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, data.id, ownerId, shift?.id || null, data.type, data.title, data.body, data.customer, data.amount,
-      data.location?.lat ?? null, data.location?.lng ?? null, data.location?.accuracy ?? null, now);
-    const report = reportRow(data.id);
-    // Re-check the row returned by INSERT OR IGNORE as well: another writer may have claimed
-    // the same id after the first lookup. An idempotent replay is only valid for its owner.
-    if (!report || report.userId !== ownerId) {
-      res.status(409).json({ error: 'معرّف التقرير مستخدم بالفعل.', code: 'REPORT_ID_IN_USE' });
-      return;
-    }
-    if (result.changes) {
+      if (old) {
+        if (!same) throw Object.assign(new Error('معرّف التقرير مستخدم لبيانات مختلفة؛ راجع التقرير المحفوظ.'), { statusCode: 409, code: 'REPORT_ID_IN_USE', reportGate: true });
+        duplicate = true; return;
+      }
+      const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', ownerId);
+      store.run(`INSERT INTO reports(id,user_id,shift_id,type,title,body,customer,amount,lat,lng,accuracy,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'new',?)`, data.id, ownerId, shift?.id || null, data.type, data.title, data.body, data.customer, data.amount,
+        data.location?.lat ?? null, data.location?.lng ?? null, data.location?.accuracy ?? null, Date.now());
       store.audit(ownerId, 'report.create', { reportId: data.id, type: data.type });
+    }); } catch (error) {
+      if ((error as any)?.reportGate) { const e = error as any; res.status(e.statusCode).json({ error: e.message, code: e.code }); return; }
+      throw error;
+    }
+    const report = reportRow(data.id);
+    if (!duplicate) {
       io.to('admins').emit('report', report);
       invalidateKpis(); broadcast();
     }
-    res.status(result.changes ? 201 : 200).json({ report, duplicate: !result.changes });
+    res.status(duplicate ? 200 : 201).json({ report, duplicate });
   });
   app.get('/api/reports', auth, (req, res) => {
     const isAdmin = res.locals.user.role === 'admin';
@@ -3035,22 +3119,34 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = z.object({ status: z.literal('reviewed') }).strict().safeParse(req.body);
     const report = reportRow(String(req.params.id));
     if (!parsed.success || !report) { res.status(400).json({ error: 'بيانات التحديث غير صحيحة.' }); return; }
-    if (report.status !== 'reviewed') {
-      store.run("UPDATE reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
-      store.audit(res.locals.user.id, 'report.review', { reportId: report.id });
-      notifyUser(report.userId, 'تمت مراجعة تقريرك', 'مدير المتابعة راجع تقريرك. افتح التطبيق لمراجعة حالته.', { type: 'report_reviewed', reportId: report.id });
+    let changed = false;
+    store.transaction(() => {
+      changed = Number(store.run("UPDATE reports SET status='reviewed', reviewed_at=? WHERE id=? AND status<>'reviewed'", Date.now(), report.id).changes) > 0;
+      if (changed) store.audit(res.locals.user.id, 'report.review', { reportId: report.id });
+    });
+    const saved = reportRow(String(req.params.id));
+    if (!saved) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
+    if (changed) {
+      notifyUser(saved.userId, 'تمت مراجعة تقريرك', 'مدير المتابعة راجع تقريرك. افتح التطبيق لمراجعة حالته.', { type: 'report_reviewed', reportId: saved.id });
       // Keep every manager's open report list in sync, not only the page that clicked review.
-      io.to('admins').emit('report', reportRow(report.id));
+      io.to('admins').emit('report', saved);
       invalidateKpis(); broadcast();
     }
-    res.json({ report: reportRow(String(req.params.id)) });
+    res.json({ report: saved });
   });
   /** The same rule as a visit: the author never removes his own submitted report. */
   app.delete('/api/reports/:id', adminOnly, (req, res) => {
     const report = reportRow(String(req.params.id));
     if (!report) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
-    store.run('DELETE FROM reports WHERE id=?', report.id);
-    store.audit(res.locals.user.id, 'report.delete', { reportId: report.id, repId: report.userId, type: report.type });
+    let deleted = false;
+    store.transaction(() => {
+      const locked = reportRow(String(report.id));
+      if (!locked) return;
+      store.run('DELETE FROM reports WHERE id=?', locked.id);
+      store.audit(res.locals.user.id, 'report.delete', { reportId: locked.id, repId: locked.userId, type: locked.type });
+      deleted = true;
+    });
+    if (!deleted) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
     invalidateKpis(); broadcast();
     res.json({ ok: true, report: { id: report.id, userId: report.userId } });
   });
@@ -3062,24 +3158,25 @@ export function createApp(overrides: Partial<Config> = {}) {
     const data = parsed.data;
     try { validateReportDate(data.reportDate, config.timezone, config.retentionDays); }
     catch (e) { res.status(422).json({ error: (e as Error).message }); return; }
-    const existing = store.get('SELECT user_id FROM daily_reports WHERE id=?', data.id);
-    if (existing && existing.user_id !== res.locals.user.id) { res.status(409).json({ error: 'معرّف التقرير مستخدم بالفعل.' }); return; }
-    // One paper form per engineer per day. A second send — a double tap, or a retry after the
-    // first one was queued offline under a fresh id — used to create a second row, so the same
-    // day counted twice in the monthly register and appeared twice for the manager.
-    if (!existing) {
-      const sameDay = store.get('SELECT id FROM daily_reports WHERE user_id=? AND report_date=?', res.locals.user.id, data.reportDate);
-      if (sameDay) {
-        res.status(409).json({ error: 'سبق إرسال تقرير لهذا اليوم. لو محتاج تعديله، كلّم مدير المتابعة.', code: 'DAILY_REPORT_EXISTS', reportId: sameDay.id }); return;
+    let duplicate = false;
+    try { store.transaction(() => {
+      const existing = dailyReportRow(store, data.id);
+      if (existing) {
+        if (existing.userId !== res.locals.user.id || !sameDailyReport(existing, data))
+          throw Object.assign(new Error('معرّف التقرير مستخدم لبيانات مختلفة.'), { statusCode: 409, code: 'DAILY_REPORT_ID_IN_USE', reportGate: true });
+        duplicate = true; return;
       }
+      const sameDay = store.get('SELECT id FROM daily_reports WHERE user_id=? AND report_date=?', res.locals.user.id, data.reportDate);
+      if (sameDay) throw Object.assign(new Error('سبق إرسال تقرير لهذا اليوم. لو محتاج تعديله، كلّم مدير المتابعة.'), { statusCode: 409, code: 'DAILY_REPORT_EXISTS', reportId: sameDay.id, reportGate: true });
+      const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
+      insertDailyReport(store, res.locals.user.id, shift?.id || null, data, Date.now(), config.timezone);
+      store.audit(res.locals.user.id, 'daily_report.create', { reportId: data.id, date: data.reportDate, visits: data.visits.length });
+    }); } catch (error) {
+      if ((error as any)?.reportGate) { const e = error as any; res.status(e.statusCode).json({ error: e.message, code: e.code, ...(e.reportId ? { reportId: e.reportId } : {}) }); return; }
+      throw error;
     }
-    const shift = store.get('SELECT id FROM shifts WHERE user_id=? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1', res.locals.user.id);
-    const now = Date.now();
-    const duplicate = !!existing;
-    if (!duplicate) insertDailyReport(store, res.locals.user.id, shift?.id || null, data, now, config.timezone);
     const report = dailyReportRow(store, data.id)!;
     if (!duplicate) {
-      store.audit(res.locals.user.id, 'daily_report.create', { reportId: data.id, date: data.reportDate, visits: data.visits.length });
       io.to('admins').emit('daily-report', report);
       invalidateKpis(); broadcast();
     }
@@ -3089,10 +3186,16 @@ export function createApp(overrides: Partial<Config> = {}) {
     const isAdmin = res.locals.user.role === 'admin';
     const status = req.query.status === 'new' || req.query.status === 'reviewed' ? req.query.status : undefined;
     const repId = isAdmin && typeof req.query.repId === 'string' ? req.query.repId : undefined;
-    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : undefined;
-    const from = typeof req.query.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : undefined;
-    const to = typeof req.query.to === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : undefined;
-    if (date) { try { validateReportDate(date, config.timezone, 3650); } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; } }
+    const invalidDate = (value: unknown) => value !== undefined && !(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value));
+    if (invalidDate(req.query.date) || invalidDate(req.query.from) || invalidDate(req.query.to)) { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
+    const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const from = typeof req.query.from === 'string' ? req.query.from : undefined;
+    const to = typeof req.query.to === 'string' ? req.query.to : undefined;
+    try {
+      if (date) validateReportDate(date, config.timezone, 3650);
+      for (const day of [from, to]) if (day) dayBounds(day, config.timezone);
+    } catch { res.status(400).json({ error: 'التاريخ غير صحيح.' }); return; }
+    if (from && to && to < from) { res.status(400).json({ error: 'تاريخ النهاية قبل البداية.' }); return; }
     res.json({ reports: listDailyReports(store, { userId: isAdmin ? undefined : res.locals.user.id, repId, status, date, from, to }) });
   });
   app.get('/api/daily-reports/:id', auth, (req, res) => {
@@ -3105,14 +3208,19 @@ export function createApp(overrides: Partial<Config> = {}) {
     const parsed = z.object({ status: z.literal('reviewed') }).strict().safeParse(req.body);
     const report = dailyReportRow(store, String(req.params.id));
     if (!parsed.success || !report) { res.status(400).json({ error: 'بيانات التحديث غير صحيحة.' }); return; }
-    if (report.status !== 'reviewed') {
-      store.run("UPDATE daily_reports SET status='reviewed', reviewed_at=? WHERE id=?", Date.now(), report.id);
-      store.audit(res.locals.user.id, 'daily_report.review', { reportId: report.id });
-      notifyUser(report.userId, 'تمت مراجعة تقريرك اليومي', 'مدير المتابعة راجع تقرير اليوم. افتح التطبيق لمراجعة حالته.', { type: 'daily_report_reviewed', reportId: report.id });
-      io.to('admins').emit('daily-report', dailyReportRow(store, report.id));
+    let changed = false;
+    store.transaction(() => {
+      changed = Number(store.run("UPDATE daily_reports SET status='reviewed', reviewed_at=? WHERE id=? AND status<>'reviewed'", Date.now(), report.id).changes) > 0;
+      if (changed) store.audit(res.locals.user.id, 'daily_report.review', { reportId: report.id });
+    });
+    const saved = dailyReportRow(store, report.id);
+    if (!saved) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
+    if (changed) {
+      notifyUser(saved.userId, 'تمت مراجعة تقريرك اليومي', 'مدير المتابعة راجع تقرير اليوم. افتح التطبيق لمراجعة حالته.', { type: 'daily_report_reviewed', reportId: saved.id });
+      io.to('admins').emit('daily-report', saved);
       invalidateKpis(); broadcast();
     }
-    res.json({ report: dailyReportRow(store, report.id) });
+    res.json({ report: saved });
   });
   app.get('/api/daily-reports/:id/pdf', auth, async (req, res) => {
     const report = dailyReportRow(store, String(req.params.id));
@@ -3135,8 +3243,15 @@ export function createApp(overrides: Partial<Config> = {}) {
   app.delete('/api/daily-reports/:id', adminOnly, (req, res) => {
     const report = dailyReportRow(store, String(req.params.id));
     if (!report) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
-    store.run('DELETE FROM daily_reports WHERE id=?', report.id);
-    store.audit(res.locals.user.id, 'daily_report.delete', { reportId: report.id, repId: report.userId, reportDate: report.reportDate });
+    let deleted = false;
+    store.transaction(() => {
+      const locked = dailyReportRow(store, report.id);
+      if (!locked) return;
+      store.run('DELETE FROM daily_reports WHERE id=?', locked.id);
+      store.audit(res.locals.user.id, 'daily_report.delete', { reportId: locked.id, repId: locked.userId, reportDate: locked.reportDate });
+      deleted = true;
+    });
+    if (!deleted) { res.status(404).json({ error: 'التقرير غير موجود.' }); return; }
     invalidateKpis(); broadcast();
     res.json({ ok: true, report: { id: report.id, userId: report.userId, reportDate: report.reportDate } });
   });

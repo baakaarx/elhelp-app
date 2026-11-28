@@ -2,6 +2,7 @@ import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getToken, setToken } from './storage';
 import { isConfirmedOrderResponse } from './orderDelivery';
+import { confirmedCheckIn, confirmedCheckOut, confirmedDailyReport, confirmedReport } from './actionConfirmation';
 import { networkMessage } from './networkMessage';
 import type { Customer, DailyReportInput, GeoPoint, OrderInput, OrderView, Product, ReportInput, RepSummary, RouteResponse, Shift, ShiftResponse, User, Visit, VisitInput } from './types';
 
@@ -117,8 +118,16 @@ export async function oauthLogin(provider: 'google' | 'apple', idToken: string, 
   return res.user;
 }
 export const pushLocations = (points: GeoPoint[]) => post<{ accepted: number; duplicates: number }>('/api/locations', { points });
-export const sendReport = (report: ReportInput) => post<{ report: { id: string } }>('/api/reports', report);
-export const sendDailyReport = (report: DailyReportInput) => post<{ report: { id: string } }>('/api/daily-reports', report);
+export async function sendReport(report: ReportInput) {
+  const result = await post<{ report: { id: string }; duplicate: boolean }>('/api/reports', report);
+  if (!confirmedReport(report, result)) throw new ApiError('تعذر التأكد من التقرير المحفوظ. لا تكرره، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
+  return result;
+}
+export async function sendDailyReport(report: DailyReportInput) {
+  const result = await post<{ report: { id: string }; duplicate: boolean }>('/api/daily-reports', report);
+  if (!confirmedDailyReport(report, result)) throw new ApiError('تعذر التأكد من التقرير اليومي المحفوظ. لا تكرره، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
+  return result;
+}
 export const myReports = () => get<{ reports: ReportInput[] }>('/api/reports');
 export const myDailyReports = () => get<{ reports: unknown[] }>('/api/daily-reports');
 export const presence = () => post<{ ok: true }>('/api/presence', {});
@@ -163,12 +172,18 @@ export const myRoute = (userId: string, date?: string) => get<RouteResponse>(`/a
  * `recordedAt` is the instant the visit was recorded. It is only sent when the phone had no
  * signal and kept the visit: a live request lets the server stamp its own clock.
  */
-export const checkInVisit = (visit: VisitInput & { recordedAt?: number }) =>
-  post<{ visit: Visit; duplicate: boolean; recordedOffline?: boolean }>('/api/visits/check-in', visit);
+export async function checkInVisit(visit: VisitInput & { recordedAt?: number }) {
+  const result = await post<{ visit: Visit; duplicate: boolean; recordedOffline?: boolean }>('/api/visits/check-in', visit);
+  if (!confirmedCheckIn(visit, result)) throw new ApiError('تعذر التأكد من تسجيل الزيارة. لا تكررها، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
+  return result;
+}
 export interface CheckOutBody {
   outcome: string; notes: string; amount: number | null;
   location: { lat: number; lng: number; accuracy: number | null } | null;
   recordedAt?: number;
 }
-export const checkOutVisit = (id: string, body: CheckOutBody) =>
-  post<{ visit: Visit; duplicate: boolean; recordedLate?: boolean }>(`/api/visits/${id}/check-out`, body);
+export async function checkOutVisit(id: string, body: CheckOutBody) {
+  const result = await post<{ visit: Visit; duplicate: boolean; recordedLate?: boolean }>(`/api/visits/${id}/check-out`, body);
+  if (!confirmedCheckOut(id, body, result)) throw new ApiError('تعذر التأكد من حفظ نتيجة الزيارة. لا تكررها، وراجع المكتب.', 503, 'ACTION_CONFIRMATION_UNCERTAIN');
+  return result;
+}

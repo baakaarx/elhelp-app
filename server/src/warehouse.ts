@@ -31,8 +31,10 @@ export function createWarehouseRouter(store: Store) {
     const p = parsed.data;
     if (store.get("SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?)", p.name, p.unit, p.unitSize, p.unitSize)) { res.status(409).json({ error: 'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.' }); return; }
     const productId = randomUUID(), now = Date.now();
-    try {store.run('INSERT INTO products(id,name,category,unit,unit_size,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', productId,p.name,p.category,p.unit,p.unitSize,now,now);} catch(e) {if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.'});return;} throw e;}
-    store.audit(res.locals.user.id, 'warehouse.product.create', { productId });
+    try { store.transaction(() => {
+      store.run('INSERT INTO products(id,name,category,unit,unit_size,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', productId,p.name,p.category,p.unit,p.unitSize,now,now);
+      store.audit(res.locals.user.id, 'warehouse.product.create', { productId });
+    }); } catch(e) {if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.'});return;} throw e;}
     res.status(201).json({ product: product(productId) });
   });
   router.patch('/products/:id', (req, res) => {
@@ -47,8 +49,18 @@ export function createWarehouseRouter(store: Store) {
     }
     const nextName = p.name ?? current.name, unit = p.unit ?? current.unit, unitSize = p.unitSize ?? current.unitSize;
     if (store.get("SELECT id FROM products WHERE name COLLATE NOCASE=? AND unit COLLATE NOCASE=? AND (trim(unit_size)='' OR ?='' OR unit_size COLLATE NOCASE=?) AND id<>?", nextName, unit, unitSize, unitSize, current.id)) { res.status(409).json({ error: 'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.' }); return; }
-    try {store.run('UPDATE products SET name=?,category=?,unit=?,unit_size=?,active=?,updated_at=? WHERE id=?', nextName, p.category ?? current.category, unit, unitSize, p.active === undefined ? current.active : Number(p.active), Date.now(), current.id);} catch(e) {if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.'});return;} throw e;}
-    store.audit(res.locals.user.id, 'warehouse.product.update', { productId: current.id });
+    try { store.transaction(() => {
+      const locked = product(String(current.id));
+      if (!locked) throw new Error('PRODUCT_MISSING');
+      const lockedUnit = p.unit ?? locked.unit, lockedSize = p.unitSize ?? locked.unitSize;
+      if ((lockedUnit !== locked.unit || lockedSize !== locked.unitSize) && store.get('SELECT 1 FROM warehouse_stock WHERE product_id=? LIMIT 1', current.id)) throw new Error('PRODUCT_HAS_STOCK');
+      store.run('UPDATE products SET name=?,category=?,unit=?,unit_size=?,active=?,updated_at=? WHERE id=?', p.name ?? locked.name, p.category ?? locked.category, lockedUnit, lockedSize, p.active === undefined ? locked.active : Number(p.active), Date.now(), current.id);
+      store.audit(res.locals.user.id, 'warehouse.product.update', { productId: current.id });
+    }); } catch(e) {
+      if ((e as Error).message === 'PRODUCT_MISSING') {res.status(404).json({error:'الصنف غير موجود.'});return;}
+      if ((e as Error).message === 'PRODUCT_HAS_STOCK') {res.status(409).json({error:'الصنف له رصيد مسجّل؛ تغيير الوحدة أو العبوة يغيّر معنى الرصيد. أضف صنفًا جديدًا بدلًا من ذلك.'});return;}
+      if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس الوحدة والعبوة موجود، أو حجم العبوة غير محدد؛ راجع الصنف الموجود.'});return;} throw e;
+    }
     res.json({ product: product(String(current.id)) });
   });
   // Create a catalogue item and its first balance together, in the explicitly chosen warehouse.
@@ -81,11 +93,11 @@ export function createWarehouseRouter(store: Store) {
     } catch(e) {
       if ((e as Error).message==='WAREHOUSE') {res.status(400).json({error:'اختار مخزن موجود.'});return;}
       if ((e as Error).message==='DAMAGED_READ_ONLY') {res.status(409).json({error:'مخزن التالف للعرض واستقبال المرتجعات المسجلة على الفواتير فقط.',code:'DAMAGED_READ_ONLY'});return;}
-      if ((e as Error).message==='REQUEST_CONFLICT') {res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.'});return;}
+      if ((e as Error).message==='REQUEST_CONFLICT') {res.status(409).json({error:'رقم العملية مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'});return;}
       if (/PRODUCT_PACK_CONFLICT|UNIQUE/.test(String(e))) {res.status(409).json({error:'الصنف بنفس العبوة موجود بالفعل. اختاره لتسجيل رصيده في المخزن ده.'});return;}
       throw e;
     }
-    res.status(previousProductId ? 200 : 201).json({ok:true,duplicate:!!previousProductId,productId:previousProductId ?? productId});
+    res.status(previousProductId ? 200 : 201).json({ok:true,duplicate:!!previousProductId,requestId:data.id,productId:previousProductId ?? productId});
   });
   router.get('/low-stock', (_req, res) => {
     res.setHeader('Cache-Control', 'private, no-store');
@@ -103,9 +115,14 @@ export function createWarehouseRouter(store: Store) {
     if (store.get('SELECT id FROM warehouses WHERE name=? COLLATE NOCASE', parsed.data.name)) { res.status(409).json({ error: 'اسم المخزن موجود بالفعل.' }); return; }
     const warehouseId = randomUUID();
     const now = Date.now();
-    if (warehouseColumns.has('updated_at')) store.run('INSERT INTO warehouses(id,name,created_at,updated_at) VALUES (?,?,?,?)', warehouseId, parsed.data.name, now, now);
-    else store.run('INSERT INTO warehouses(id,name,created_at) VALUES (?,?,?)', warehouseId, parsed.data.name, now);
-    store.audit(res.locals.user.id, 'warehouse.create', { warehouseId, name: parsed.data.name });
+    let exists = false;
+    store.transaction(() => {
+      if (store.get('SELECT id FROM warehouses WHERE name=? COLLATE NOCASE', parsed.data.name)) { exists = true; return; }
+      if (warehouseColumns.has('updated_at')) store.run('INSERT INTO warehouses(id,name,created_at,updated_at) VALUES (?,?,?,?)', warehouseId, parsed.data.name, now, now);
+      else store.run('INSERT INTO warehouses(id,name,created_at) VALUES (?,?,?)', warehouseId, parsed.data.name, now);
+      store.audit(res.locals.user.id, 'warehouse.create', { warehouseId, name: parsed.data.name });
+    });
+    if (exists) { res.status(409).json({ error: 'اسم المخزن موجود بالفعل.' }); return; }
     res.status(201).json({ warehouse: store.get('SELECT id,name FROM warehouses WHERE id=?', warehouseId) });
   });
   router.get('/stock', (req, res) => {
@@ -127,6 +144,9 @@ export function createWarehouseRouter(store: Store) {
   });
   router.post('/movements', (req, res) => {
     const schema = z.object({ id: z.uuid(), kind: z.enum(['opening','in','out','transfer']), productId:id,
+      // Old tabs and saved pending requests do not have this field; new screens send the item
+      // the operator saw, so an opening balance cannot be recorded against a changed pack.
+      productSnapshot:z.object({name:z.string().max(120),unit:z.string().max(40),unitSize:z.string().max(60),active:z.boolean()}).strict().optional(),
       fromWarehouseId:id.optional(), toWarehouseId:id.optional(), qty:z.number().nonnegative().max(1_000_000_000), note:z.string().trim().max(500).default('') }).strict();
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'بيانات حركة المخزون غير صحيحة.' }); return; }
@@ -140,7 +160,7 @@ export function createWarehouseRouter(store: Store) {
         && existing.from_warehouse_id === from && existing.to_warehouse_id === to && Number(existing.milli_qty) === milli && existing.note === m.note ? 1 : -1;
     };
     const existing = duplicate();
-    if (existing) { res.status(existing === 1 ? 200 : 409).json(existing === 1 ? {ok:true, duplicate:true} : {error:'معرّف الحركة مستخدم لبيانات مختلفة.'}); return; }
+    if (existing) { res.status(existing === 1 ? 200 : 409).json(existing === 1 ? {ok:true, duplicate:true, requestId:m.id} : {error:'معرّف الحركة مستخدم لبيانات مختلفة.',code:'REQUEST_CONFLICT'}); return; }
     // Older clients could submit excess precision; a recorded movement remains retryable above.
     if (!hasDecimalPrecision(m.qty,3)) { res.status(400).json({ error: 'الكمية تقبل لحد ٣ أرقام بعد العلامة العشرية.' }); return; }
     if (m.kind !== 'opening' && milli < 1) { res.status(400).json({ error: 'اكتب كمية أكبر من صفر للحركة؛ الصفر مسموح للرصيد الافتتاحي فقط.' }); return; }
@@ -154,6 +174,10 @@ export function createWarehouseRouter(store: Store) {
         const previous = duplicate();
         if (previous === 1) { replay = true; return; }
         if (previous === -1) throw new Error('REQUEST_CONFLICT');
+        const lockedProduct = product(m.productId);
+        if (!lockedProduct) throw new Error('PRODUCT_MISSING');
+        if (m.productSnapshot && (lockedProduct.name !== m.productSnapshot.name || lockedProduct.unit !== m.productSnapshot.unit
+          || lockedProduct.unitSize !== m.productSnapshot.unitSize || Boolean(lockedProduct.active) !== m.productSnapshot.active)) throw new Error('PRODUCT_CHANGED');
         // No ordinary movements until an explicit damaged-stock policy is adopted.
         if (store.get('SELECT 1 FROM damaged_warehouse_v1 WHERE warehouse_id=? OR warehouse_id=?',from,to)) throw new Error('DAMAGED_READ_ONLY');
         if (m.kind === 'opening') {
@@ -174,7 +198,9 @@ export function createWarehouseRouter(store: Store) {
         store.audit(res.locals.user.id, 'warehouse.movement', { movementId:m.id, kind:m.kind, productId:m.productId, from, to, qty:m.qty });
       });
     } catch (e) {
-      if ((e as Error).message === 'REQUEST_CONFLICT') { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.' }); return; }
+      if ((e as Error).message === 'REQUEST_CONFLICT') { res.status(409).json({ error: 'معرّف الحركة مستخدم لبيانات مختلفة.', code:'REQUEST_CONFLICT' }); return; }
+      if ((e as Error).message === 'PRODUCT_MISSING') { res.status(404).json({ error: 'الصنف غير موجود.' }); return; }
+      if ((e as Error).message === 'PRODUCT_CHANGED') { res.status(409).json({ error: 'بيانات الصنف اتغيرت. الحركة لم تُسجّل؛ حدّث الأرصدة وراجع الاسم والوحدة والعبوة قبل المحاولة.', code:'PRODUCT_CHANGED' }); return; }
       if ((e as Error).message === 'DAMAGED_READ_ONLY') { res.status(409).json({ error: 'مخزن التالف للعرض واستقبال المرتجعات المسجلة على الفواتير فقط؛ لا تتاح له حركة عادية.', code:'DAMAGED_READ_ONLY' }); return; }
       if ((e as Error).message === 'STOCK_INITIALIZED') { res.status(409).json({ error: 'الرصيد الافتتاحي اتسجل قبل كده.' }); return; }
       if ((e as Error).message === 'STOCK_NOT_INITIALIZED') { res.status(409).json({ error: 'سجّل الرصيد الافتتاحي للصنف في كل مخزن للحركة الأول.' }); return; }
@@ -182,8 +208,8 @@ export function createWarehouseRouter(store: Store) {
       if ((e as Error).message === 'INSUFFICIENT_STOCK') { res.status(409).json({ error: 'الكمية أكبر من الرصيد المتاح في المخزن.', code:'INSUFFICIENT_STOCK' }); return; }
       throw e;
     }
-    if (replay) { res.json({ok:true, duplicate:true}); return; }
-    res.status(201).json({ ok:true, duplicate:false });
+    if (replay) { res.json({ok:true, duplicate:true, requestId:m.id}); return; }
+    res.status(201).json({ ok:true, duplicate:false, requestId:m.id });
   });
   return router;
 }
@@ -197,9 +223,14 @@ export function createStaffRouter(store: Store, disconnectUser: (id: string) => 
     if (!parsed.success) { res.status(400).json({ error:`اكتب الاسم والبريد وكلمة مرور من ${MIN_ADMIN_PASSWORD_LENGTH} حرفًا على الأقل، واختار نوع الحساب.` }); return; }
     const u = parsed.data;
     if (store.get('SELECT id FROM users WHERE email=?', u.email)) { res.status(409).json({ error:'البريد مستخدم بالفعل.' }); return; }
-    const userId = randomUUID();
-    store.run("INSERT INTO users(id,name,email,password_hash,role,access_scope,created_at) VALUES (?,?,?,?,'admin',?,?)", userId,u.name,u.email,hashPassword(u.password),u.accessScope,Date.now());
-    store.audit(res.locals.user.id,'staff.create',{ userId,accessScope:u.accessScope });
+    const userId = randomUUID(), passwordHash = hashPassword(u.password);
+    let emailTaken = false;
+    store.transaction(() => {
+      if (store.get('SELECT id FROM users WHERE email=?', u.email)) { emailTaken = true; return; }
+      store.run("INSERT INTO users(id,name,email,password_hash,role,access_scope,created_at) VALUES (?,?,?,?,'admin',?,?)", userId,u.name,u.email,passwordHash,u.accessScope,Date.now());
+      store.audit(res.locals.user.id,'staff.create',{ userId,accessScope:u.accessScope });
+    });
+    if (emailTaken) { res.status(409).json({ error:'البريد مستخدم بالفعل.' }); return; }
     res.status(201).json({ user:{ id:userId,name:u.name,email:u.email,accessScope:u.accessScope } });
   });
   router.patch('/:id', (req,res) => {
@@ -209,13 +240,20 @@ export function createStaffRouter(store: Store, disconnectUser: (id: string) => 
     if (!parsed.success || !Object.keys(parsed.data).length) { res.status(400).json({ error:'بيانات الحساب غير صحيحة.' }); return; }
     if (parsed.data.active === false && target.id === res.locals.user.id) { res.status(409).json({error:'ما ينفعش توقف حسابك الحالي.'}); return; }
     if (parsed.data.active === false && target.active && target.access_scope === 'full' && Number(store.get("SELECT COUNT(*) AS c FROM users WHERE role='admin' AND access_scope='full' AND active=1")?.c || 0) <= 1) { res.status(409).json({error:'لازم يفضل حساب مبيعات أو مدير شغّال.'}); return; }
+    let lastAdmin = false, missing = false;
     store.transaction(() => {
+      const locked = store.get("SELECT active,access_scope FROM users WHERE id=? AND role='admin'", target.id);
+      if (!locked) { missing = true; return; }
+      if (parsed.data.active === false && locked.active && locked.access_scope === 'full'
+          && Number(store.get("SELECT COUNT(*) AS c FROM users WHERE role='admin' AND access_scope='full' AND active=1")?.c || 0) <= 1) { lastAdmin = true; return; }
       if (parsed.data.active !== undefined) store.run('UPDATE users SET active=? WHERE id=?',Number(parsed.data.active),target.id);
       if (parsed.data.password !== undefined) store.run('UPDATE users SET password_hash=? WHERE id=?',hashPassword(parsed.data.password),target.id);
       if (parsed.data.active === false || parsed.data.password !== undefined) store.run('DELETE FROM sessions WHERE user_id=?',target.id);
+      store.audit(res.locals.user.id,'staff.update',{userId:target.id,fields:Object.keys(parsed.data)});
     });
+    if (missing) { res.status(404).json({error:'الحساب غير موجود.'}); return; }
+    if (lastAdmin) { res.status(409).json({error:'لازم يفضل حساب مبيعات أو مدير شغّال.'}); return; }
     if (parsed.data.active === false || parsed.data.password !== undefined) disconnectUser(String(target.id));
-    store.audit(res.locals.user.id,'staff.update',{userId:target.id,fields:Object.keys(parsed.data)});
     res.json({ ok:true });
   });
   return router;

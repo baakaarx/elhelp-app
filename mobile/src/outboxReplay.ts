@@ -26,11 +26,23 @@ export async function replayOutboxActions(
   let sent = 0;
   let notice: string | undefined;
   const checkInsToRetry = new Set<string>();
+  // If any check-in cannot be identified, no visit-linked action is safe to send, even
+  // when it appears earlier in the queue. Keep unrelated reports and orders moving.
+  const unknownCheckIn = items.some(item => {
+    if (item.kind !== 'visit-checkin') return false;
+    try { const value = JSON.parse(item.payload); return !value || typeof value !== 'object' || Array.isArray(value) || typeof value.id !== 'string' || !value.id.trim(); }
+    catch { return true; }
+  });
   for (const item of items) {
     if (item.kind === 'location') continue;
     let payload: unknown;
     try { payload = JSON.parse(item.payload); }
     catch {
+      notice ||= 'تعذر قراءة بيانات محفوظة على الهاتف أو التأكد من وصولها. ابقَ داخل الحساب واطلب مساعدة؛ لا تحذف بيانات التطبيق.';
+      continue;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+        || (item.kind === 'visit-checkin' && (typeof (payload as QueuedCheckIn).id !== 'string' || !(payload as QueuedCheckIn).id.trim()))) {
       notice ||= 'تعذر قراءة بيانات محفوظة على الهاتف أو التأكد من وصولها. ابقَ داخل الحساب واطلب مساعدة؛ لا تحذف بيانات التطبيق.';
       continue;
     }
@@ -44,18 +56,18 @@ export async function replayOutboxActions(
         : 'هناك بيانات محفوظة رفضها السيرفر؛ ما زالت على الهاتف ولم نكرر إرسالها تلقائيًا. افتح «حسابي» واضغط «مزامنة الآن» لإعادة المحاولة.';
       continue;
     }
-    if (item.rejected && options.retryRejected) await queue.unreject(item.key);
-
     if (item.kind === 'visit-checkout') {
       const checkout = payload as QueuedCheckOut;
       // A pending check-in must stay ahead of its dependent result.
-      if (checkInsToRetry.has(checkout.visitId)) continue;
+      if (unknownCheckIn || checkInsToRetry.has(checkout.visitId)) continue;
     }
     if (item.kind === 'order') {
       const order = payload as QueuedOrder;
       // An order linked to an offline visit must wait for the visit to reach the server first.
-      if (order.visitId && checkInsToRetry.has(order.visitId)) continue;
+      if (order.visitId && (unknownCheckIn || checkInsToRetry.has(order.visitId))) continue;
     }
+
+    if (item.rejected && options.retryRejected) await queue.unreject(item.key);
 
     try {
       if (item.kind === 'visit-checkin') await send.checkIn(payload as QueuedCheckIn);
@@ -88,6 +100,9 @@ export async function replayOutboxActions(
       }
       if ((error as { code?: string }).code === 'ORDER_CONFIRMATION_UNCERTAIN') {
         notice ||= 'تعذر التأكد من بيانات طلبية محفوظة عند المكتب. هي ما زالت على الهاتف؛ راجع المكتب ولا تكرر الطلبية.';
+      }
+      if ((error as { code?: string }).code === 'ACTION_CONFIRMATION_UNCERTAIN') {
+        notice ||= 'تعذر التأكد من بيانات الزيارة أو التقرير عند المكتب. البيانات ما زالت على الهاتف؛ راجع المكتب ولا تكررها.';
       }
       if (status === 401) break;
     }

@@ -277,3 +277,41 @@ test('تبويب المخزن يطلب تحديثًا بعد انتهاء حرك
  await expect(page.getByRole('button',{name:'إعادة تحميل الأرصدة'})).toBeVisible();await expect(page.getByLabel('الكمية')).toBeDisabled();
  await page.unroute('**/api/warehouse/stock?*');await page.getByRole('button',{name:'إعادة تحميل الأرصدة'}).click();await expect(page.getByLabel('الكمية')).toBeEnabled();await other.close();
 });
+
+test('الرصيد الافتتاحي لا يقبل بيانات صنف تغيرت في شاشة أخرى', async ({page}) => {
+ await signIn(page);const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));
+ const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const warehouse=(await (await page.request.post('/api/warehouse/warehouses',{headers,data:{name:`مخزن نسخة صنف ${Date.now()}`}})).json()).warehouse;
+ const product=(await (await page.request.post('/api/warehouse/products',{headers,data:{name:`صنف نسخة ${Date.now()}`,category:'other',unit:'عبوة',unitSize:'١ لتر'}})).json()).product;
+ await page.getByRole('button',{name:'المخازن',exact:true}).click();await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(warehouse.id);
+ await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption(product.id);await page.getByLabel('الكمية').fill('4');
+ expect((await page.request.patch(`/api/warehouse/products/${product.id}`,{headers,data:{unitSize:'٢ لتر'}})).status()).toBe(200);
+ await page.getByRole('button',{name:'حفظ الحركة'}).click();
+ await expect(page.getByRole('alert').filter({hasText:'بيانات الصنف اتغيرت'})).toBeVisible();
+ await expect(page.getByText('لازم تعيد تحميل الأرصدة وتتأكد منها قبل تسجيل حركة جديدة.')).toBeVisible();
+ await expect(page.getByRole('button',{name:'حفظ الحركة'})).toBeDisabled();
+ let stock=await (await page.request.get(`/api/warehouse/stock?warehouseId=${warehouse.id}`,{headers})).json();expect(stock.stock.find((p:{id:string})=>p.id===product.id).qty).toBeNull();
+ await page.getByRole('button',{name:'إعادة تحميل الأرصدة'}).click();await expect(page.getByRole('button',{name:'حفظ الحركة'})).toBeEnabled();
+ await expect(page.getByRole('combobox',{name:'الصنف',exact:true}).locator(`option[value="${product.id}"]`)).toContainText('٢ لتر');
+ await page.getByRole('button',{name:'حفظ الحركة'}).click();await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
+ stock=await (await page.request.get(`/api/warehouse/stock?warehouseId=${warehouse.id}`,{headers})).json();expect(stock.stock.find((p:{id:string})=>p.id===product.id).qty).toBe(4);
+});
+
+test('رد حركة غير مؤكد لا يمسح العملية المعلقة ويعاد بنفس الرقم',async({page})=>{
+ await signIn(page);const token=await page.evaluate(()=>localStorage.getItem('mandoub.token'));
+ const headers={'X-Mandoub-Token':token!,'X-Mandoub-Client':'admin'};
+ const warehouse=(await (await page.request.post('/api/warehouse/warehouses',{headers,data:{name:`مخزن تأكيد ${Date.now()}`}})).json()).warehouse;
+ const product=(await (await page.request.post('/api/warehouse/products',{headers,data:{name:`صنف تأكيد ${Date.now()}`,category:'other',unit:'عبوة'}})).json()).product;
+ await page.getByRole('button',{name:'المخازن',exact:true}).click();await page.getByRole('combobox',{name:'المخزن',exact:true}).selectOption(warehouse.id);
+ await page.getByRole('combobox',{name:'الصنف',exact:true}).selectOption(product.id);await page.getByLabel('الكمية').fill('6');
+ const ids:string[]=[];let first=true;
+ await page.route('**/api/warehouse/movements',async route=>{
+  if(route.request().method()!=='POST')return route.continue();ids.push(route.request().postDataJSON().id);
+  if(first){first=false;await route.fetch();await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,duplicate:false,requestId:'wrong'})});}else await route.continue();
+ });
+ await page.getByRole('button',{name:'حفظ الحركة'}).click();await expect(page.getByRole('alert').filter({hasText:'تعذر التأكد من حفظ الحركة'})).toBeVisible();
+ await expect(page.getByText('في حركة مخزون لم نتأكد من نتيجتها.')).toBeVisible();
+ await page.getByRole('button',{name:'التأكد من الحركة المعلقة'}).click();await expect(page.locator('.ok-text[role=status]')).toContainText('الحركة اتحفظت');
+ expect(ids).toHaveLength(2);expect(ids[1]).toBe(ids[0]);
+ const stock=await (await page.request.get(`/api/warehouse/stock?warehouseId=${warehouse.id}`,{headers})).json();expect(stock.stock.find((p:{id:string})=>p.id===product.id).qty).toBe(6);
+});

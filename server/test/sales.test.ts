@@ -278,3 +278,25 @@ test('competing invoices cannot sell the same last unit twice',async()=>{
  assert.equal(app.store.get('SELECT milli_qty FROM warehouse_stock WHERE warehouse_id=? AND product_id=?',w,p)?.milli_qty,0);
  assert.equal(app.store.get("SELECT COUNT(*) AS n FROM inventory_movements WHERE product_id=? AND kind='out'",p)?.n,1);
 });
+
+test('an order with a changed pack cannot deduct current stock, including legacy priced orders',async()=>{
+ const email=`${randomUUID()}@sales.test`, password='Password12345!';
+ const rep=(await client.post('/api/reps').set(auth).send({name:'مهندس عبوات',email,password,region:'طنطا'})).body.user.id;
+ const c=(await client.post('/api/customers').set(auth).send({name:`عميل ${randomUUID()}`,repId:rep})).body.customer.id;
+ const p=(await client.post('/api/warehouse/products').set(auth).send({name:`عبوة ${randomUUID()}`,category:'other',unit:'عبوة',unitSize:'١ لتر'})).body.product.id;
+ const repToken=(await client.post('/api/auth/login').send({email,password})).body.token;
+ const ids=[randomUUID(),randomUUID()];
+ for(const id of ids) assert.equal((await client.post('/api/orders').set('Authorization',`Bearer ${repToken}`).send({id,customerId:c,lines:[{productId:p,qty:2}],send:true})).status,201);
+ app.store.run("UPDATE orders SET status='priced',total=20 WHERE id=?",ids[1]);
+ app.store.run('UPDATE order_lines SET price=10 WHERE order_id=?',ids[1]);
+ assert.equal((await client.patch(`/api/warehouse/products/${p}`).set(auth).send({unitSize:'٥ لتر'})).status,200);
+ assert.equal((await client.post('/api/warehouse/movements').set(auth).send({id:randomUUID(),kind:'opening',productId:p,toWarehouseId:wh,qty:10})).status,201);
+ for(const [i,orderId] of ids.entries()) {
+  const saleId=randomUUID();const input={id:saleId,orderId,customerId:c,warehouseId:wh,paid:0,lines:i?[]:[{productId:p,qty:2,price:10}]};
+  const result=await client.post('/api/sales').set(auth).send(input);
+  assert.equal(result.status,409,JSON.stringify(result.body));assert.equal(result.body.code,'ORDER_PRODUCT_CHANGED');
+  assert.equal(app.store.get('SELECT milli_qty FROM warehouse_stock WHERE product_id=? AND warehouse_id=?',p,wh)?.milli_qty,10000);
+  assert.equal(app.store.get('SELECT id FROM office_sales_v1 WHERE id=?',saleId),undefined);
+  assert.equal(app.store.get('SELECT unit_size FROM order_lines WHERE order_id=?',orderId)?.unit_size,'١ لتر');
+ }
+});

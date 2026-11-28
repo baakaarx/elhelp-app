@@ -35,18 +35,28 @@ function write(items: OutboxItem[]) {
   catch { throw new Error('مساحة حفظ البيانات على الهاتف ممتلئة؛ لم يتم حفظ البيانات الجديدة. أرسل البيانات المعلقة أو فرّغ مساحة ثم أعد المحاولة.'); }
 }
 
+// All tabs running this version must hold the same browser-wide lock around read/modify/write.
+// Fail closed where Web Locks is unavailable (notably insecure remote HTTP): never overwrite work.
+async function mutate<T>(fn: () => T): Promise<T> {
+  if (typeof navigator === 'undefined' || !navigator.locks?.request)
+    throw new Error('المتصفح لا يدعم حماية البيانات المعلقة. لم نغيّر البيانات؛ استخدم اتصال HTTPS موثوقًا واطلب المساعدة، ولا تحذف بيانات المتصفح.');
+  return navigator.locks.request('mandoub.outbox.write.v1', { mode: 'exclusive' }, fn);
+}
+
 export async function createQueue(): Promise<Outbox> {
   return {
     async add(kind: OutboxKind, payload: unknown) {
       const key = outboxKey(kind, payload);
-      const items = read();
-      const serialized = JSON.stringify(payload);
-      const existing = items.find(item => item.key === key);
-      if (existing) assertSameQueuedAction(existing, kind, serialized);
-      else {
-        items.push({ key, kind, payload: serialized, createdAt: Date.now(), attempts: 0, rejected: false });
-        write(items);
-      }
+      return mutate(() => {
+        const items = read();
+        const serialized = JSON.stringify(payload);
+        const existing = items.find(item => item.key === key);
+        if (existing) assertSameQueuedAction(existing, kind, serialized);
+        else {
+          items.push({ key, kind, payload: serialized, createdAt: Date.now(), attempts: 0, rejected: false });
+          write(items);
+        }
+      });
     },
     async list(limit = 200) {
       const items = read().sort((a, b) => a.createdAt - b.createdAt);
@@ -60,11 +70,11 @@ export async function createQueue(): Promise<Outbox> {
       return [...items.filter(item => item.kind !== 'location'), ...points.slice(0, locationLimit)];
     },
     async countRejectedLocations() { return read().filter(item => item.kind === 'location' && item.rejected).length; },
-    async remove(key: string) { write(read().filter(item => item.key !== key)); },
-    async bump(key: string) { write(read().map(item => (item.key === key ? { ...item, attempts: item.attempts + 1 } : item))); },
-    async reject(key: string) { write(read().map(item => (item.key === key ? { ...item, rejected: true } : item))); },
-    async unreject(key: string) { write(read().map(item => (item.key === key ? { ...item, rejected: false } : item))); },
+    async remove(key: string) { await mutate(() => write(read().filter(item => item.key !== key))); },
+    async bump(key: string) { await mutate(() => write(read().map(item => (item.key === key ? { ...item, attempts: item.attempts + 1 } : item)))); },
+    async reject(key: string) { await mutate(() => write(read().map(item => (item.key === key ? { ...item, rejected: true } : item)))); },
+    async unreject(key: string) { await mutate(() => write(read().map(item => (item.key === key ? { ...item, rejected: false } : item)))); },
     async count(kind?: OutboxKind) { return kind ? read().filter(item => item.kind === kind).length : read().length; },
-    async clear() { write([]); },
+    async clear() { await mutate(() => { read(); write([]); }); },
   };
 }

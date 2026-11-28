@@ -8,6 +8,11 @@ import type { GeoPoint } from '../../mobile/src/types.js';
 
 const storage=new Map<string,string>();
 (globalThis as unknown as {localStorage:Storage}).localStorage={getItem:k=>storage.get(k)??null,setItem:(k,v)=>{storage.set(k,v);},removeItem:k=>{storage.delete(k);},clear:()=>storage.clear(),key:()=>null,length:0} as Storage;
+// Model the origin-wide FIFO Web Lock shared by all queue instances.
+let lockTail: Promise<unknown> = Promise.resolve();
+Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { request: (_name: string, _options: unknown, callback: () => unknown) => {
+  const next = lockTail.then(callback); lockTail = next.catch(() => {}); return next;
+} } } });
 const {createQueue}=await import('../../mobile/src/queue.web.js');
 const instance=createApp({dbPath:':memory:',production:false,adminEmail:'gps-offline@test.local',adminPassword:'AdminPassword123!',retentionDays:365,loginRateLimit:{windowMs:60000,limit:5000}});
 const client=request(instance.app);test.after(async()=>instance.close());

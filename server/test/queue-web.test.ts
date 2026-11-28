@@ -21,6 +21,11 @@ let rejectWrites = false;
   length: 0,
 } as unknown as Storage;
 
+// Model the origin-wide FIFO Web Lock shared by all queue instances.
+let lockTail: Promise<unknown> = Promise.resolve();
+Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { request: (_name: string, _options: unknown, callback: () => unknown) => {
+  const next = lockTail.then(callback); lockTail = next.catch(() => {}); return next;
+} } } });
 const { createQueue } = await import('../../mobile/src/queue.web.js');
 const KEY = 'mandoub.outbox';
 const readRaw = () => JSON.parse(store.get(KEY) ?? '[]') as OutboxItem[];
@@ -189,4 +194,28 @@ test('rejected locations remain on the device but cannot starve fresh fixes',asy
   await queue.bump('old-0');await queue.bump('old-1');
   assert.deepEqual((await queue.listForReplay(2,true)).map(x=>x.key),['old-2','old-3'], 'repeated manual retries eventually reach the rest');
   assert.equal(await queue.count(),206);
+});
+
+test('independent tabs serialize every mutation and preserve legacy localStorage data', async () => {
+  store.clear();
+  store.set(KEY, JSON.stringify([{key:'old',kind:'report',payload:'{"id":"old"}',createdAt:1,attempts:0}]));
+  const a=await createQueue(), b=await createQueue();
+  await Promise.all([a.add('report',{id:'a'}),b.add('report',{id:'b'}),a.bump('old'),b.reject('old')]);
+  assert.deepEqual(new Set(readRaw().map(x=>x.key)),new Set(['old','a','b']));
+  assert.equal(readRaw().find(x=>x.key==='old')?.attempts,1);
+  assert.equal(readRaw().find(x=>x.key==='old')?.rejected,true);
+  await Promise.all([a.remove('a'),b.unreject('old'),b.add('report',{id:'c'})]);
+  assert.deepEqual(new Set(readRaw().map(x=>x.key)),new Set(['old','b','c']));
+});
+
+test('missing browser locks fails closed without altering or clearing pending data', async () => {
+  store.clear(); store.set(KEY,'[{"key":"old","kind":"report","payload":"{}","createdAt":1,"attempts":0}]');
+  const before=store.get(KEY), original=globalThis.navigator;
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{}});
+  try {
+    const queue=await createQueue(); assert.equal((await queue.list()).length,1);
+    for(const op of [()=>queue.add('report',{id:'new'}),()=>queue.remove('old'),()=>queue.bump('old'),()=>queue.reject('old'),()=>queue.unreject('old'),()=>queue.clear()])
+      await assert.rejects(op,/HTTPS/);
+    assert.equal(store.get(KEY),before);
+  } finally {Object.defineProperty(globalThis,'navigator',{configurable:true,value:original});}
 });

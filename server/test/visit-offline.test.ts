@@ -187,3 +187,50 @@ test('a failed audit rolls back normal and automatically closed visit results, a
     assert.equal((await visit(rep.token, id, body)).body.duplicate, true);
   }
 });
+
+test('visit check-in and audit commit together, with safe retry after failure', async () => {
+  const rep=await makeRep('visit-start-atomic'); await openShiftSince(rep,HOUR);
+  const id=randomUUID(), body={id,customerName:'عميل التدقيق',location:{lat:31.2,lng:29.9,accuracy:8}};
+  store.db.exec("CREATE TRIGGER fail_visit_start_audit BEFORE INSERT ON audit_log WHEN NEW.action='visit.check_in' BEGIN SELECT RAISE(ABORT,'visit audit failed'); END");
+  try { assert.equal((await checkIn(rep.token,body)).status,500); assert.equal(store.get('SELECT id FROM visits WHERE id=?',id),undefined); }
+  finally {store.db.exec('DROP TRIGGER fail_visit_start_audit');}
+  assert.equal((await checkIn(rep.token,body)).status,201);
+  assert.equal((await checkIn(rep.token,body)).body.duplicate,true);
+});
+
+test('check-in checks open visit again under the lock and refuses a different payload for an existing id',async()=>{
+  const rep=await makeRep('visit-start-race');await openShiftSince(rep,HOUR);
+  const first=randomUUID(), input={id:first,customerName:'عميل السباق الأول',location:{lat:31.2,lng:29.9,accuracy:8}};
+  assert.equal((await checkIn(rep.token,input)).status,201);
+  assert.equal((await checkIn(rep.token,{...input,location:{lat:31.3,lng:29.9,accuracy:8}})).body.code,'VISIT_ID_IN_USE');
+  store.run("UPDATE visits SET status='closed' WHERE id=?",first);
+  const transaction=store.transaction.bind(store), second=randomUUID();
+  store.transaction=fn=>{store.run("UPDATE visits SET status='open' WHERE id=?",first);transaction(fn);};
+  let result;try {result=await checkIn(rep.token,{id:second,customerName:'عميل السباق الثاني',location:{lat:31.2,lng:29.9,accuracy:8}});}finally{store.transaction=transaction;}
+  assert.equal(result.status,409);assert.equal(result.body.openVisitId,first);
+  assert.equal(store.get('SELECT id FROM visits WHERE id=?',second),undefined);
+});
+
+test('concurrent checkout or late-result save does not overwrite an existing result',async()=>{
+ const rep=await makeRep('visit-close-race');await openShiftSince(rep,HOUR);
+ for(const automatic of [false,true]) {
+  const id=randomUUID();assert.equal((await checkIn(rep.token,{id,customerName:`عميل إغلاق ${automatic}`,location:{lat:31.2,lng:29.9,accuracy:8}})).status,201);
+  if(automatic)store.run("UPDATE visits SET status='closed',auto_closed=1,outcome=? WHERE id=?",AUTO_CLOSED_OUTCOME,id);
+  const transaction=store.transaction.bind(store);
+  store.transaction=fn=>{store.run("UPDATE visits SET status='closed',outcome='نتيجة وصلت أولاً' WHERE id=?",id);transaction(fn);};
+  let result;try{result=await visit(rep.token,id,{outcome:'نتيجة متأخرة مختلفة',notes:'',amount:null,location:null});}finally{store.transaction=transaction;}
+  assert.equal(result.status,409);assert.equal(result.body.code,'VISIT_CHANGED');
+  assert.equal(store.get('SELECT outcome FROM visits WHERE id=?',id)?.outcome,'نتيجة وصلت أولاً');
+  assert.equal((await visit(rep.token,id,{outcome:'نتيجة متأخرة مختلفة',notes:'',amount:null,location:null})).body.code,'VISIT_RESULT_CONFLICT');
+ }
+});
+
+test('deleting a visit rolls back if its audit cannot be saved',async()=>{
+ const rep=await makeRep('delete-audit');await openShiftSince(rep,HOUR);
+ const id=randomUUID(), created=await checkIn(rep.token,{id,customerName:'مزرعة حذف',purpose:'visit',location:{lat:31.2,lng:29.9,accuracy:8}});
+ assert.equal(created.status,201,JSON.stringify(created.body));
+ store.db.exec("CREATE TRIGGER fail_delete_visit BEFORE INSERT ON audit_log WHEN NEW.action='visit.delete' BEGIN SELECT RAISE(ABORT,'audit failure'); END");
+ try{const result=await client.delete(`/api/visits/${id}`).set(auth(await admin()));assert.equal(result.status,500);assert.ok(store.get('SELECT id FROM visits WHERE id=?',id));}
+ finally{store.db.exec('DROP TRIGGER fail_delete_visit');}
+ assert.equal((await client.delete(`/api/visits/${id}`).set(auth(await admin()))).status,200);
+});

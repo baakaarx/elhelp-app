@@ -222,7 +222,7 @@ test('an auto-closed offline result rejects stale, future, and pre-check-in time
   assert.equal(accepted.body.visit.outcome, 'نتيجة وقت الزيارة');
 });
 
-test('a visit that was closed normally still answers duplicate', async () => {
+test('a visit that was closed normally rejects a different result rather than claiming it was saved', async () => {
   const rep = await makeRep('normal');
   await openShift(rep.token, `device-${rep.id.slice(0, 6)}`);
   const visitId = await checkIn(rep.token, 'مزرعة عادية');
@@ -231,8 +231,8 @@ test('a visit that was closed normally still answers duplicate', async () => {
   assert.equal(closed.status, 200);
   const again = await client.post(`/api/visits/${visitId}/check-out`).set('Authorization', `Bearer ${rep.token}`)
     .send({ outcome: 'نتيجة تانية', notes: '', amount: null, location: null });
-  assert.equal(again.status, 200);
-  assert.equal(again.body.duplicate, true);
+  assert.equal(again.status, 409);
+  assert.equal(again.body.code, 'VISIT_RESULT_CONFLICT');
   const row = store.get('SELECT outcome FROM visits WHERE id=?', visitId)!;
   assert.equal(row.outcome, 'تمت المتابعة', 'a real result is never overwritten by a retry');
 });
